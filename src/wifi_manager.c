@@ -23,12 +23,20 @@ static int s_retries = 0;
 static esp_netif_t *s_sta_netif = NULL;
 static bool s_inited = false;
 
+/* Only auto-connect on STA_START during an intentional wifi_sta_connect_stored()
+ * call. Provisioning brings the STA up just to scan (see provisioning.c
+ * do_wifi_scan); auto-connecting there would put the STA in a "connecting"
+ * state that blocks the scan. */
+static bool s_autoconnect = false;
+
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        if (s_autoconnect) esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_retries < WIFI_CONNECT_RETRIES) {
+        if (!s_autoconnect) {
+            /* not our connect attempt (e.g. a scan tore the STA down) */
+        } else if (s_retries < WIFI_CONNECT_RETRIES) {
             s_retries++;
             ESP_LOGW(TAG, "disconnect; retry %d/%d", s_retries, WIFI_CONNECT_RETRIES);
             esp_wifi_connect();
@@ -182,6 +190,7 @@ esp_err_t wifi_sta_connect_stored(void)
 
     s_events = xEventGroupCreate();
     s_retries = 0;
+    s_autoconnect = true;   /* enable STA_START -> connect for this attempt */
 
     if (!s_sta_netif) s_sta_netif = esp_netif_create_default_wifi_sta();
 
@@ -206,6 +215,7 @@ esp_err_t wifi_sta_connect_stored(void)
 
 void wifi_sta_stop(void)
 {
+    s_autoconnect = false;   /* stop the disconnect handler from retrying */
     esp_wifi_disconnect();
     esp_wifi_stop();
 }

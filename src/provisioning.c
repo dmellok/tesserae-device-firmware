@@ -484,8 +484,16 @@ static void do_wifi_scan(void)
     err = esp_wifi_start();
     if (err != ESP_OK) { ESP_LOGW(TAG, "scan wifi_start: %s", esp_err_to_name(err)); return; }
 
+    /* esp_wifi_start() is asynchronous: the STA is not scannable until the
+     * WIFI_EVENT_STA_START has been processed. Calling scan_start before that
+     * returns ESP_ERR_WIFI_STATE (races ahead on faster-booting boards, e.g.
+     * the E1002). Retry briefly until the STA is ready (~1.5 s cap). */
     wifi_scan_config_t cfg = {0};
-    err = esp_wifi_scan_start(&cfg, /* block */ true);
+    err = ESP_ERR_WIFI_STATE;
+    for (int attempt = 0; attempt < 15 && err == ESP_ERR_WIFI_STATE; attempt++) {
+        err = esp_wifi_scan_start(&cfg, /* block */ true);
+        if (err == ESP_ERR_WIFI_STATE) vTaskDelay(pdMS_TO_TICKS(100));
+    }
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "scan_start: %s", esp_err_to_name(err));
         esp_wifi_stop();
