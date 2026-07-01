@@ -1,0 +1,9 @@
+# Small-flash layout for boards whose real flash may be only 8 MB
+# (e.g. XIAO-class reTerminals). Single factory app (~3 MB), no OTA.
+# 4 MB factory leaves comfortable headroom and fits any flash >= 8 MB.
+# Flash with `--flash-size detect` regardless of the image header.
+#
+# Name,    Type, SubType,  Offset,  Size,    Flags
+nvs,       data, nvs,      ,        0x6000,
+phy_init,  data, phy,      ,        0x1000,
+factory,   app,  factory,  ,        0x400000,

@@ -4,6 +4,7 @@ idf_component_register(
         "epd_driver.c"
         "panel/registry.c"
         "panel/drivers/spectra6_spi_dual.c"
+        "panel/drivers/spectra6_t133a01_dual.c"
         "heartbeat.c"
         "wifi_manager.c"
         "provisioning.c"

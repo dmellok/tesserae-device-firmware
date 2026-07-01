@@ -12,6 +12,8 @@
 
 #if defined(TESSERAE_BOARD_WAVESHARE_133E6)
 #  include "waveshare_133e6.h"
+#elif defined(TESSERAE_BOARD_SEEED_E1004)
+#  include "seeed_reterminal_e1004.h"
 #else
 #  error "No TESSERAE_BOARD_* selected. Set one in platformio.ini build_flags."
 #endif
