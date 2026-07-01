@@ -14,6 +14,13 @@
  * reset + the init command block; display = DTM + framebuffer + PON/DRF/POF;
  * sleep = deep sleep. main.c calls them consecutively, so the emitted sequence
  * matches the reference's monolithic spectra6_update().
+ *
+ * Shared with the Waveshare PhotoPainter 7.3" (same ED2208-GCA init, byte for
+ * byte). Two board macros tailor it there:
+ *   - EPD_ROTATE_180: reverse the byte stream + swap nibbles on the full-frame
+ *     send (the PhotoPainter mounts the panel 180 degrees in its case).
+ *   - BOARD_HAS_PMIC: panel power is an AXP2101 LDO rail, so port_init/init
+ *     bring the rails up via pmic_*() instead of relying on a GPIO gate.
  */
 #include "app_config.h"          /* board.h -> PANEL_DRIVER_* selection */
 
@@ -28,6 +35,10 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
+#ifdef BOARD_HAS_PMIC
+#include "pmic.h"                 /* AXP2101 panel rails (PhotoPainter) */
+#endif
 
 static const char *TAG = "epd_s6single";
 
@@ -107,6 +118,39 @@ static bool send_buffer(const uint8_t *data, size_t len)
     return true;
 }
 
+#ifdef EPD_ROTATE_180
+/* Stream a full frame rotated 180 degrees: panel byte i is pulled from source
+ * byte (len-1-i) (reverses row + column-pair order in one shot on this flat
+ * scanline-major buffer) and each byte's nibbles are swapped (flips the two
+ * pixels packed in it). Copies each chunk through a stack-local buffer, which
+ * also keeps the SPI DMA off a PSRAM source. Matches the PhotoPainter port. */
+static bool send_buffer_rot180(const uint8_t *data, size_t len)
+{
+    if (!s_spi) return false;
+    uint8_t local[128];
+    const uint8_t *src_end = data + len;
+    size_t remaining = len;
+    while (remaining) {
+        const size_t chunk = remaining > 128 ? 128 : remaining;
+        const uint8_t *src = src_end - chunk;
+        for (size_t i = 0; i < chunk; i++) {
+            uint8_t b = src[chunk - 1 - i];
+            local[i] = (uint8_t)((b << 4) | (b >> 4));
+        }
+        spi_device_acquire_bus(s_spi, portMAX_DELAY);
+        gpio_set_level(EPD_PIN_DC, 1);
+        gpio_set_level(EPD_PIN_CS, 0);
+        const bool ok = spi_tx(local, chunk);
+        gpio_set_level(EPD_PIN_CS, 1);
+        spi_device_release_bus(s_spi);
+        if (!ok) return false;
+        src_end   -= chunk;
+        remaining -= chunk;
+    }
+    return true;
+}
+#endif /* EPD_ROTATE_180 */
+
 static void reset_panel(void)
 {
     gpio_set_level(EPD_PIN_RST, 1); vTaskDelay(pdMS_TO_TICKS(50));
@@ -119,6 +163,14 @@ static void reset_panel(void)
 static esp_err_t s6s_port_init(void)
 {
     if (s_port_inited) return ESP_OK;
+
+#ifdef BOARD_HAS_PMIC
+    /* Panel power is an AXP2101 rail on this board -- bring it up (and the I2C
+     * bus) before we touch RST/CS. Idempotent; battery.c may have run it
+     * already. Non-fatal if the PMIC is MIA (logged inside). */
+    pmic_init();
+    pmic_rails_set(true);
+#endif
 
     gpio_config_t out = {0};
     out.pin_bit_mask = (1ULL << EPD_PIN_RST) | (1ULL << EPD_PIN_DC) | (1ULL << EPD_PIN_CS);
@@ -231,7 +283,11 @@ static bool trigger_refresh(void)
 static void s6s_display(const uint8_t *image)
 {
     if (!cmd(0x10)) return;                        /* data transfer (DTM) */
+#ifdef EPD_ROTATE_180
+    if (!send_buffer_rot180(image, EPD_BUF_BYTES)) return;
+#else
     if (!send_buffer(image, EPD_BUF_BYTES)) return;
+#endif
     if (!wait_busy("data")) return;
     trigger_refresh();
 }

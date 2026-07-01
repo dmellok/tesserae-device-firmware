@@ -9,6 +9,7 @@ idf_component_register(
         "panel/drivers/mono_spi.c"
         "panel/drivers/it8951_gray.c"
         "battery.c"
+        "pmic.c"
         "wifi_manager.c"
         "provisioning.c"
         "net_rest.c"
@@ -25,6 +26,7 @@ idf_component_register(
     REQUIRES
         driver
         esp_adc
+        esp_driver_i2c
         esp_driver_usb_serial_jtag
         esp_event
         esp_http_client

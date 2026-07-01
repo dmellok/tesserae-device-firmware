@@ -20,6 +20,8 @@
 #  include "seeed_reterminal_e1001.h"
 #elif defined(TESSERAE_BOARD_SEEED_E1003)
 #  include "seeed_reterminal_e1003.h"
+#elif defined(TESSERAE_BOARD_WAVESHARE_PHOTOPAINTER_73)
+#  include "waveshare_photopainter_73.h"
 #else
 #  error "No TESSERAE_BOARD_* selected. Set one in platformio.ini build_flags."
 #endif

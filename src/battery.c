@@ -12,7 +12,21 @@ int battery_pct(int mv)
     return (mv - 3300) * 30 / 400;
 }
 
-#ifdef BOARD_BATTERY_ADC_CHANNEL
+#if defined(BOARD_BATTERY_PMIC)
+
+/* PMIC boards (Waveshare PhotoPainter): battery comes from the AXP2101 fuel
+ * gauge over I2C, not an ADC divider. pmic_init() is idempotent, so calling it
+ * here makes the status-post read work regardless of whether the panel driver
+ * has brought the PMIC up yet. battery_pct() maps the mV as for any board. */
+#include "pmic.h"
+
+int battery_read_mv(void)
+{
+    pmic_init();
+    return (int) pmic_battery_mv();
+}
+
+#elif defined(BOARD_BATTERY_ADC_CHANNEL)
 
 #include "driver/gpio.h"
 #include "esp_adc/adc_cali.h"

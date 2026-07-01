@@ -33,6 +33,7 @@ jobs:
           - seeed-reterminal-e1002
           - seeed-reterminal-e1003
           - seeed-reterminal-e1004
+          - waveshare-photopainter-73
     steps:
       - uses: actions/checkout@v4
 
