@@ -8,8 +8,8 @@
  * controller's image-buffer address); the IT8951 drives the panel's parallel
  * glass internally. Driven in 4bpp (16-level) grayscale with the GC16 waveform.
  *
- * Reference: bitbank2 FastEPD (bitbank2 FastEPD;
- * initIT8951 + setPanelSize(BBEP_DISPLAY_ED103TC2)). Pins from the reTerminal pin map.
+ * Reference: bitbank2 FastEPD (initIT8951 + setPanelSize(BBEP_DISPLAY_ED103TC2)).
+ * Pins from the reTerminal E1003 pin map.
  *
  * There is NO DC pin (command vs data is encoded in a 16-bit SPI preamble), and
  * two power-enable lines (EN + VCC_EN). VERIFY the server-side renderer: the

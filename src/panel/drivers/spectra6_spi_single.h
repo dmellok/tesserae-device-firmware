@@ -3,7 +3,7 @@
  *
  * Concrete driver for the Seeed reTerminal E1002's 6-colour Spectra panel: one
  * chip-select, one contiguous 4bpp framebuffer (no left/right split). Ported
- * from a confirmed-working ESP-IDF path, which is
+ * from a confirmed-working ESP-IDF Spectra-6 update transport, which is
  * a direct ESP-IDF SPI path confirmed working on real E1002 hardware -- see the
  * .c for byte-level provenance. Register values are panel-specific; do not edit.
  */

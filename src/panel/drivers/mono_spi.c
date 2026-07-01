@@ -3,7 +3,7 @@
  *
  * UC8179-class single-controller panel driven over SPI with a DC command/data
  * line. The init and refresh sequences are ported from bb_epaper's
- * EP75_800x480 panel (epd75_init_sequence_full; the default panel for
+ * EP75_800x480 panel (epd75_init_sequence_full; the panel for
  * BOARD_SEEED_RETERMINAL_E1001): PWR / PON / PSR=0x1F / TRES / dual-SPI-off /
  * CDI / TCON, then the 1bpp frame to DTM2 (0x13) and a DRF (0x12) refresh.
  * Transport mirrors the 13.3E6 base driver (DC pin, single CS, BUSY-low-busy),
@@ -11,8 +11,8 @@
  *
  * The frame is a packed 1bpp bitmap, EPD_BUF_BYTES = W*H/8 = 48000 bytes,
  * bit 1 = white. Every wake re-runs init() (full reset + init) before
- * display(), which is exactly the "re-init before refresh" fix from reference
- * the UC8179 behaviour, so no separate workaround is needed.
+ * display(), which is the "re-init before refresh" behaviour these
+ * UC8179-class panels need, so no separate workaround is required.
  */
 #include "app_config.h"          /* board.h -> PANEL_DRIVER_* selection */
 

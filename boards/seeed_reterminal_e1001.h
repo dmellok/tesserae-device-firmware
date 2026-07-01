@@ -7,8 +7,8 @@
  * panel is 1-bit monochrome, so EPD_BUF_BYTES is W*H/8 (48000) and the frame
  * is a packed 1bpp bitmap (bit 1 = white, bit 0 = black), not 4bpp Spectra.
  *
- * Panel = bb_epaper EP75_800x480 (the default for BOARD_SEEED_RETERMINAL
- * _E1001); init/refresh ported into mono_spi.c. Pins from the reTerminal pin map.
+ * Panel = bb_epaper EP75_800x480 (BOARD_SEEED_RETERMINAL_E1001);
+ * init/refresh ported into mono_spi.c. Pins from the reTerminal E1001 pin map.
  *
  * VERIFY the server-side renderer: the frame must be 800x480 1bpp (48000 bytes)
  * for TESSERAE_DEVICE_KIND below -- Tesserae needs a mono renderer for it.

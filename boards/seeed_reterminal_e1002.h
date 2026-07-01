@@ -3,10 +3,10 @@
  *   - MCU:   XIAO ESP32-S3 class (ESP32-S3 + PSRAM)
  *   - Panel: 6-colour Spectra-6, single-controller, 800x480
  *
- * Family B. Uses the spectra6_spi_single driver, ported from a confirmed-working ESP-IDF path's
- * confirmed-working ESP-IDF path. Single chip-select (no CS_M/CS_S split) and
- * no software power-enable pin. Pin map from bb_epaper DEV_Config.h
- * (BOARD_SEEED_RETERMINAL_E1002) and the the reference spectra6 init.
+ * Family B. Uses the spectra6_spi_single driver, ported from a confirmed-working
+ * ESP-IDF Spectra-6 update path. Single chip-select (no CS_M/CS_S split) and
+ * no software power-enable pin. Pin map for BOARD_SEEED_RETERMINAL_E1002 and the
+ * single-controller spectra6 init.
  *
  * VERIFY the server-side renderer: the frame must be packed as 800x480 4bpp
  * Spectra-6 (192000 bytes) for TESSERAE_DEVICE_KIND below.
@@ -24,7 +24,7 @@
 #define EPD_PIN_BUSY   13   /* active low: 0 = busy */
 
 #define EPD_SPI_HOST   SPI2_HOST
-#define EPD_SPI_HZ     (20 * 1000 * 1000)   /* the reference uses 20 MHz */
+#define EPD_SPI_HZ     (20 * 1000 * 1000)   /* 20 MHz */
 
 /* Panel geometry. Landscape-native 800x480, 4bpp packed = 1 controller. */
 #define EPD_WIDTH      800
@@ -44,8 +44,8 @@
 #define TESSERAE_DEVICE_MODEL  "reTerminal_E1002"
 
 /* Tesserae hardware-catalog kind (esp32_client protocol + esp32_bin renderer:
- * 800x480 4bpp Spectra-6, 192000 bytes). The E1002 manifest was migrated from
- * the legacy path to this native path in Tesserae v0.64.52. */
+ * 800x480 4bpp Spectra-6, 192000 bytes). The E1002 manifest was migrated to
+ * this native path in Tesserae v0.64.52. */
 #define TESSERAE_DEVICE_KIND   "seeed_reterminal_e1002"
 
 /* Battery sense (reTerminal): GPIO1 = ADC1 channel 0, 2:1 divider,

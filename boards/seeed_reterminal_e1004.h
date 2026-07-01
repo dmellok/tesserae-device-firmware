@@ -9,9 +9,9 @@
  * CCSET differ. It therefore uses its own driver (spectra6_t133a01_dual),
  * ported verbatim from the limengdu/bb_epaper fork (bbepT133A01InitIO /
  * bbepWriteImage4bppDual / bbepRefresh / bbepSleep) pinned at commit
- * 95fd94afe39cd7db32bef7c70eea06d654264ff6, which underlies the reference bb_epaper fork.
+ * 95fd94afe39cd7db32bef7c70eea06d654264ff6.
  *
- * Pin map from the reference (src/DEV_Config.h, BOARD_SEEED_RETERMINAL_E1004).
+ * Pin map for BOARD_SEEED_RETERMINAL_E1004.
  * Panel pins are named against the shared driver's roles:
  *   CS_M = primary controller (CS,  drives left  half, cols   0..599)
  *   CS_S = second  controller (CS1, drives right half, cols 600..1199)

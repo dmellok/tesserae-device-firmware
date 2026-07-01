@@ -9,8 +9,7 @@
  * refreshes with DRF=0x01 -- so it can NOT reuse the Waveshare init blobs.
  *
  * Every panel-specific value below is ported verbatim from the limengdu
- * bb_epaper fork pinned at commit 95fd94afe39cd7db32bef7c70eea06d654264ff6
- * (which underlies the reference bb_epaper fork, "Add Seeed reTerminal E1004 support"):
+ * bb_epaper fork pinned at commit 95fd94afe39cd7db32bef7c70eea06d654264ff6:
  *   - init:    src/arduino_io.inl  bbepT133A01InitIO()  + bbepT133A01WriteCommandData()
  *   - data:    src/bb_ep.inl       bbepWriteImage4bppDual() (T133A01 branch) + t133a01_write_half()
  *   - refresh: src/bb_ep.inl       bbepRefresh()  (T133A01 branch) via t133a01_update_phase()

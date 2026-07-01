@@ -55,7 +55,7 @@ src/
 ```
 
 Each concrete driver is a faithful port of a proven reference (Waveshare demo,
-bitbank2/bb_epaper or bitbank2/FastEPD), with byte-level
+`bitbank2/bb_epaper`, or `bitbank2/FastEPD`), with byte-level
 provenance in the source. Panel-specific quirks (dual-CS split, mirror, the
 IT8951 load/waveform protocol) live in the driver; the rest of the firmware is
 panel-agnostic and talks to the active panel only through the vtable.
@@ -169,10 +169,9 @@ portal while iterating.
 
 ## Credits
 
-Hardware facts, pin maps, and init/refresh sequences were mined from
-[bitbank2/bb_epaper](https://github.com/bitbank2/bb_epaper) and the
-libraries it uses ([bitbank2/bb_epaper](https://github.com/bitbank2/bb_epaper),
-[bitbank2/FastEPD](https://github.com/bitbank2/FastEPD)), the Waveshare 13.3E6
+Hardware facts, pin maps, and init/refresh sequences were derived from
+[bitbank2/bb_epaper](https://github.com/bitbank2/bb_epaper) and
+[bitbank2/FastEPD](https://github.com/bitbank2/FastEPD), the Waveshare 13.3E6
 ESP-IDF demo, and the [Pimoroni Inky](https://github.com/pimoroni/inky) drivers.
 Bundled third-party code: the public-domain font8x8, and the MIT
 [qrcodegen](https://github.com/nayuki/QR-Code-generator) (`src/vendor/`).

@@ -1,7 +1,8 @@
 /*
  * Seeed reTerminal E1003 -- 10.3" ED103TC2 grayscale via IT8951, Family D.
  *
- * Ported from bitbank2 FastEPD's IT8951 path (initIT8951 + setPanelSize(BBEP_DISPLAY_ED103TC2)). The IT8951 is a
+ * Ported from bitbank2 FastEPD's IT8951 path (initIT8951 +
+ * setPanelSize(BBEP_DISPLAY_ED103TC2)). The IT8951 is a
  * timing controller reached over SPI with a 16-bit-word protocol:
  *   - write command: preamble 0x6000, then the 16-bit command
  *   - write data:    preamble 0x0000, then 16-bit data word(s)

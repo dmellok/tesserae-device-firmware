@@ -1,10 +1,10 @@
 /*
  * Seeed reTerminal E1002 -- single-controller Spectra-6 (800x480), Family B.
  *
- * Ported from a confirmed-working ESP-IDF path
- * (bitbank2/bb_epaper, src/display.cpp, the BOARD_SEEED_RETERMINAL_E1002
- * spectra6_* path) -- a direct ESP-IDF SPI update confirmed working on real
- * E1002 hardware. That code is already ESP-IDF SPI/GPIO; only the Arduino glue
+ * Ported from a confirmed-working ESP-IDF Spectra-6 update transport for the
+ * BOARD_SEEED_RETERMINAL_E1002 spectra6_* path -- a direct ESP-IDF SPI update
+ * confirmed working on real E1002 hardware. The reference is already ESP-IDF
+ * SPI/GPIO; only the Arduino glue
  * (the delay, logging, and framebuffer accessor) is translated here. The
  * init/refresh register values and the transport quirks (command via the
  * SPI command phase;
@@ -168,7 +168,7 @@ static esp_err_t s6s_port_init(void)
     return ESP_OK;
 }
 
-/* Canned init parameter blobs (the reference; do NOT edit). */
+/* Canned init parameter blobs (from the reference init; do NOT edit). */
 static const uint8_t CMD_H[] = {0x49, 0x55, 0x20, 0x08, 0x09, 0x18};
 static const uint8_t PWR[]   = {0x3f};
 static const uint8_t PSR[]   = {0x5f, 0x69};
