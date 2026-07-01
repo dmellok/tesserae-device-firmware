@@ -7,10 +7,13 @@
 .vscode/launch.json
 .vscode/ipch/
 
-# ESP-IDF generated sdkconfig (we commit sdkconfig.defaults only)
+# ESP-IDF generated sdkconfig. We commit sdkconfig.defaults and any per-board
+# sdkconfig.<board>.defaults overrides (e.g. sdkconfig.ee02.defaults); the
+# generated per-env sdkconfig.<env> files stay ignored.
 sdkconfig
 sdkconfig.*
 !sdkconfig.defaults
+!sdkconfig.*.defaults
 
 # ESP-IDF component manager
 managed_components/

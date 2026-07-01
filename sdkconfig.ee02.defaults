@@ -1,0 +1,60 @@
+# ------------------------------------------------------------------
+# EE02-only ESP-IDF config. Self-contained copy of sdkconfig.defaults with
+# ONE change: the console is on the native USB-Serial-JTAG, not UART0.
+#
+# Why a separate file: the EE02 wires the panel's CS_M to GPIO44 and EN to
+# GPIO43 -- which are the ESP32-S3's UART0 TX/RX. The shared sdkconfig.defaults
+# pins the console to UART0 (for the reTerminals' CH340), which would fight the
+# display here. The EE02 is a native-USB (XIAO) board anyway, so routing the
+# console to USB-Serial-JTAG frees UART0 for the panel and still gives logs over
+# the USB-C port. Keep the rest in sync with sdkconfig.defaults by hand.
+# ------------------------------------------------------------------
+
+# --- Flash ---
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- PSRAM (octal, ESP32-S3-WROOM-2 / R8 variants) ---
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+
+# --- CPU ---
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+
+# --- Main task stack ---
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# --- Networking ---
+CONFIG_LWIP_LOCAL_HOSTNAME="tesserae-esp32"
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
+
+# --- TLS / HTTPS via mbedTLS bundled root CAs ---
+CONFIG_ESP_TLS_USING_MBEDTLS=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# --- MQTT ---
+CONFIG_MQTT_PROTOCOL_311=y
+
+# --- HTTP server (SoftAP captive portal) ---
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+
+# --- Logging ---
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_COLORS=y
+
+# --- Console: USB-Serial-JTAG PRIMARY (frees UART0 GPIO43/44 for the panel) ---
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# --- Power ---
+CONFIG_PM_ENABLE=n
