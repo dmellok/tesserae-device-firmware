@@ -47,5 +47,15 @@ CONFIG_HTTPD_MAX_URI_LEN=512
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_COLORS=y
 
+# --- Console: route app logs + panic backtraces to UART0 so they come out the
+# onboard USB-serial bridge (CH340, the USB-C port we flash through) on every
+# board -- not just the ESP32-S3 native USB-Serial-JTAG. UART0 stays primary;
+# USB-Serial-JTAG remains a secondary console (native USB, when connected).
+# Verified on the reTerminal E1004: full boot + app logs over the CH340 @115200
+# (matches monitor_speed in platformio.ini). This is already the IDF default,
+# pinned here so a board/PlatformIO variant can't silently reroute it. ---
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
+
 # --- Power: we want explicit control, not the IDF power-management hooks ---
 CONFIG_PM_ENABLE=n
