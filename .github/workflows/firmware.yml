@@ -66,17 +66,21 @@ jobs:
           PLATFORMIO_BUILD_FLAGS: '-DFW_VERSION=\"${{ steps.ver.outputs.version }}\"'
         run: pio run -e ${{ matrix.env }}
 
+      # PlatformIO emits three flashable images per build (no combined factory
+      # bin): app at 0x10000, bootloader at 0x0, partition table at 0x8000.
       - name: Stage versioned binaries
         run: |
           v='${{ steps.ver.outputs.version }}'
           e='${{ matrix.env }}'
+          b=".pio/build/$e"
           mkdir -p dist
-          cp ".pio/build/$e/firmware.bin"         "dist/tesserae-$e-v$v-firmware.bin"
-          cp ".pio/build/$e/firmware.factory.bin" "dist/tesserae-$e-v$v-firmware.factory.bin"
+          cp "$b/firmware.bin"   "dist/tesserae-$e-v$v-firmware.bin"
+          cp "$b/bootloader.bin" "dist/tesserae-$e-v$v-bootloader.bin"
+          cp "$b/partitions.bin" "dist/tesserae-$e-v$v-partitions.bin"
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
           name: firmware-${{ matrix.env }}-v${{ steps.ver.outputs.version }}
           path: dist/
-          if-no-files-found: warn
+          if-no-files-found: error

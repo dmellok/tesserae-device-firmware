@@ -110,8 +110,9 @@ pio run -e seeed-reterminal-e1002              # or any env from the table
 ```
 
 The first build fetches the ESP-IDF toolchain (a few minutes); later builds take
-~15–50 s. Output is under `.pio/build/<env>/` (`firmware.bin`, plus a combined
-`firmware.factory.bin`). Every push is built for all targets in CI (see
+~15–50 s. Output is under `.pio/build/<env>/`: `firmware.bin` (app, flashed at
+`0x10000`) alongside `bootloader.bin` (`0x0`) and `partitions.bin` (`0x8000`).
+Every push is built for all targets in CI (see
 `.github/workflows/firmware.yml`), which stamps an auto-incrementing
 `0.0.<build>` version (starting at `0.0.0`) into `FW_VERSION` and the uploaded
 artifact / `.bin` names. Local builds fall back to `0.0.0-dev`.
