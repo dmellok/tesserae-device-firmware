@@ -318,6 +318,21 @@ void app_main(void)
     ESP_LOGI(TAG, "boot; reset_reason=%d wakeup_cause=%d settings_mode=%d",
              reset_reason, esp_sleep_get_wakeup_cause(), settings_mode);
 
+#ifdef EPD_SELFTEST
+    /* Panel-driver bring-up: no WiFi, no MQTT. Init the active panel and paint
+     * the 6 colour bars, then sleep and halt. Use this to validate a new/ported
+     * driver (pins, init sequence, refresh) in isolation. If every band shows
+     * the expected ink, the driver + panel + LUT are healthy. Enable with
+     * -DEPD_SELFTEST in the env's build_flags. */
+    ESP_LOGW(TAG, "EPD_SELFTEST: painting colour bars (no networking)");
+    ESP_ERROR_CHECK(epd_port_init());
+    epd_init();
+    epd_show_color_bars();
+    epd_sleep();
+    ESP_LOGW(TAG, "EPD_SELFTEST: done; halting. Press RESET to repeat.");
+    while (1) vTaskDelay(pdMS_TO_TICKS(1000));
+#endif
+
     ESP_ERROR_CHECK(wifi_manager_init());
 
     /* Skip the 30 s splash when entering settings mode -- the user is waiting
