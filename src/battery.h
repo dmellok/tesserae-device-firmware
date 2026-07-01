@@ -15,3 +15,10 @@ int battery_read_mv(void);
 
 /* Map a Li-Po cell voltage (mV) to a 0-100% state-of-charge estimate. */
 int battery_pct(int mv);
+
+#ifdef BATTERY_DEBUG_SWEEP
+/* Diagnostic: loop forever logging raw + calibrated mV across every ADC1
+ * channel (with the board's load switch enabled), to identify the real
+ * battery sense pin and divider. Enable with -DBATTERY_DEBUG_SWEEP. */
+void battery_debug_sweep(void);
+#endif

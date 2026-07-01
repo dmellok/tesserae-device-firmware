@@ -28,6 +28,7 @@
 #include "freertos/task.h"
 
 #include "app_config.h"
+#include "battery.h"
 #include "epd_driver.h"
 #include "image_decoder.h"
 #include "image_fetcher.h"
@@ -296,6 +297,13 @@ void app_main(void)
     bool settings_mode = detect_settings_mode(reset_reason);
     ESP_LOGI(TAG, "boot; reset_reason=%d wakeup_cause=%d settings_mode=%d",
              reset_reason, esp_sleep_get_wakeup_cause(), settings_mode);
+
+#ifdef BATTERY_DEBUG_SWEEP
+    /* Battery sense bring-up: log every ADC1 channel to find the real sense pin
+     * + divider. No networking. Enable with -DBATTERY_DEBUG_SWEEP. */
+    ESP_LOGW(TAG, "BATTERY_DEBUG_SWEEP: logging ADC channels (no networking)");
+    battery_debug_sweep();   /* never returns */
+#endif
 
 #ifdef EPD_SELFTEST
     /* Panel-driver bring-up: no WiFi, no MQTT. Init the active panel and paint

@@ -47,9 +47,12 @@
  * differ slightly (tune if contrast is off). */
 #define EPD_VCOM_MV     1500
 
-/* Battery sense (reTerminal E1003): GPIO3 = ADC1 channel 2, 2:1 divider,
- * load switch on GPIO40 (active-high). NOTE: different pins from E1001/2/4. */
-#define BOARD_BATTERY_ADC_CHANNEL  ADC_CHANNEL_2
+/* Battery sense (reTerminal E1003): GPIO1 = ADC1 channel 0, 2:1 divider, load
+ * switch on GPIO40 (active-high). Verified on hardware via an ADC1 channel
+ * sweep: ch0/GPIO1 reads ~2066 mV (x2 = ~4132 mV, a valid 1S cell); the earlier
+ * ch2/GPIO3 was a saturated rail (raw 4095) that reported a bogus ~6216 mV.
+ * Same sense pin/divider as the other reTerminals, contrary to the first guess. */
+#define BOARD_BATTERY_ADC_CHANNEL  ADC_CHANNEL_0
 #define BOARD_BATTERY_DIVIDER      2
 #define BOARD_VBAT_SWITCH_PIN      40
 

@@ -76,6 +76,50 @@ done:
     return pin_mv * BOARD_BATTERY_DIVIDER;
 }
 
+#ifdef BATTERY_DEBUG_SWEEP
+#include "esp_log.h"
+void battery_debug_sweep(void)
+{
+    static const char *T = "BATSWEEP";
+#ifdef BOARD_VBAT_SWITCH_PIN
+    gpio_set_direction(BOARD_VBAT_SWITCH_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_level(BOARD_VBAT_SWITCH_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    ESP_LOGW(T, "load switch GPIO%d driven HIGH", BOARD_VBAT_SWITCH_PIN);
+#endif
+    adc_oneshot_unit_handle_t adc = NULL;
+    adc_oneshot_unit_init_cfg_t init = { .unit_id = ADC_UNIT_1 };
+    if (adc_oneshot_new_unit(&init, &adc) != ESP_OK) { ESP_LOGE(T, "adc unit init failed"); return; }
+
+    adc_cali_handle_t cali = NULL;
+    adc_cali_curve_fitting_config_t cc = {
+        .unit_id = ADC_UNIT_1, .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_12,
+    };
+    adc_cali_create_scheme_curve_fitting(&cc, &cali);
+
+    ESP_LOGW(T, "sweeping ADC1 ch0..9 (GPIO1..10), atten=12dB. A valid 1S cell "
+                "reads pin*2 in 3300-4200mV; 2S reads pin*3/4 in 6000-8400mV.");
+    while (1) {
+        for (int ch = 0; ch <= 9; ch++) {
+            adc_oneshot_chan_cfg_t chan = { .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_12 };
+            if (adc_oneshot_config_channel(adc, ch, &chan) != ESP_OK) continue;
+            int raw = 0, sum = 0, ok = 0, last = 0;
+            for (int i = 0; i < 8; i++) {
+                if (adc_oneshot_read(adc, ch, &raw) == ESP_OK) {
+                    last = raw; int m = 0;
+                    if (adc_cali_raw_to_voltage(cali, raw, &m) == ESP_OK) { sum += m; ok++; }
+                }
+            }
+            int mv = ok ? sum / ok : -1;
+            ESP_LOGI(T, "ch%d GPIO%2d: raw=%4d pin=%4dmV | x2=%5d x3=%5d x4=%5d",
+                     ch, ch + 1, last, mv, mv * 2, mv * 3, mv * 4);
+        }
+        ESP_LOGI(T, "-------------------------------------------");
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+}
+#endif
+
 #else  /* no battery sense configured for this board */
 
 int battery_read_mv(void) { return 0; }
