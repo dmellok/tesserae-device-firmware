@@ -43,10 +43,11 @@
 /* Board model -> default device id "reTerminal_E1002_<mac-suffix>". */
 #define TESSERAE_DEVICE_MODEL  "reTerminal_E1002"
 
-/* Server renderer kind for this panel. The frame must be 800x480 4bpp
- * Spectra-6 (192000 bytes). Adjust to match the kind your Tesserae server
- * renders for the E1002. */
-#define TESSERAE_DEVICE_KIND   "reterminal_e1002"
+/* Tesserae hardware-catalog kind. Uses the *native* 4bpp bin manifest
+ * (esp32_client protocol + esp32_bin renderer -> 800x480 4bpp Spectra-6,
+ * 192000 bytes). The plain "seeed_reterminal_e1002" id is reserved for
+ * legacy-flashed E1002s, so the unified firmware uses the _native id. */
+#define TESSERAE_DEVICE_KIND   "seeed_reterminal_e1002_native"
 
 /* MCU tier: ESP32-S3 + PSRAM (assumed octal; verify on hardware). */
 #define MCU_TIER_S3_OCTAL_PSRAM 1

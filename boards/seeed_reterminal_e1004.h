@@ -56,6 +56,10 @@
 /* Board model -> default device id "reTerminal_E1004_<mac-suffix>". */
 #define TESSERAE_DEVICE_MODEL  "reTerminal_E1004"
 
+/* Tesserae hardware-catalog kind (esp32_client protocol + esp32_bin renderer:
+ * raw 4bpp Spectra-6, EPD_WIDTH*EPD_HEIGHT/2 bytes). */
+#define TESSERAE_DEVICE_KIND   "seeed_reterminal_e1004"
+
 /* ------------------------------------------------------------------ */
 /* MCU tier: ESP32-S3 + PSRAM (assumed octal, verify on hardware).     */
 /* ------------------------------------------------------------------ */

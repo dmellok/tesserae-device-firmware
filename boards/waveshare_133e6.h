@@ -43,6 +43,10 @@
 /* Board model -> default device id "Waveshare_133E6_<mac-suffix>". */
 #define TESSERAE_DEVICE_MODEL  "Waveshare_133E6"
 
+/* Tesserae hardware-catalog kind (esp32_client protocol + esp32_bin renderer:
+ * raw 4bpp Spectra-6/E6, EPD_WIDTH*EPD_HEIGHT/2 bytes). */
+#define TESSERAE_DEVICE_KIND   "waveshare_133e6"
+
 /* Battery sense (Waveshare 01_ADC_Test reference): 1:3 divider into GPIO8 =
  * ADC1 channel 7. Enables battery_mv/battery_pct in the status heartbeat. */
 #define BOARD_BATTERY_ADC_CHANNEL  ADC_CHANNEL_7
