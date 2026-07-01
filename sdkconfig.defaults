@@ -1,0 +1,51 @@
+# ------------------------------------------------------------------
+# Project-wide ESP-IDF config overrides.
+# Edit menuconfig if you need more; this file just nails the must-haves.
+# ------------------------------------------------------------------
+
+# --- Flash ---
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- PSRAM (octal, ESP32-S3-WROOM-2 / R8 variants) ---
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# Buffers below this size stay in internal RAM (DMA-capable, fast).
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+
+# --- CPU ---
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+
+# --- Networking ---
+CONFIG_LWIP_LOCAL_HOSTNAME="tesserae-esp32"
+
+# WiFi: STA + AP simultaneously (we need AP during provisioning)
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
+
+# --- TLS / HTTPS via mbedTLS bundled root CAs ---
+# Lets esp_http_client + esp-tls validate arbitrary public HTTPS endpoints
+# without us embedding any certs.
+CONFIG_ESP_TLS_USING_MBEDTLS=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# --- MQTT (5 is overkill for our use case; 3.1.1 is rock solid) ---
+CONFIG_MQTT_PROTOCOL_311=y
+
+# --- HTTP server (for SoftAP captive portal) ---
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+
+# --- Logging ---
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_COLORS=y
+
+# --- Power: we want explicit control, not the IDF power-management hooks ---
+CONFIG_PM_ENABLE=n

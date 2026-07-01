@@ -1,0 +1,7 @@
+# 16 MB flash layout for tesserae-device-firmware (S3/XIAO 16 MB targets)
+# Single factory app, no OTA. NVS holds wifi creds + last-image hash.
+#
+# Name,    Type, SubType,  Offset,  Size,    Flags
+nvs,       data, nvs,      ,        0x6000,
+phy_init,  data, phy,      ,        0x1000,
+factory,   app,  factory,  ,        14M,

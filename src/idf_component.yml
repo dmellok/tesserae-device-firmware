@@ -1,0 +1,4 @@
+## Managed components pulled by the ESP-IDF component manager on build.
+## Fetched into managed_components/ (git-ignored) and dependencies.lock.
+dependencies:
+  espressif/mdns: "^1.2.0"
