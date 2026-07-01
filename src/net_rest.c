@@ -126,9 +126,14 @@ static rest_status_t do_request(esp_http_client_method_t method, const char *url
         .method = method,
         .timeout_ms = (int)timeout_ms,
         .event_handler = http_evt,
-        .crt_bundle_attach = esp_crt_bundle_attach,   /* for https servers */
         .disable_auto_redirect = false,
     };
+    /* Attach the CA bundle only for TLS. Setting crt_bundle_attach on a plain
+     * http:// request is unnecessary and can leave the client mis-configured
+     * (observed: esp_http_client_perform -> ESP_ERR_NOT_SUPPORTED on http). */
+    if (strncmp(url, "https://", 8) == 0)
+        cfg.crt_bundle_attach = esp_crt_bundle_attach;
+
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
     if (!cli) return REST_NET_ERR;
 
@@ -140,13 +145,20 @@ static rest_status_t do_request(esp_http_client_method_t method, const char *url
     }
 
     esp_err_t err = esp_http_client_perform(cli);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "%s: transport error: %s", url, esp_err_to_name(err));
-        esp_http_client_cleanup(cli);
-        return REST_NET_ERR;
-    }
     int http = esp_http_client_get_status_code(cli);
     esp_http_client_cleanup(cli);
+
+    /* esp_http_client_perform() returns an error for some statuses it tries to
+     * auto-handle -- notably a 401 with no WWW-Authenticate header (which a
+     * Bearer-token API never sends), yielding ESP_ERR_NOT_SUPPORTED. But the
+     * status line + body were received, so if we got a status code we use it;
+     * only a response-less failure (http <= 0) is a real transport error.
+     * Without this, a 401 (e.g. a revoked token) surfaces as REST_NET_ERR and
+     * the token is never wiped / re-onboarded. */
+    if (http <= 0) {
+        ESP_LOGW(TAG, "%s: transport error: %s", url, esp_err_to_name(err));
+        return REST_NET_ERR;
+    }
 
     if (s_overflow) ESP_LOGW(TAG, "response truncated at %d bytes", REST_RX_MAX);
     s_rx[s_rx_len] = '\0';
