@@ -169,10 +169,17 @@ portal while iterating.
 
 ## Credits
 
-Hardware facts, pin maps, and init/refresh sequences were derived from
-[bitbank2/bb_epaper](https://github.com/bitbank2/bb_epaper) and
-[bitbank2/FastEPD](https://github.com/bitbank2/FastEPD), the Waveshare 13.3E6
-ESP-IDF demo, and the [Pimoroni Inky](https://github.com/pimoroni/inky) drivers.
+The panel hardware facts, pin maps, and init/refresh sequences build on the
+work of several open-source projects, with thanks:
+
+- **[usetrmnl/trmnl-firmware](https://github.com/usetrmnl/trmnl-firmware)** —
+  reference firmware for the Seeed reTerminal e-paper devices.
+- **[bitbank2/bb_epaper](https://github.com/bitbank2/bb_epaper)** and
+  **[bitbank2/FastEPD](https://github.com/bitbank2/FastEPD)** — the underlying
+  panel/controller drivers (Spectra-6, UC8179 mono, IT8951 grayscale).
+- the **Waveshare 13.3E6** ESP-IDF demo and the
+  **[Pimoroni Inky](https://github.com/pimoroni/inky)** drivers.
+
 Bundled third-party code: the public-domain font8x8, and the MIT
 [qrcodegen](https://github.com/nayuki/QR-Code-generator) (`src/vendor/`).
 
