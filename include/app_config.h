@@ -3,7 +3,7 @@
  *
  * For local credential overrides (dev shortcut to bypass the captive
  * portal), copy include/secrets.example.h to include/secrets.h and fill
- * in the WIFI_DEFAULT_* / MQTT_DEFAULT_* macros there. secrets.h is
+ * in the WIFI_DEFAULT_* / REST_DEFAULT_* macros there. secrets.h is
  * git-ignored.
  */
 #pragma once
@@ -39,6 +39,15 @@
  * file still compiles outside PlatformIO. */
 #ifndef FW_VERSION
 #define FW_VERSION         "0.0.0-dev"
+#endif
+
+/* Device "kind" reported to Tesserae at onboarding (discover/register). It
+ * selects the server-side renderer: "esp32_client" packs a portrait 1200x1600
+ * 4bpp Spectra-6 frame, which suits both the Waveshare 13.3E6 and the E1004.
+ * A board with a different native geometry/colour mode can override this in its
+ * board header before app_config.h pulls it in. */
+#ifndef TESSERAE_DEVICE_KIND
+#define TESSERAE_DEVICE_KIND  "esp32_client"
 #endif
 
 /* How long to deep-sleep between MQTT checks. 1 minute is the short
@@ -83,23 +92,12 @@
 #define WIFI_DEFAULT_PASS   ""
 #endif
 
-#ifndef MQTT_DEFAULT_URI
-#define MQTT_DEFAULT_URI    "mqtt://homeassistant.local:1883"
-#endif
-/* Per-device topic namespace is tesserae/<device_id>/{frame/bin,config,status}.
- * device_id defaults to "esp32" (matches Tesserae's built-in esp32_client kind);
- * a second physical panel just needs a different id, set via the portal. */
-#ifndef MQTT_DEFAULT_DEVICE_ID
-#define MQTT_DEFAULT_DEVICE_ID  "esp32"
-#endif
-#ifndef MQTT_DEFAULT_USER
-#define MQTT_DEFAULT_USER   ""
-#endif
-#ifndef MQTT_DEFAULT_PASS
-#define MQTT_DEFAULT_PASS   ""
-#endif
-#ifndef MQTT_CLIENT_ID
-#define MQTT_CLIENT_ID      "tesserae-esp32-bin-1"
+/* REST transport: the device registers against this Tesserae server URL over
+ * <server_url>/api/v1/device/. Normally set via the captive portal; a dev
+ * default can be provided in secrets.h. An optional REST_DEFAULT_PAIRING_CODE
+ * opts into admin-gated register instead of zero-touch discover. */
+#ifndef REST_DEFAULT_SERVER_URL
+#define REST_DEFAULT_SERVER_URL   ""
 #endif
 
 /* Dev shortcut: define DEV_DISABLE_SLEEP (in secrets.h) to swap the
@@ -111,29 +109,15 @@
 #define DEV_LOOP_INTERVAL_S 10
 #endif
 
-/* NVS namespaces / keys */
+/* NVS namespaces / keys. WiFi creds live in "wifi"; REST transport config
+ * (server URL, device token, pairing code, device id, frame ETag, sleep_s)
+ * lives in "rest" and is owned by rest_config.[ch]. */
 #define NVS_NS_WIFI        "wifi"
 #define NVS_KEY_SSID       "ssid"
 #define NVS_KEY_PASS       "pass"
 
-#define NVS_NS_MQTT          "mqtt"
-#define NVS_KEY_MQTT_URI     "uri"
-#define NVS_KEY_MQTT_TOPIC   "topic"      /* legacy; read once at migration, then erased */
-#define NVS_KEY_MQTT_DEVICE_ID "device_id"
-#define NVS_KEY_MQTT_USER    "user"
-#define NVS_KEY_MQTT_PASS    "pass"
-
-/* device_id charset/length: 2-32 chars, [a-z0-9_-], must start with a letter.
- * Keep in sync with Tesserae's device.json validation. */
-#define DEVICE_ID_MIN_LEN   2
-#define DEVICE_ID_MAX_LEN   32
-
-#define NVS_NS_STATE       "state"
-#define NVS_KEY_LAST_HASH  "last_hash"   /* sha256 of last rendered URL */
-#define NVS_KEY_SLEEP_S    "sleep_s"     /* user-configured deep-sleep duration */
-
-/* Sanity bounds on sleep interval. The lower bound stops a publisher
- * accidentally turning the device into a 1-Hz spinner; the upper bound
- * is just "this is probably a bug". */
+/* Sanity bounds on the deep-sleep interval. The lower bound stops the server
+ * accidentally turning the device into a spinner; the upper bound is just
+ * "this is probably a bug". */
 #define SLEEP_INTERVAL_MIN_S  30
 #define SLEEP_INTERVAL_MAX_S  (7 * 24 * 60 * 60)

@@ -21,22 +21,19 @@
 #include "driver/usb_serial_jtag.h"
 #include "esp_attr.h"
 #include "esp_log.h"
-#include "esp_netif_sntp.h"
 #include "esp_sleep.h"
-#include "esp_sntp.h"
 #include "esp_system.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "mbedtls/sha256.h"
-#include "nvs.h"
 
 #include "app_config.h"
 #include "epd_driver.h"
-#include "heartbeat.h"
 #include "image_decoder.h"
 #include "image_fetcher.h"
-#include "mqtt_handler.h"
+#include "net_rest.h"
 #include "provisioning.h"
+#include "rest_config.h"
 #include "splash.h"
 #include "wifi_manager.h"
 
@@ -80,57 +77,39 @@ static bool detect_settings_mode(esp_reset_reason_t reason)
     return false;
 }
 
-/* ---------- "should I bother re-rendering?" ---------- */
+/* ---------- REST cycle helpers ---------- */
 
-static void sha256_hex(const char *in, char out_hex[65])
+/* Resolve a (possibly relative) frame URL against the server origin. Ported
+ * from the pico-bin client -- the /frame endpoint may return a path-only url. */
+static void resolve_url(const char *server, const char *u, char *out, size_t cap)
 {
-    uint8_t digest[32];
-    mbedtls_sha256((const unsigned char *)in, strlen(in), digest, 0);
-    for (int i = 0; i < 32; i++) {
-        static const char H[] = "0123456789abcdef";
-        out_hex[i*2]   = H[(digest[i] >> 4) & 0xF];
-        out_hex[i*2+1] = H[digest[i] & 0xF];
+    if (strncmp(u, "http://", 7) == 0 || strncmp(u, "https://", 8) == 0) {
+        snprintf(out, cap, "%s", u);
+        return;
     }
-    out_hex[64] = '\0';
+    char origin[200];
+    snprintf(origin, sizeof origin, "%s", server);
+    char *p = strstr(origin, "://");
+    p = p ? p + 3 : origin;
+    char *sl = strchr(p, '/');
+    if (sl) *sl = '\0';                      /* drop any path on the server_url */
+    snprintf(out, cap, "%s%s%s", origin, (u[0] == '/') ? "" : "/", u);
 }
 
-static bool hash_matches_stored(const char *hash)
+static int current_rssi(void)
 {
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS_STATE, NVS_READONLY, &h) != ESP_OK) return false;
-    char prev[65] = {0};
-    size_t len = sizeof(prev);
-    esp_err_t err = nvs_get_str(h, NVS_KEY_LAST_HASH, prev, &len);
-    nvs_close(h);
-    return err == ESP_OK && strcmp(prev, hash) == 0;
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return 0;
+    return ap.rssi;
 }
 
-static void store_hash(const char *hash)
+/* Effective deep-sleep interval: the REST-config value (server-driven via
+ * next_poll_s / sleep_interval_s), clamped to sane bounds. */
+static int effective_sleep_s(void)
 {
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS_STATE, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_str(h, NVS_KEY_LAST_HASH, hash);
-    nvs_commit(h);
-    nvs_close(h);
-}
-
-/* Read the MQTT-configured sleep interval from NVS, falling back to the
- * compile-time SLEEP_INTERVAL_S default. Clamped defensively in case
- * something wrote a bad value before the bounds check existed. */
-static int load_sleep_interval_s(void)
-{
-    int32_t v = 0;
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS_STATE, NVS_READONLY, &h) == ESP_OK) {
-        esp_err_t err = nvs_get_i32(h, NVS_KEY_SLEEP_S, &v);
-        nvs_close(h);
-        if (err == ESP_OK &&
-            v >= SLEEP_INTERVAL_MIN_S &&
-            v <= SLEEP_INTERVAL_MAX_S) {
-            return v;
-        }
-    }
-    return SLEEP_INTERVAL_S;
+    int32_t v = rest_config_get()->sleep_s;
+    if (v < SLEEP_INTERVAL_MIN_S || v > SLEEP_INTERVAL_MAX_S) return SLEEP_INTERVAL_S;
+    return v;
 }
 
 /* ---------- deep sleep ---------- */
@@ -173,10 +152,10 @@ static void sleep_forever_or_until_timer(void)
         esp_restart();
     }
 
-    int interval = load_sleep_interval_s();
+    int interval = effective_sleep_s();
     ESP_LOGI(TAG, "on battery; deep sleep for %d s%s",
              interval,
-             (interval == SLEEP_INTERVAL_S) ? " (default)" : " (set via mqtt)");
+             (interval == SLEEP_INTERVAL_S) ? " (default)" : " (server-driven)");
     /* epd_sleep() already dropped the panel power rail; no extra cleanup
      * needed before going down. */
     esp_sleep_enable_timer_wakeup((uint64_t)interval * 1000000ULL);
@@ -230,85 +209,85 @@ static void maybe_show_splash(esp_reset_reason_t reset_reason, bool has_creds)
     splash_show_logo();
 }
 
-/* ---------- wall-clock time + heartbeat ---------- */
+/* ---------- REST onboarding ---------- */
 
-/* Lazy NTP sync. The RTC slow clock keeps running through deep sleep, so the
- * system time set by SNTP normally persists across wakes -- timer wakes can
- * skip the round-trip. But if a previous sync ever landed badly (router
- * intercepting NTP, transient pool.ntp.org weirdness), that error would
- * propagate forever, so cold boots (POWERON / EXT reset) always force a
- * fresh sync regardless of what the RTC currently thinks. That gives the
- * user a recovery path: power-cycle or RESET the device. */
-static void ensure_time_synced(int wait_ms, bool force_resync)
-{
-    if (!force_resync && time(NULL) > 1700000000LL) return;
-
-    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
-    esp_err_t err = esp_netif_sntp_init(&cfg);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "sntp init failed: %s; sleep_until will be omitted",
-                 esp_err_to_name(err));
-        return;
-    }
-
-    err = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(wait_ms));
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "ntp synced; epoch=%lld", (long long)time(NULL));
-    } else {
-        ESP_LOGW(TAG, "ntp sync timeout (%dms); sleep_until will be omitted",
-                 wait_ms);
-    }
-    esp_netif_sntp_deinit();
-}
-
-/* Format + publish the heartbeat right before sleep so sleep_until is
- * wall-clock-accurate (Tesserae's smart-sync wire contract). Caller must
- * have WiFi up; this function brings MQTT up one-shot, publishes retained
- * QoS 1, waits for the PUBACK, tears MQTT down. Failures are logged and
- * swallowed -- a missed heartbeat just means the server's next prediction
- * falls back to its tolerance-window math for one cycle.
- *
- * Defensive checks before shipping sleep_until:
- *   - sane-epoch window: now must look like a real wall-clock time, between
- *     2023-11 and 2039-09. Rejects the ESP-IDF default 2016 epoch when NTP
- *     has never synced, and rejects a misconfigured SNTP server returning a
- *     wild future date.
- *   - cross-check: (sleep_until - now) must equal sleep_s within +-5 s.
- *     Tautological with the current `now + sleep_s` math but catches future
- *     refactors that compute sleep_until any other way. Server-side
- *     Tesserae v0.43.1+ has its own fallback if these disagree by >30 s,
- *     but we'd rather not ship the wrong value in the first place. */
+/* Sanity window for the wall clock (set from each REST response's Date header):
+ * now must look like a real time before we ship a sleep_until in the status. */
 #define EPOCH_REASONABLE_MIN 1700000000LL   /* 2023-11-14 */
 #define EPOCH_REASONABLE_MAX 2200000000LL   /* 2039-09-13 */
 
-static void publish_heartbeat(int sleep_s, esp_reset_reason_t reset_reason)
+/* First-boot onboarding: obtain a device token. Returns true once we hold one
+ * (continue the cycle); false means "no token yet", with a backoff written to
+ * rest_config's sleep_s for the caller to sleep on. Zero-touch discover/claim
+ * by default (admin clicks Register in Tesserae, no typing on the device);
+ * a stored pairing code opts into strict admin-gated register. Ported from
+ * tesserae-device-pico-bin main.c rest_bootstrap(). */
+static bool rest_bootstrap(uint16_t pw, uint16_t ph, const char *mac, bool *dirty)
 {
-    char hb[320];
-    time_t now = time(NULL);
-    time_t sleep_until = 0;
+    const rest_config_t *c = rest_config_get();
+    if (c->device_token[0] != '\0') return true;   /* already bootstrapped */
 
-    if (now > EPOCH_REASONABLE_MIN && now < EPOCH_REASONABLE_MAX) {
-        sleep_until = now + sleep_s;
-
-        long delta = (long)(sleep_until - now);
-        if (delta < (long)sleep_s - 5 || delta > (long)sleep_s + 5) {
-            ESP_LOGW(TAG,
-                "sleep_until cross-check failed: delta=%ld, sleep_s=%d; omitting",
-                delta, sleep_s);
-            sleep_until = 0;
+    if (c->pairing_code[0] != '\0') {
+        rest_register_out_t ro;
+        rest_status_t rs = rest_register(pw, ph, mac, FW_VERSION, &ro, 10000);
+        if (rs == REST_OK) {
+            rest_config_set_device_token(ro.token);
+            /* Adopt the server's canonical device id (MAC-matched; the token is
+             * bound to it -- frame/status URLs must use it or the server 403s). */
+            if (ro.device_id[0] && strcmp(ro.device_id, rest_config_device_id()) != 0)
+                rest_config_set_device_id(ro.device_id);
+            rest_config_set_pairing("");            /* one-shot; clear on success */
+            if (ro.sleep_interval_s > 0) rest_config_set_sleep_s(ro.sleep_interval_s);
+            *dirty = true;
+            ESP_LOGI(TAG, "registered via pairing code; token stored (id=%s)",
+                     rest_config_device_id());
+            return true;
         }
-    } else if (now != 0) {
-        ESP_LOGW(TAG,
-            "wall-clock looks bogus (epoch=%lld); omitting sleep_until",
-            (long long)now);
+        int32_t backoff = (c->sleep_s > 0) ? c->sleep_s : 900;
+        if (rs == REST_UNAUTH || rs == REST_FORBIDDEN) {
+            backoff = 3600;
+            ESP_LOGW(TAG, "register rejected (%d); sleeping 1h to re-pair", rs);
+        } else if (rs == REST_RATELIMIT) {
+            backoff = (ro.retry_after_s > 0) ? ro.retry_after_s : 3600;
+            ESP_LOGW(TAG, "register rate-limited; backoff %lds", (long)backoff);
+        } else {
+            ESP_LOGW(TAG, "register failed (%d); retry next cycle", rs);
+        }
+        rest_config_set_sleep_s(backoff);
+        return false;
     }
 
-    heartbeat_format_json(hb, sizeof hb, sleep_s, reset_reason, sleep_until);
-
-    esp_err_t err = mqtt_publish_status(hb);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "heartbeat publish failed: %s", esp_err_to_name(err));
+    /* Zero-touch: announce via discover and claim the token once the admin
+     * clicks Register. Retried every wake, by design (no caching). */
+    rest_discover_out_t dd;
+    rest_status_t ds = rest_discover(pw, ph, mac, FW_VERSION, &dd, 10000);
+    if (ds == REST_OK && dd.registered) {
+        rest_config_set_device_token(dd.token);
+        if (dd.device_id[0] && strcmp(dd.device_id, rest_config_device_id()) != 0) {
+            ESP_LOGI(TAG, "adopting server device id '%s' (was '%s')",
+                     dd.device_id, rest_config_device_id());
+            rest_config_set_device_id(dd.device_id);
+        }
+        if (dd.sleep_interval_s > 0) rest_config_set_sleep_s(dd.sleep_interval_s);
+        *dirty = true;
+        ESP_LOGI(TAG, "claimed token via discover; bootstrap complete (id=%s)",
+                 rest_config_device_id());
+        return true;
     }
+    int32_t backoff;
+    if (ds == REST_OK) {            /* registered:false, awaiting admin Register */
+        backoff = (dd.retry_after_s > 0) ? dd.retry_after_s : 30;
+        ESP_LOGI(TAG, "discovered, waiting for admin to Register; retry in %lds",
+                 (long)backoff);
+    } else if (ds == REST_RATELIMIT) {
+        backoff = (dd.retry_after_s > 0) ? dd.retry_after_s : 60;
+        ESP_LOGW(TAG, "discover rate-limited; backoff %lds", (long)backoff);
+    } else {
+        backoff = 30;   /* unreachable (e.g. wrong server URL): retry soon */
+        ESP_LOGW(TAG, "discover failed (%d); retry in %lds", ds, (long)backoff);
+    }
+    rest_config_set_sleep_s(backoff);
+    return false;
 }
 
 void app_main(void)
@@ -334,6 +313,7 @@ void app_main(void)
 #endif
 
     ESP_ERROR_CHECK(wifi_manager_init());
+    rest_config_load();
 
     /* Skip the 30 s splash when entering settings mode -- the user is waiting
      * on the editor, not a panel sanity check. */
@@ -342,7 +322,11 @@ void app_main(void)
         maybe_show_splash(reset_reason, have_creds);
     }
 
-    if (!have_creds) {
+    /* The captive portal collects both WiFi and the Tesserae server URL, so a
+     * device missing either is not yet usable -- send it to provisioning. */
+    if (!have_creds || !rest_config_has_server()) {
+        if (have_creds)
+            ESP_LOGW(TAG, "wifi set but no Tesserae server URL; opening portal");
         run_provisioning_then_reboot();
         return;
     }
@@ -370,91 +354,114 @@ void app_main(void)
         return;
     }
 
-    int sleep_s = load_sleep_interval_s();
+    /* ---- one Tesserae cycle over the REST API ----
+     * Bootstrap a token if needed, GET the frame (ETag/304 dedup), download +
+     * decode, POST status (which drives the next sleep via next_poll_s), then
+     * paint with the radio down. The wall clock is set from each response's
+     * HTTP Date header, so no SNTP round-trip is needed. Mirrors the pico-bin
+     * do_cycle_rest ordering. */
+    const rest_config_t *c = rest_config_get();
+    const uint16_t pw = EPD_WIDTH, ph = EPD_HEIGHT;   /* portrait-native 1200x1600 */
+    char mac[18];
+    rest_config_mac(mac, sizeof mac);
 
-    /* Force a fresh NTP sync on any cold boot so a previously-bad sync
-     * (network-side issue, transient pool weirdness) is recoverable by
-     * power-cycling or hitting RESET. Timer wakes from deep sleep reuse
-     * the RTC's preserved time and skip the round-trip. If sync fails,
-     * sleep_until is omitted from the heartbeat and the server's
-     * smart-sync scheduler falls back to its tolerance-window math. */
-    bool cold_boot = (reset_reason == ESP_RST_POWERON ||
-                      reset_reason == ESP_RST_EXT);
-    ensure_time_synced(5000, cold_boot);
+    bool cfg_dirty  = false;
+    bool skip_paint = false;
+    uint8_t *frame  = NULL;
+    char new_etag[80] = {0};
 
-    /* Fetch the retained URL only -- the heartbeat publishes at the END
-     * (after paint, if any) so its sleep_until reflects the actual sleep
-     * about to start instead of leading it by ~30 s of paint time. */
-    mqtt_job_t job;
-    err = mqtt_fetch_retained(&job);
-    bool have_url = (err == ESP_OK && job.url[0]);
-    if (!have_url) {
-        ESP_LOGI(TAG, "no retained job (%s)", esp_err_to_name(err));
-    }
-
-    bool need_paint = false;
-    char hash[65];
-    if (have_url) {
-        sha256_hex(job.url, hash);
-        if (hash_matches_stored(hash)) {
-            ESP_LOGI(TAG, "url unchanged since last render; skipping refresh");
-        } else {
-            need_paint = true;
+    /* 1. Bootstrap a device token (discover/claim, or register with a code). */
+    if (c->device_token[0] == '\0') {
+        if (!rest_bootstrap(pw, ph, mac, &cfg_dirty)) {
+            /* No token yet; rest_config sleep_s holds the backoff. The common
+             * "waiting for admin" retry is not persisted (avoid flash wear);
+             * only persist if a code register/adopt changed something. */
+            if (cfg_dirty) rest_config_save();
+            wifi_sta_stop();
+            sleep_forever_or_until_timer();
+            return;
         }
+        c = rest_config_get();
     }
 
-    if (need_paint) {
+    /* 2. Frame metadata, with If-None-Match for the ETag/304 dedup. */
+    rest_frame_out_t fo;
+    rest_status_t fs = rest_get_frame(&fo, 10000);
+    if (fs == REST_OK) {
+        snprintf(new_etag, sizeof new_etag, "%s", fo.etag);
+        char fullurl[512];
+        resolve_url(c->server_url, fo.url, fullurl, sizeof fullurl);
         fetched_image_t img;
-        err = image_fetch(job.url, &img);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "fetch failed: %s", esp_err_to_name(err));
-            publish_heartbeat(sleep_s, reset_reason);   /* wifi still up */
-            wifi_sta_stop();
-            sleep_forever_or_until_timer();
-            return;
+        if (image_fetch(fullurl, &img) == ESP_OK) {
+            if (image_decode_to_frame(&img, fullurl, &frame) != ESP_OK) frame = NULL;
+            free(img.data);
+        } else {
+            ESP_LOGE(TAG, "frame fetch failed for %s", fullurl);
         }
+    } else if (fs == REST_NOT_MODIFIED) {
+        ESP_LOGI(TAG, "frame unchanged (304); skipping paint");
+        skip_paint = true;
+    } else if (fs == REST_NO_CONTENT) {
+        ESP_LOGI(TAG, "no frame rendered yet (204); skipping paint");
+        skip_paint = true;
+    } else if (fs == REST_UNAUTH || fs == REST_FORBIDDEN) {
+        ESP_LOGW(TAG, "frame auth failed (%d); wiping token to re-register", fs);
+        rest_config_set_device_token("");
+        cfg_dirty = true;
+    } else {
+        ESP_LOGW(TAG, "frame request failed (%d); keeping last image", fs);
+    }
 
-        uint8_t *frame = NULL;
-        err = image_decode_to_frame(&img, job.url, &frame);
-        free(img.data);
-        if (err != ESP_OK || !frame) {
-            ESP_LOGE(TAG, "decode failed: %s", esp_err_to_name(err));
-            publish_heartbeat(sleep_s, reset_reason);   /* wifi still up */
-            wifi_sta_stop();
-            sleep_forever_or_until_timer();
-            return;
+    /* 3. Status heartbeat (only while we still hold a token). next_poll_s from
+     * the response drives this cycle's deep sleep. */
+    if (rest_config_get()->device_token[0] != '\0') {
+        char ip[16] = {0};
+        wifi_manager_get_sta_ip(ip, sizeof ip);
+        int32_t  interval = rest_config_get()->sleep_s;
+        time_t   now      = time(NULL);
+        uint32_t sleep_until = (now > EPOCH_REASONABLE_MIN &&
+                                now < EPOCH_REASONABLE_MAX && interval > 0)
+                                   ? (uint32_t)(now + interval) : 0;
+        rest_status_out_t so;
+        rest_status_t ss = rest_post_status(current_rssi(), ip, pw, ph,
+                                            interval, sleep_until, FW_VERSION, &so, 8000);
+        if (ss == REST_OK) {
+            if (so.sleep_interval_s > 0 && so.sleep_interval_s != rest_config_get()->sleep_s) {
+                rest_config_set_sleep_s(so.sleep_interval_s);
+                cfg_dirty = true;
+            }
+            if (so.next_poll_s > 0) rest_config_set_sleep_s(so.next_poll_s);  /* drives this sleep */
+        } else {
+            ESP_LOGW(TAG, "status post failed (%d)", ss);
+            if (ss == REST_UNAUTH || ss == REST_FORBIDDEN) {
+                rest_config_set_device_token(""); cfg_dirty = true;
+            }
         }
+    }
 
-        /* Free WiFi for the ~30 s panel refresh -- the single biggest
-         * battery saving in the render path (~80 mA otherwise). */
-        wifi_sta_stop();
+    /* 4. Radio down before the slow (~30 s) refresh -- the biggest battery
+     * saving in the render path (~80 mA otherwise). */
+    wifi_sta_stop();
 
+    if (skip_paint) {
+        /* nothing to paint */
+    } else if (frame != NULL) {
+        ESP_LOGI(TAG, "painting downloaded frame (~30 s)...");
         ESP_ERROR_CHECK(epd_port_init());
         epd_init();
         epd_display(frame);
         epd_sleep();
         free(frame);
-
-        store_hash(hash);
-
-        /* Bring WiFi back up just long enough to publish the final
-         * heartbeat. ~3-5 s × ~80 mA = ~0.07-0.11 mAh extra per render
-         * wake -- the cost of wall-clock-accurate sleep_until for
-         * Tesserae's smart-sync scheduler. */
-        ESP_LOGI(TAG, "render OK; reconnecting wifi for post-paint heartbeat");
-        if (wifi_sta_connect_stored() == ESP_OK) {
-            publish_heartbeat(sleep_s, reset_reason);
-        } else {
-            ESP_LOGW(TAG, "post-paint wifi reconnect failed; heartbeat skipped");
-        }
-        wifi_sta_stop();
-        sleep_forever_or_until_timer();
-        return;
+        if (new_etag[0]) { rest_config_set_frame_etag(new_etag); cfg_dirty = true; }
+    } else if (rest_config_get()->last_frame_etag[0] != '\0') {
+        ESP_LOGI(TAG, "no frame this cycle; keeping last image");
+    } else {
+        ESP_LOGI(TAG, "no frame yet; leaving panel as-is");
     }
 
-    /* Hash-skip or no-URL path: WiFi+MQTT just came up for the fetch and
-     * the radio is still on; publish heartbeat without a reconnect cycle. */
-    publish_heartbeat(sleep_s, reset_reason);
-    wifi_sta_stop();
+    /* 5. Persist any config changes, then sleep (interval from rest_config). */
+    if (cfg_dirty) {
+        ESP_LOGI(TAG, "config %s", rest_config_save() == ESP_OK ? "saved" : "SAVE FAILED");
+    }
     sleep_forever_or_until_timer();
 }

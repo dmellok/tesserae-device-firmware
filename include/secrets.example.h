@@ -20,17 +20,13 @@
 // #define WIFI_DEFAULT_SSID  "your-network"
 // #define WIFI_DEFAULT_PASS  "your-password"     /* "" for open networks */
 
-/* ---- MQTT ---------------------------------------------------------- */
-// #define MQTT_DEFAULT_URI          "mqtt://192.168.1.50:1883"   /* mqtts:// for TLS */
-// #define MQTT_DEFAULT_USER         "broker-user"     /* leave undefined if open */
-// #define MQTT_DEFAULT_PASS         "broker-pass"
+/* ---- Tesserae REST server ------------------------------------------ */
+// Base URL of your Tesserae server. The device registers over REST at
+// <server_url>/api/v1/device/ and the admin approves it in Settings -> Devices.
+// #define REST_DEFAULT_SERVER_URL   "http://192.168.1.50:8765"   /* https:// also works */
 //
-// device_id is the topic-namespace prefix: tesserae/<device_id>/{frame/bin,
-// config,status}. Defaults to "esp32" (matches Tesserae's built-in
-// esp32_client kind). Set a distinct id per physical panel on a shared broker.
-// #define MQTT_DEFAULT_DEVICE_ID    "esp32"
-//
-// #define MQTT_CLIENT_ID            "tesserae-esp32-bin-1"     /* unique per device on the broker */
+// Optional: opt into strict admin-gated register instead of zero-touch discover.
+// #define REST_DEFAULT_PAIRING_CODE "abc123"
 
 /* ---- Dev mode ------------------------------------------------------ */
 /* The firmware auto-detects a connected USB host (laptop) and skips deep

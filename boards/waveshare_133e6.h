@@ -40,6 +40,11 @@
 #define EPD_COL_BLUE    0x5
 #define EPD_COL_GREEN   0x6
 
+/* Battery sense (Waveshare 01_ADC_Test reference): 1:3 divider into GPIO8 =
+ * ADC1 channel 7. Enables battery_mv/battery_pct in the status heartbeat. */
+#define BOARD_BATTERY_ADC_CHANNEL  ADC_CHANNEL_7
+#define BOARD_BATTERY_DIVIDER      3
+
 /* ------------------------------------------------------------------ */
 /* MCU tier                                                            */
 /* ESP32-S3 + octal PSRAM. Framebuffers live in SPIRAM.               */

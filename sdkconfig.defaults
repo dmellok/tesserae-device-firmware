@@ -23,6 +23,12 @@ CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_FREERTOS_HZ=1000
 
+# --- Main task stack ---
+# app_main runs the whole cycle on the main task: provisioning (httpd + mDNS +
+# DNS bringup) or the REST path (esp_http_client + TLS + cJSON + image decode).
+# The 3584-byte default overflows; 8 KB gives comfortable headroom.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
 # --- Networking ---
 CONFIG_LWIP_LOCAL_HOSTNAME="tesserae-esp32"
 

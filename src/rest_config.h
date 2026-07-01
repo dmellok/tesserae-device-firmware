@@ -1,0 +1,58 @@
+/*
+ * rest_config.h: NVS-backed configuration for the Tesserae REST transport.
+ *
+ * Replaces the MQTT config (mqtt_config.[ch]). Holds the server origin, the
+ * device bearer token, an optional one-shot pairing code, the canonical device
+ * id (adopted from the server, which matches devices by MAC), the cached frame
+ * ETag (for If-None-Match dedup across wakes), and the deep-sleep interval.
+ *
+ * Modelled on tesserae-device-pico-bin's config_t: the whole config is loaded
+ * into a RAM cache at boot; mutators update the cache; rest_config_save()
+ * persists it. Stored under NVS namespace "rest"; WiFi creds stay in "wifi".
+ */
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include "esp_err.h"
+
+typedef struct {
+    char    server_url[160];      /* e.g. http://tesserae.local:8765 (no trailing slash) */
+    char    device_token[256];    /* bearer token, set after discover/register */
+    char    pairing_code[16];     /* set pre-register, cleared on success */
+    char    device_id[33];        /* canonical id (server-assigned, MAC-matched) */
+    char    last_frame_etag[80];  /* cached across wakes for If-None-Match */
+    int32_t sleep_s;              /* deep-sleep interval, seconds */
+} rest_config_t;
+
+/* Load config from NVS into the RAM cache. Never fails; missing keys default
+ * (sleep_s -> SLEEP_INTERVAL_S, others empty / compile-time defaults). */
+void rest_config_load(void);
+
+/* The in-RAM cache; never NULL (call rest_config_load() first). */
+const rest_config_t *rest_config_get(void);
+
+/* Persist the RAM cache to NVS. Call only when something changed (flash wear).
+ * Radio may be up (NVS on ESP32 is safe with WiFi, unlike the pico's flash). */
+esp_err_t rest_config_save(void);
+
+/* Effective device id: the cached device_id if set, else a stable default
+ * "esp32_" + hex(WiFi-STA MAC). Cached; never NULL. */
+const char *rest_config_device_id(void);
+
+/* The base MAC as "aa:bb:cc:dd:ee:ff" (lowercase). The server matches the
+ * device by this, independent of device_id. */
+void rest_config_mac(char *out, size_t cap);
+
+/* True if a REST server URL is configured (i.e. the device is provisioned). */
+bool rest_config_has_server(void);
+
+/* Mutators: update the RAM cache. NULL leaves a field unchanged; "" clears it.
+ * Call rest_config_save() to persist. */
+void rest_config_set_server(const char *url);
+void rest_config_set_pairing(const char *code);
+void rest_config_set_device_id(const char *id);
+void rest_config_set_device_token(const char *token);
+void rest_config_set_frame_etag(const char *etag);
+void rest_config_set_sleep_s(int32_t s);

@@ -5,11 +5,11 @@ idf_component_register(
         "panel/registry.c"
         "panel/drivers/spectra6_spi_dual.c"
         "panel/drivers/spectra6_t133a01_dual.c"
-        "heartbeat.c"
+        "battery.c"
         "wifi_manager.c"
         "provisioning.c"
-        "mqtt_config.c"
-        "mqtt_handler.c"
+        "net_rest.c"
+        "rest_config.c"
         "image_fetcher.c"
         "image_decoder.c"
         "splash.c"
@@ -31,7 +31,7 @@ idf_component_register(
         esp_netif
         esp_wifi
         esp-tls
-        mqtt
+        json
         nvs_flash
         mbedtls
         lwip

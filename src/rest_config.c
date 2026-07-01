@@ -1,0 +1,137 @@
+#include "rest_config.h"
+#include "app_config.h"
+
+#include <string.h>
+
+#include "esp_log.h"
+#include "esp_mac.h"
+#include "nvs.h"
+
+static const char *TAG = "rest_cfg";
+
+/* NVS namespace + keys for the REST transport. */
+#define NVS_NS_REST        "rest"
+#define NVS_KEY_SERVER     "server"
+#define NVS_KEY_TOKEN      "token"
+#define NVS_KEY_PAIRING    "pairing"
+#define NVS_KEY_DEVID      "devid"
+#define NVS_KEY_ETAG       "etag"
+#define NVS_KEY_SLEEP_S    "sleep_s"
+
+static rest_config_t s_cfg;
+static bool          s_loaded;
+static char          s_devid[33];   /* cached "esp32_<mac>" default */
+
+/* Trim a trailing '/' off the server origin so path concatenation is clean. */
+static void strip_trailing_slash(char *s)
+{
+    size_t n = strlen(s);
+    while (n > 0 && s[n - 1] == '/') s[--n] = '\0';
+}
+
+static void set_str(char *dst, size_t cap, const char *src)
+{
+    if (!src) return;                       /* NULL: leave unchanged */
+    strncpy(dst, src, cap - 1);
+    dst[cap - 1] = '\0';
+}
+
+static void load_str(nvs_handle_t h, const char *key, char *dst, size_t cap)
+{
+    size_t len = cap;
+    if (nvs_get_str(h, key, dst, &len) != ESP_OK) dst[0] = '\0';
+}
+
+void rest_config_load(void)
+{
+    memset(&s_cfg, 0, sizeof s_cfg);
+    s_cfg.sleep_s = SLEEP_INTERVAL_S;
+
+    /* secrets.h dev defaults, if present (server_url only; token is per-device). */
+#ifdef REST_DEFAULT_SERVER_URL
+    set_str(s_cfg.server_url, sizeof s_cfg.server_url, REST_DEFAULT_SERVER_URL);
+#endif
+#ifdef REST_DEFAULT_PAIRING_CODE
+    set_str(s_cfg.pairing_code, sizeof s_cfg.pairing_code, REST_DEFAULT_PAIRING_CODE);
+#endif
+
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS_REST, NVS_READONLY, &h) == ESP_OK) {
+        load_str(h, NVS_KEY_SERVER,  s_cfg.server_url,     sizeof s_cfg.server_url);
+        load_str(h, NVS_KEY_TOKEN,   s_cfg.device_token,   sizeof s_cfg.device_token);
+        load_str(h, NVS_KEY_PAIRING, s_cfg.pairing_code,   sizeof s_cfg.pairing_code);
+        load_str(h, NVS_KEY_DEVID,   s_cfg.device_id,      sizeof s_cfg.device_id);
+        load_str(h, NVS_KEY_ETAG,    s_cfg.last_frame_etag,sizeof s_cfg.last_frame_etag);
+        int32_t s = 0;
+        if (nvs_get_i32(h, NVS_KEY_SLEEP_S, &s) == ESP_OK && s > 0) s_cfg.sleep_s = s;
+        nvs_close(h);
+    }
+
+    strip_trailing_slash(s_cfg.server_url);
+    s_loaded = true;
+    ESP_LOGI(TAG, "loaded server='%s' id='%s' token=%s etag=%s sleep_s=%ld",
+             s_cfg.server_url[0] ? s_cfg.server_url : "(none)",
+             rest_config_device_id(),
+             s_cfg.device_token[0] ? "set" : "(none)",
+             s_cfg.last_frame_etag[0] ? "set" : "(none)",
+             (long)s_cfg.sleep_s);
+}
+
+const rest_config_t *rest_config_get(void)
+{
+    if (!s_loaded) rest_config_load();
+    return &s_cfg;
+}
+
+esp_err_t rest_config_save(void)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS_REST, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+
+    err = nvs_set_str(h, NVS_KEY_SERVER, s_cfg.server_url);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_TOKEN,   s_cfg.device_token);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_PAIRING, s_cfg.pairing_code);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DEVID,   s_cfg.device_id);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_ETAG,    s_cfg.last_frame_etag);
+    if (err == ESP_OK) err = nvs_set_i32(h, NVS_KEY_SLEEP_S, s_cfg.sleep_s);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
+const char *rest_config_device_id(void)
+{
+    if (s_cfg.device_id[0]) return s_cfg.device_id;
+    if (s_devid[0] == '\0') {
+        uint8_t mac[6] = {0};
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        snprintf(s_devid, sizeof s_devid, "esp32_%02x%02x%02x%02x%02x%02x",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    }
+    return s_devid;
+}
+
+void rest_config_mac(char *out, size_t cap)
+{
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    snprintf(out, cap, "%02x:%02x:%02x:%02x:%02x:%02x",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+bool rest_config_has_server(void)
+{
+    return rest_config_get()->server_url[0] != '\0';
+}
+
+void rest_config_set_server(const char *url)
+{
+    set_str(s_cfg.server_url, sizeof s_cfg.server_url, url);
+    strip_trailing_slash(s_cfg.server_url);
+}
+void rest_config_set_pairing(const char *code)     { set_str(s_cfg.pairing_code, sizeof s_cfg.pairing_code, code); }
+void rest_config_set_device_id(const char *id)     { set_str(s_cfg.device_id, sizeof s_cfg.device_id, id); }
+void rest_config_set_device_token(const char *tok) { set_str(s_cfg.device_token, sizeof s_cfg.device_token, tok); }
+void rest_config_set_frame_etag(const char *etag)  { set_str(s_cfg.last_frame_etag, sizeof s_cfg.last_frame_etag, etag); }
+void rest_config_set_sleep_s(int32_t s)            { if (s > 0) s_cfg.sleep_s = s; }

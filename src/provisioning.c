@@ -1,6 +1,6 @@
 #include "provisioning.h"
 #include "app_config.h"
-#include "mqtt_config.h"
+#include "rest_config.h"
 #include "wifi_manager.h"
 
 #include <stdio.h>
@@ -199,32 +199,21 @@ static const char k_form_wifi_fmt[] =
 "</div>"
 "</section>";
 
-/* MQTT card; %s x3 = (mqtt_uri, device_id, mqtt_user) */
-static const char k_form_mqtt_fmt[] =
-"<section class=\"card\"><h2>MQTT broker</h2>"
+/* Tesserae server card; %s x1 = (server_url) */
+static const char k_form_server_fmt[] =
+"<section class=\"card\"><h2>Tesserae server</h2>"
 "<div class=\"field\">"
-"<label for=\"mqtt_uri\">Broker URI *</label>"
-"<input id=\"mqtt_uri\" name=\"mqtt_uri\" required maxlength=\"159\" "
-"autocomplete=\"off\" value=\"%s\" placeholder=\"mqtt://192.168.1.50:1883\">"
-"<p class=\"hint\">Use <code>mqtts://</code> for TLS; scheme is added if omitted.</p>"
+"<label for=\"server_url\">Server URL *</label>"
+"<input id=\"server_url\" name=\"server_url\" required maxlength=\"159\" "
+"autocomplete=\"off\" value=\"%s\" placeholder=\"http://tesserae.local:8765\">"
+"<p class=\"hint\">Base URL of your Tesserae server. The device registers over "
+"REST; approve it in <code>Settings &rarr; Devices</code>.</p>"
 "</div>"
 "<div class=\"field\">"
-"<label for=\"device_id\">Device id</label>"
-"<input id=\"device_id\" name=\"device_id\" maxlength=\"32\" "
-"pattern=\"[a-z][a-z0-9_-]{1,31}\" autocomplete=\"off\" "
-"value=\"%s\" placeholder=\"esp32\">"
-"<p class=\"hint\">Topics: <code>tesserae/&lt;id&gt;/frame/bin</code> etc. "
-"Default <code>esp32</code> matches the built-in Tesserae kind.</p>"
-"</div>"
-"<div class=\"field\">"
-"<label for=\"mqtt_user\">Username <span style=\"color:var(--muted);font-weight:400\">(optional)</span></label>"
-"<input id=\"mqtt_user\" name=\"mqtt_user\" maxlength=\"63\" autocomplete=\"off\" value=\"%s\">"
-"</div>"
-"<div class=\"field pw\">"
-"<label for=\"mqtt-pw\">Password <span style=\"color:var(--muted);font-weight:400\">(optional)</span></label>"
-"<input id=\"mqtt-pw\" name=\"mqtt_pass\" type=\"password\" maxlength=\"63\" autocomplete=\"off\">"
-"<button type=\"button\" data-toggle=\"mqtt-pw\" aria-label=\"Show password\">Show</button>"
-"<p class=\"hint\">Leave blank to keep the current password.</p>"
+"<label for=\"pairing_code\">Pairing code <span style=\"color:var(--muted);font-weight:400\">(optional)</span></label>"
+"<input id=\"pairing_code\" name=\"pairing_code\" maxlength=\"15\" autocomplete=\"off\">"
+"<p class=\"hint\">Leave blank for zero-touch (approve in the UI). Set a code "
+"only if your server requires admin-gated pairing.</p>"
 "</div>"
 "</section>"
 "<button class=\"submit\" type=\"submit\">Save &amp; restart</button>"
@@ -332,19 +321,17 @@ static bool form_field(const char *body, const char *key, char *dst, size_t dst_
  * error banner. Sent chunked so we don't need a multi-KB stack buffer. */
 static esp_err_t render_form(httpd_req_t *req, const char *error)
 {
-    mqtt_config_t cfg;
-    mqtt_config_load(&cfg);
+    const rest_config_t *cfg = rest_config_get();
 
     char ssid[33] = {0};
     wifi_creds_get_ssid(ssid, sizeof ssid);
     char ip[16] = {0};
     bool have_ip = wifi_manager_get_sta_ip(ip, sizeof ip);
 
-    char e_ssid[160], e_uri[640], e_devid[160], e_user[256];
-    html_escape(ssid,          e_ssid,  sizeof e_ssid);
-    html_escape(cfg.uri,       e_uri,   sizeof e_uri);
-    html_escape(cfg.device_id, e_devid, sizeof e_devid);
-    html_escape(cfg.user,      e_user,  sizeof e_user);
+    char e_ssid[160], e_server[640], e_devid[160];
+    html_escape(ssid,                    e_ssid,   sizeof e_ssid);
+    html_escape(cfg->server_url,         e_server, sizeof e_server);
+    html_escape(rest_config_device_id(), e_devid,  sizeof e_devid);
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_sendstr_chunk(req, k_head);
@@ -361,10 +348,10 @@ static esp_err_t render_form(httpd_req_t *req, const char *error)
     snprintf(status, sizeof status,
         "<div class=\"status\">"
         "<span class=\"k\">Device id</span><span><code>%s</code></span>"
-        "<span class=\"k\">Broker</span><span><code>%s</code></span>"
+        "<span class=\"k\">Server</span><span><code>%s</code></span>"
         "<span class=\"k\">IP</span><span><code>%s</code></span>"
         "</div>",
-        e_devid, e_uri, have_ip ? ip : "(setup AP)");
+        e_devid, e_server[0] ? e_server : "(not set)", have_ip ? ip : "(setup AP)");
     httpd_resp_sendstr_chunk(req, status);
 
     /* Build the scan-picker <select> block from the cached scan results.
@@ -392,15 +379,15 @@ static esp_err_t render_form(httpd_req_t *req, const char *error)
     }
 
     /* form_wifi must hold: ~580 bytes of literal HTML + escaped ssid + picker
-     * (up to ~1 KB). 2048 leaves headroom. form_mqtt needs to hold literal +
-     * three escaped values; 1800 covers worst case. */
+     * (up to ~1 KB). 2048 leaves headroom. form_server holds literal + the
+     * escaped server URL; 1400 covers worst case. */
     char form_wifi[2048];
     snprintf(form_wifi, sizeof form_wifi, k_form_wifi_fmt, e_ssid, picker);
     httpd_resp_sendstr_chunk(req, form_wifi);
 
-    char form_mqtt[1800];
-    snprintf(form_mqtt, sizeof form_mqtt, k_form_mqtt_fmt, e_uri, e_devid, e_user);
-    httpd_resp_sendstr_chunk(req, form_mqtt);
+    char form_server[1400];
+    snprintf(form_server, sizeof form_server, k_form_server_fmt, e_server);
+    httpd_resp_sendstr_chunk(req, form_server);
 
     httpd_resp_sendstr_chunk(req, k_tail);
     httpd_resp_sendstr_chunk(req, NULL);   /* terminate chunked response */
@@ -424,36 +411,40 @@ static esp_err_t h_save(httpd_req_t *req)
     body[total] = '\0';
 
     char ssid[33] = {0}, wpa_pass[65] = {0};
-    char mqtt_uri[160] = {0}, device_id[33] = {0};
-    char mqtt_user[64] = {0}, mqtt_pass[64] = {0};
+    char server_url[160] = {0}, pairing[16] = {0};
 
-    bool have_ssid  = form_field(body, "ssid",      ssid,      sizeof ssid)      && ssid[0];
-    bool have_uri   = form_field(body, "mqtt_uri",  mqtt_uri,  sizeof mqtt_uri)  && mqtt_uri[0];
-    bool have_pass  = form_field(body, "pass",      wpa_pass,  sizeof wpa_pass)  && wpa_pass[0];
-    form_field(body, "device_id", device_id, sizeof device_id);
-    form_field(body, "mqtt_user", mqtt_user, sizeof mqtt_user);
-    bool have_mpass = form_field(body, "mqtt_pass", mqtt_pass, sizeof mqtt_pass) && mqtt_pass[0];
+    bool have_ssid    = form_field(body, "ssid",         ssid,       sizeof ssid)       && ssid[0];
+    bool have_pass    = form_field(body, "pass",         wpa_pass,   sizeof wpa_pass)   && wpa_pass[0];
+    bool have_server  = form_field(body, "server_url",   server_url, sizeof server_url) && server_url[0];
+    bool have_pairing = form_field(body, "pairing_code", pairing,    sizeof pairing)    && pairing[0];
 
-    if (!have_ssid) return render_form(req, "WiFi network name (SSID) is required.");
-    if (!have_uri)  return render_form(req, "MQTT broker URI is required.");
-    if (!device_id[0]) strcpy(device_id, MQTT_DEFAULT_DEVICE_ID);   /* blank -> default */
-    if (!mqtt_device_id_valid(device_id)) {
-        return render_form(req,
-            "Device id must be 2-32 chars: lowercase letters, digits, '-' or '_', "
-            "starting with a letter.");
+    if (!have_ssid)   return render_form(req, "WiFi network name (SSID) is required.");
+    if (!have_server) return render_form(req, "Tesserae server URL is required.");
+    if (strncmp(server_url, "http://", 7) != 0 && strncmp(server_url, "https://", 8) != 0) {
+        return render_form(req, "Server URL must start with http:// or https://.");
     }
 
-    ESP_LOGI(TAG, "saving ssid='%s' uri='%s' device_id='%s'",
-             ssid, mqtt_uri, device_id);
+    ESP_LOGI(TAG, "saving ssid='%s' server='%s'%s", ssid, server_url,
+             have_pairing ? " (with pairing code)" : "");
 
-    /* Passwords: a blank field means "keep what's stored" (NULL), so editing
-     * just the device_id via the always-on portal doesn't wipe creds. */
+    /* Blank WiFi password means "keep what's stored" (NULL), so editing just the
+     * server via the always-on portal doesn't wipe creds. */
     if (wifi_creds_save(ssid, have_pass ? wpa_pass : NULL) != ESP_OK) {
         return render_form(req, "Failed to write WiFi settings to NVS.");
     }
-    if (mqtt_config_save(mqtt_uri, device_id, mqtt_user,
-                         have_mpass ? mqtt_pass : NULL) != ESP_OK) {
-        return render_form(req, "Failed to write MQTT settings to NVS.");
+
+    /* Changing the server (or supplying a pairing code) invalidates any token
+     * bound to the old server: clear token + cached ETag so the device
+     * re-onboards cleanly against the new endpoint. */
+    bool server_changed = strcmp(rest_config_get()->server_url, server_url) != 0;
+    rest_config_set_server(server_url);
+    if (have_pairing) rest_config_set_pairing(pairing);
+    if (server_changed || have_pairing) {
+        rest_config_set_device_token("");
+        rest_config_set_frame_etag("");
+    }
+    if (rest_config_save() != ESP_OK) {
+        return render_form(req, "Failed to write Tesserae settings to NVS.");
     }
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
@@ -691,16 +682,15 @@ esp_err_t settings_server_run_blocking(void)
 {
     s_done = xEventGroupCreate();
 
-    mqtt_config_t cfg;
-    mqtt_config_load(&cfg);
+    const char *device_id = rest_config_device_id();
 
     start_http(/* captive */ false);
-    start_mdns(cfg.device_id);
+    start_mdns(device_id);
 
     char ip[16] = {0};
     wifi_manager_get_sta_ip(ip, sizeof ip);
     ESP_LOGI(TAG, "settings server up at http://tesserae-%s.local/ (http://%s/); "
-                  "up to %ds before sleep", cfg.device_id, ip[0] ? ip : "?",
+                  "up to %ds before sleep", device_id, ip[0] ? ip : "?",
              PROVISION_PORTAL_TIMEOUT_S);
 
     EventBits_t bits = xEventGroupWaitBits(
