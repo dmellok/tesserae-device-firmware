@@ -13,6 +13,7 @@
  */
 #include "splash.h"
 #include "epd_driver.h"
+#include "panel/epd_panel.h"
 #include "app_config.h"
 
 #include <stdbool.h>
@@ -35,15 +36,25 @@ static const char *TAG = "splash";
 static uint8_t  *s_fb;
 static const int s_W = EPD_WIDTH;
 static const int s_H = EPD_HEIGHT;
+static int       s_bpp = 4;   /* set per call from the active driver */
 
 /* ---------- primitives (display coords: x across, y down) ---------- */
 
 static inline void px(int x, int y, uint8_t c)
 {
     if (x < 0 || y < 0 || x >= s_W || y >= s_H) return;
-    size_t i = (size_t)y * (s_W / 2) + (size_t)(x >> 1);
-    if (x & 1) s_fb[i] = (uint8_t)((s_fb[i] & 0xF0) | (c & 0x0F));
-    else       s_fb[i] = (uint8_t)((s_fb[i] & 0x0F) | (uint8_t)(c << 4));
+    if (s_bpp == 1) {
+        /* Packed 1bpp, MSB = leftmost pixel; bit 1 = white. */
+        size_t i = (size_t)y * (s_W / 8) + (size_t)(x >> 3);
+        uint8_t bit = (uint8_t)(0x80 >> (x & 7));
+        if (c == COL_WHT) s_fb[i] |= bit;
+        else              s_fb[i] &= (uint8_t)~bit;
+    } else {
+        /* Packed 4bpp, 2 px/byte, high nibble = even column. */
+        size_t i = (size_t)y * (s_W / 2) + (size_t)(x >> 1);
+        if (x & 1) s_fb[i] = (uint8_t)((s_fb[i] & 0xF0) | (c & 0x0F));
+        else       s_fb[i] = (uint8_t)((s_fb[i] & 0x0F) | (uint8_t)(c << 4));
+    }
 }
 
 static void fill_rect(int x, int y, int w, int h, uint8_t c)
@@ -107,12 +118,15 @@ static esp_err_t render_and_paint(void (*draw)(void), const char *label)
         return err;
     }
 
+    s_bpp = epd_active_driver()->info.bpp;
+
     s_fb = heap_caps_malloc(EPD_BUF_BYTES, MALLOC_CAP_SPIRAM);
     if (!s_fb) {
         ESP_LOGE(TAG, "OOM allocating %u-byte splash buffer", (unsigned)EPD_BUF_BYTES);
         return ESP_ERR_NO_MEM;
     }
-    memset(s_fb, (COL_WHT << 4) | COL_WHT, EPD_BUF_BYTES);   /* white background */
+    /* White background: 1bpp -> all bits set (0xFF); 4bpp -> packed white nibbles. */
+    memset(s_fb, (s_bpp == 1) ? 0xFF : ((COL_WHT << 4) | COL_WHT), EPD_BUF_BYTES);
 
     draw();
 
