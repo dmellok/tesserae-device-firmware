@@ -322,6 +322,8 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     snprintf(url, sizeof url, "%s/api/v1/device/%s/status", c->server_url, rest_config_device_id());
 
     int mv = battery_read_mv();
+    ESP_LOGI(TAG, "status: battery=%d mV (%d%%), rssi=%d, ip=%s",
+             mv, battery_pct(mv), rssi, ip ? ip : "");
     cJSON *o = cJSON_CreateObject();
     cJSON_AddNumberToObject(o, "battery_mv", mv);
     cJSON_AddNumberToObject(o, "battery_pct", battery_pct(mv));

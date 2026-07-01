@@ -48,6 +48,12 @@
  * the legacy path to this native path in Tesserae v0.64.52. */
 #define TESSERAE_DEVICE_KIND   "seeed_reterminal_e1002"
 
+/* Battery sense (reTerminal): GPIO1 = ADC1 channel 0, 2:1 divider,
+ * gated by a load switch on GPIO21 (active-high, ~10 ms settle). */
+#define BOARD_BATTERY_ADC_CHANNEL  ADC_CHANNEL_0
+#define BOARD_BATTERY_DIVIDER      2
+#define BOARD_VBAT_SWITCH_PIN      21
+
 /* MCU tier: ESP32-S3 + PSRAM (assumed octal; verify on hardware). */
 #define MCU_TIER_S3_OCTAL_PSRAM 1
 

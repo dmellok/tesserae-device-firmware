@@ -18,6 +18,8 @@ int battery_pct(int mv)
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #ifndef BOARD_BATTERY_ADC_UNIT
 #  define BOARD_BATTERY_ADC_UNIT   ADC_UNIT_1
@@ -33,6 +35,7 @@ int battery_read_mv(void)
      * constant drain; enable it around the read. */
     gpio_set_direction(BOARD_VBAT_SWITCH_PIN, GPIO_MODE_OUTPUT);
     gpio_set_level(BOARD_VBAT_SWITCH_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(10));   /* let the load switch + divider settle */
 #endif
 
     adc_oneshot_unit_handle_t adc = NULL;
