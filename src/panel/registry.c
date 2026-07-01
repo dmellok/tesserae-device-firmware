@@ -14,6 +14,9 @@ const epd_driver_t *epd_active_driver(void) { return &spectra6_spi_dual_driver; 
 #elif defined(PANEL_DRIVER_SPECTRA6_T133A01_DUAL)
 #  include "drivers/spectra6_t133a01_dual.h"
 const epd_driver_t *epd_active_driver(void) { return &spectra6_t133a01_dual_driver; }
+#elif defined(PANEL_DRIVER_SPECTRA6_SPI_SINGLE)
+#  include "drivers/spectra6_spi_single.h"
+const epd_driver_t *epd_active_driver(void) { return &spectra6_spi_single_driver; }
 #else
 #  error "No PANEL_DRIVER_* selected by the board header."
 #endif

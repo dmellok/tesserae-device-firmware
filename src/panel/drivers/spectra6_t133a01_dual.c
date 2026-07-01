@@ -22,11 +22,14 @@
  * NOTE: UNVERIFIED ON HARDWARE. The sequence matches an unmerged Arduino PR;
  * confirm on a real E1004 before trusting a flash.
  */
+#include "app_config.h"          /* board.h -> PANEL_DRIVER_* selection */
+
+#if defined(PANEL_DRIVER_SPECTRA6_T133A01_DUAL)
+
 #include "drivers/spectra6_t133a01_dual.h"
 
 #include <string.h>
 
-#include "app_config.h"          /* board pin map + geometry + palette */
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
@@ -470,3 +473,5 @@ const epd_driver_t spectra6_t133a01_dual_driver = {
     .show_palette_sweep = t133_show_palette_sweep,
     .sleep              = t133_sleep,
 };
+
+#endif /* PANEL_DRIVER_SPECTRA6_T133A01_DUAL */

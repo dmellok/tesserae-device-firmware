@@ -11,11 +11,14 @@
  * spectra6_spi_dual_driver vtable at the bottom. The emitted SPI/GPIO
  * sequence is identical to the pre-refactor driver.
  */
+#include "app_config.h"          /* board.h -> PANEL_DRIVER_* selection */
+
+#if defined(PANEL_DRIVER_SPECTRA6_SPI_DUAL)
+
 #include "drivers/spectra6_spi_dual.h"
 
 #include <string.h>
 
-#include "app_config.h"          /* board pin map + geometry + palette */
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
@@ -429,3 +432,5 @@ const epd_driver_t spectra6_spi_dual_driver = {
     .show_palette_sweep = s6d_show_palette_sweep,
     .sleep              = s6d_sleep,
 };
+
+#endif /* PANEL_DRIVER_SPECTRA6_SPI_DUAL */

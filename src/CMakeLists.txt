@@ -5,6 +5,7 @@ idf_component_register(
         "panel/registry.c"
         "panel/drivers/spectra6_spi_dual.c"
         "panel/drivers/spectra6_t133a01_dual.c"
+        "panel/drivers/spectra6_spi_single.c"
         "battery.c"
         "wifi_manager.c"
         "provisioning.c"
