@@ -1,0 +1,82 @@
+name: firmware
+
+# Builds every board target on each push/PR and uploads versioned firmware.
+#
+# Build versioning: each run stamps an auto-incrementing 0.0.<build> version,
+# starting at 0.0.0 and +1 per run. The counter is github.run_number, which
+# begins at 1 for this workflow file -- so (run_number - 1) yields 0.0.0 on the
+# first run. This version is baked into the firmware (FW_VERSION, reported in
+# the status heartbeat) and into the artifact / .bin file names.
+#
+# NOTE: renaming or replacing this workflow file resets run_number to 1, i.e.
+# restarts the series at 0.0.0. Bump the "0.0" major.minor prefix here when you
+# want a new series.
+#
+# TODO (deferred): a publish job that uploads dist/ to Cloudflare R2. The
+# versioned binaries below are already staged for it.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build ${{ matrix.env }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env:
+          - waveshare-133e6
+          - seeed-reterminal-e1001
+          - seeed-reterminal-e1002
+          - seeed-reterminal-e1003
+          - seeed-reterminal-e1004
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Auto-incrementing build version: 0.0.0, 0.0.1, ... (see header note).
+      - name: Compute version
+        id: ver
+        run: echo "version=0.0.$(( ${{ github.run_number }} - 1 ))" >> "$GITHUB_OUTPUT"
+
+      # Cache the PlatformIO toolchain + ESP-IDF (the first build downloads
+      # hundreds of MB; keyed on platformio.ini so it invalidates on a bump).
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini', 'sdkconfig.defaults') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install -U platformio
+
+      - name: Build ${{ matrix.env }}
+        env:
+          # Single-quoted so the backslash-quotes survive into PlatformIO, which
+          # strips one level and hands gcc -DFW_VERSION="0.0.N" (a C string).
+          PLATFORMIO_BUILD_FLAGS: '-DFW_VERSION=\"${{ steps.ver.outputs.version }}\"'
+        run: pio run -e ${{ matrix.env }}
+
+      - name: Stage versioned binaries
+        run: |
+          v='${{ steps.ver.outputs.version }}'
+          e='${{ matrix.env }}'
+          mkdir -p dist
+          cp ".pio/build/$e/firmware.bin"         "dist/tesserae-$e-v$v-firmware.bin"
+          cp ".pio/build/$e/firmware.factory.bin" "dist/tesserae-$e-v$v-firmware.factory.bin"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.env }}-v${{ steps.ver.outputs.version }}
+          path: dist/
+          if-no-files-found: warn
