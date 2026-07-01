@@ -63,6 +63,18 @@ static void fill_rect(int x, int y, int w, int h, uint8_t c)
         for (int xx = x; xx < x + w; xx++) px(xx, yy, c);
 }
 
+/* The logo bitmap is two-tone in Spectra palette values: 0x1 = the white
+ * mosaic, 0x6 = the green mark. Map those to the active panel so it reads on any
+ * depth: keep the Spectra palette on colour panels; on mono make the mark black;
+ * on grayscale make the mark a dark tone (raw 0x1/0x6 are both near-black at
+ * 4bpp gray, so the logo would otherwise vanish or smear). */
+static uint8_t logo_color(uint8_t v)
+{
+    if (s_bpp == 1)      return (v == EPD_COL_WHITE) ? COL_WHT : COL_BLK;
+    if (COL_WHT == 0x1)  return v;                      /* Spectra: raw (green mark) */
+    return (v == 0x1) ? COL_WHT : 0x3;                  /* grayscale: white / dark-gray mark */
+}
+
 /* Logo, nearest-neighbour scaled to `size` px square, top-left at (cx-size/2, top). */
 static void blit_logo(int cx, int top, int size)
 {
@@ -71,7 +83,7 @@ static void blit_logo(int cx, int top, int size)
         int sy = dy * TESSERAE_LOGO_H / size;
         for (int dx = 0; dx < size; dx++) {
             int sx = dx * TESSERAE_LOGO_W / size;
-            px(x0 + dx, top + dy, tesserae_logo[sy * TESSERAE_LOGO_W + sx]);
+            px(x0 + dx, top + dy, logo_color(tesserae_logo[sy * TESSERAE_LOGO_W + sx]));
         }
     }
 }
@@ -188,6 +200,7 @@ static void draw_portal_portrait(void)
     int gap   = 8 * s;
 
     int qscale = qn ? (s_H / 4) / (qn + 8) : 0; if (qscale < 1) qscale = 1;
+    if (qn && qn * qscale > 400) qscale = 400 / qn;    /* cap ~400 px */
     int qpix   = qn ? qn * qscale : 0;
     int qz     = qn ? 4 * qscale : 0;
 
@@ -213,27 +226,35 @@ static void draw_portal_landscape(void)
     int qn = build_ap_qr(qr);
 
     const int halfW = s_W / 2;
-    int s    = s_H / 240; if (s < 2) s = 2;
+    const int lm    = halfW / 8;                        /* left inset (nudges the
+                                                          column right of edge) */
+    const int lw    = halfW - lm;                       /* left-column text width */
+
+    /* Body scale sized so the longest line (~26 chars) fits the column -- height-
+     * based scaling made the URL overflow on the big 1872-wide E1003. */
+    int s    = (lw * 9 / 10) / (26 * 8); if (s < 2) s = 2;
     int ts   = 2 * s;
     int gap  = 8 * s;
     int logo = (s_H * 2) / 5;                           /* ~40% of height */
+    if (logo > lw) logo = lw;
 
-    /* Left column: logo, title, "Setup mode", SSID, URL -- stacked, centered. */
     int block = logo + gap + 8 * ts + gap + 8 * s + gap + 8 * s + gap + 8 * s;
     int y = (s_H - block) / 2; if (y < gap) y = gap;
 
     char line_ssid[64];
     snprintf(line_ssid, sizeof line_ssid, "Wi-Fi:  %s", PROVISION_AP_SSID);
 
-    blit_logo(halfW / 2, y, logo);                           y += logo + gap;
-    draw_text_in(0, halfW, y, "Tesserae", ts, COL_BLK);      y += 8 * ts + gap;
-    draw_text_in(0, halfW, y, "Setup mode", s, COL_BLK);     y += 8 * s + gap;
-    draw_text_in(0, halfW, y, line_ssid, s, COL_BLK);        y += 8 * s + gap;
-    draw_text_in(0, halfW, y, k_url, s, COL_BLK);
+    int cx = lm + lw / 2;                               /* left-column centre */
+    blit_logo(cx, y, logo);                             y += logo + gap;
+    draw_text_in(lm, lw, y, "Tesserae", ts, COL_BLK);   y += 8 * ts + gap;
+    draw_text_in(lm, lw, y, "Setup mode", s, COL_BLK);  y += 8 * s + gap;
+    draw_text_in(lm, lw, y, line_ssid, s, COL_BLK);     y += 8 * s + gap;
+    draw_text_in(lm, lw, y, k_url, s, COL_BLK);
 
-    /* Right column: QR centered. */
+    /* Right column: QR centered, clamped so it doesn't dominate a large panel. */
     if (qn) {
         int qscale = ((s_H * 3) / 4) / (qn + 8); if (qscale < 1) qscale = 1;
+        if (qn * qscale > 400) qscale = 400 / qn;       /* cap ~400 px */
         int qpix   = qn * qscale;
         int qx = halfW + (halfW - qpix) / 2;
         int qy = (s_H - qpix) / 2;
