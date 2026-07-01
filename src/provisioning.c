@@ -124,6 +124,8 @@ static const char k_head[] =
 "--accent:#0d8c7e;--accent-hover:#0a6f63;--accent-soft:#e6f3f1;"
 "--border:#e6e5e1;--radius:10px}"
 "*{box-sizing:border-box}"
+/* Lock the page to the viewport: no horizontal pan/overscroll (keeps pinch-zoom). */
+"html,body{overflow-x:hidden;overscroll-behavior-x:none;max-width:100%;width:100%}"
 "body{margin:0;padding:24px 16px env(safe-area-inset-bottom);"
 "font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Inter,system-ui,sans-serif;"
 "font-size:15px;background:var(--bg);color:var(--fg);line-height:1.45;"
@@ -131,11 +133,11 @@ static const char k_head[] =
 "main{max-width:480px;margin:0 auto}"
 ".brand{display:flex;align-items:center;gap:10px;margin:0 0 6px;"
 "font-weight:700;font-size:20px;letter-spacing:-0.015em}"
-".brand-mark{width:32px;height:32px;border-radius:8px;"
-"background:linear-gradient(135deg,var(--accent),var(--accent-hover));"
-"box-shadow:inset 0 1px 0 rgba(255,255,255,.35),"
-"0 1px 3px rgba(13,140,126,.35),0 6px 16px rgba(13,140,126,.18)}"
+".brand-mark{width:32px;height:32px;flex:none;"
+"filter:drop-shadow(0 2px 6px rgba(13,140,126,.28))}"
 ".tag{color:var(--muted);font-size:13px;margin:0 0 18px}"
+".ver{text-align:center;color:var(--muted);font-size:12px;margin:20px 0 0;"
+"font-family:ui-monospace,SFMono-Regular,Menlo,monospace}"
 ".card{background:var(--surface);border:1px solid var(--border);"
 "border-radius:var(--radius);padding:18px 16px;margin-bottom:14px}"
 ".card h2{margin:0 0 14px;font-size:11px;text-transform:uppercase;"
@@ -178,7 +180,23 @@ static const char k_head[] =
 "button.submit:hover{background:var(--accent-hover)}"
 "button.submit:active{transform:translateY(1px)}"
 "</style></head><body><main>"
-"<div class=\"brand\"><span class=\"brand-mark\"></span><span>Tesserae</span></div>"
+/* Brand mark: the exact tesserae/static/brand/icon.svg (rounded-square gradient
+ * + two white 0.85-alpha quadrants clipped to an inner rounded rect). */
+"<div class=\"brand\">"
+"<svg class=\"brand-mark\" viewBox=\"0 0 256 256\" width=\"32\" height=\"32\" aria-hidden=\"true\">"
+"<defs>"
+"<linearGradient id=\"tess-bg\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\">"
+"<stop offset=\"0\" stop-color=\"#0d8c7e\"/><stop offset=\"1\" stop-color=\"#0a6f63\"/>"
+"</linearGradient>"
+"<clipPath id=\"tess-inner\"><rect x=\"55\" y=\"55\" width=\"146\" height=\"146\" rx=\"27\" ry=\"27\"/></clipPath>"
+"</defs>"
+"<rect x=\"0\" y=\"0\" width=\"256\" height=\"256\" rx=\"72\" ry=\"72\" fill=\"url(#tess-bg)\"/>"
+"<g clip-path=\"url(#tess-inner)\" fill=\"#ffffff\" fill-opacity=\"0.85\">"
+"<rect x=\"128\" y=\"55\" width=\"73\" height=\"73\"/>"
+"<rect x=\"55\" y=\"128\" width=\"73\" height=\"73\"/>"
+"</g>"
+"</svg>"
+"<span>Tesserae</span></div>"
 "<p class=\"tag\">Device setup</p>";
 
 /* WiFi card; %s x2 = (ssid prefill, scan-picker HTML or empty) */
@@ -205,6 +223,7 @@ static const char k_form_server_fmt[] =
 "<div class=\"field\">"
 "<label for=\"server_url\">Server URL *</label>"
 "<input id=\"server_url\" name=\"server_url\" required maxlength=\"159\" "
+"inputmode=\"url\" autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" "
 "autocomplete=\"off\" value=\"%s\" placeholder=\"http://tesserae.local:8765\">"
 "<p class=\"hint\">Base URL of your Tesserae server. The device registers over "
 "REST; approve it in <code>Settings &rarr; Devices</code>.</p>"
@@ -236,7 +255,16 @@ static const char k_tail[] =
 "if(e.target.value){document.getElementById('ssid').value=e.target.value;"
 "document.getElementById('wifi-pw').focus();}"
 "});}"
-"</script></main></body></html>";
+/* Prepend http:// on submit when the scheme is omitted (server also enforces). */
+"var f=document.querySelector('form');"
+"if(f){f.addEventListener('submit',function(){"
+"var s=document.getElementById('server_url');"
+"if(s){var v=s.value.trim();"
+"if(v&&!/^https?:\\/\\//i.test(v)){v='http://'+v;}s.value=v;}"
+"});}"
+"</script>"
+"<footer class=\"ver\">Tesserae firmware v" FW_VERSION "</footer>"
+"</main></body></html>";
 
 static const char k_thanks_html[] =
 "<!doctype html><html><head><meta charset=\"utf-8\">"
@@ -420,8 +448,12 @@ static esp_err_t h_save(httpd_req_t *req)
 
     if (!have_ssid)   return render_form(req, "WiFi network name (SSID) is required.");
     if (!have_server) return render_form(req, "Tesserae server URL is required.");
+    /* Be forgiving about the scheme: default to http:// when it's omitted
+     * (mirrors the client-side normalization). */
     if (strncmp(server_url, "http://", 7) != 0 && strncmp(server_url, "https://", 8) != 0) {
-        return render_form(req, "Server URL must start with http:// or https://.");
+        char with_scheme[167];
+        snprintf(with_scheme, sizeof with_scheme, "http://%s", server_url);
+        snprintf(server_url, sizeof server_url, "%s", with_scheme);
     }
 
     ESP_LOGI(TAG, "saving ssid='%s' server='%s'%s", ssid, server_url,
