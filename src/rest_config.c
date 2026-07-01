@@ -104,10 +104,14 @@ const char *rest_config_device_id(void)
 {
     if (s_cfg.device_id[0]) return s_cfg.device_id;
     if (s_devid[0] == '\0') {
+        /* Default id: "<board model>_<suffix>", e.g. reTerminal_E1004_859878.
+         * The suffix is the last 3 bytes of the MAC -- stable per device (the
+         * id must not change across wakes) and unique enough to distinguish
+         * units; the full MAC is still sent separately for the server match. */
         uint8_t mac[6] = {0};
         esp_read_mac(mac, ESP_MAC_WIFI_STA);
-        snprintf(s_devid, sizeof s_devid, "esp32_%02x%02x%02x%02x%02x%02x",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        snprintf(s_devid, sizeof s_devid, "%s_%02x%02x%02x",
+                 TESSERAE_DEVICE_MODEL, mac[3], mac[4], mac[5]);
     }
     return s_devid;
 }

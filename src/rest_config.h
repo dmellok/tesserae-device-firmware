@@ -37,8 +37,9 @@ const rest_config_t *rest_config_get(void);
  * Radio may be up (NVS on ESP32 is safe with WiFi, unlike the pico's flash). */
 esp_err_t rest_config_save(void);
 
-/* Effective device id: the cached device_id if set, else a stable default
- * "esp32_" + hex(WiFi-STA MAC). Cached; never NULL. */
+/* Effective device id: the cached device_id if set (server-assigned), else a
+ * stable default "<TESSERAE_DEVICE_MODEL>_<mac-suffix>" (e.g.
+ * reTerminal_E1004_859878). Cached; never NULL. */
 const char *rest_config_device_id(void);
 
 /* The base MAC as "aa:bb:cc:dd:ee:ff" (lowercase). The server matches the

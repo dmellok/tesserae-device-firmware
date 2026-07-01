@@ -53,6 +53,9 @@
 #define EPD_COL_BLUE    0x5
 #define EPD_COL_GREEN   0x6
 
+/* Board model -> default device id "reTerminal_E1004_<mac-suffix>". */
+#define TESSERAE_DEVICE_MODEL  "reTerminal_E1004"
+
 /* ------------------------------------------------------------------ */
 /* MCU tier: ESP32-S3 + PSRAM (assumed octal, verify on hardware).     */
 /* ------------------------------------------------------------------ */

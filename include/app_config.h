@@ -50,6 +50,13 @@
 #define TESSERAE_DEVICE_KIND  "esp32_client"
 #endif
 
+/* Human-readable board model, used to build the default device id
+ * "<model>_<mac-suffix>" (e.g. reTerminal_E1004_859878). Each board header
+ * sets its own; this is just a fallback so the file compiles standalone. */
+#ifndef TESSERAE_DEVICE_MODEL
+#define TESSERAE_DEVICE_MODEL  "esp32"
+#endif
+
 /* How long to deep-sleep between MQTT checks. 1 minute is the short
  * dev-friendly default; production cadence is normally pushed
  * server-side via the config topic (e.g. 15 min for a 6-colour panel
