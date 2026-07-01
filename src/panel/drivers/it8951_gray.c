@@ -43,8 +43,10 @@ static const char *TAG = "epd_it8951";
 #define DPY_AREA      0x0034
 #define GET_DEV_INFO  0x0302
 #define VCOM          0x0039
+#define CMD_TEMP      0x0040   /* force temperature (selects the waveform LUT) */
 
 /* IT8951 registers */
+#define REG_I80CPCR   0x0004   /* host-command packed-write enable */
 #define REG_LISAR     0x0208   /* image buffer start addr (low); +2 = high */
 #define REG_LUTAFSR   0x1224   /* LUT engine status: 0 = idle/done */
 #define REG_UP1SR     0x1138   /* update param; +2 has the 1bpp-mode bit */
@@ -226,16 +228,19 @@ static void it8951_init(void)
 
     write_cmd(SYS_RUN);
 
-    /* Set VCOM (selector 1 = write; value is the magnitude in mV). */
-    write_cmd(VCOM);
-    write_data(0x0001);
-    write_data(EPD_VCOM_MV);
-
     /* GET_DEV_INFO -> panelW, panelH, imgBufAddrL, imgBufAddrH, fw[8], lut[8]. */
     uint16_t info[20] = {0};
     write_cmd(GET_DEV_INFO);
     read_ndata(info, 20);
     s_img_buf_addr = ((uint32_t)info[3] << 16) | info[2];
+
+    /* Tail of FastEPD's bbepInitIT8951: set VCOM, enable packed-write, force a
+     * temperature. Packed-write is required for the byte-stream image load to be
+     * interpreted correctly; the forced temperature selects a waveform LUT (with
+     * neither, the panel accepts everything but never develops -- stays blank). */
+    write_cmd(VCOM); write_data(0x0001); write_data(EPD_VCOM_MV);
+    write_reg(REG_I80CPCR, 0x0001);                              /* packed write */
+    write_cmd(CMD_TEMP); write_data(0x0001); write_data(14);     /* force 14 C */
 
     ESP_LOGI(TAG, "init complete: dev %ux%u, img_buf=0x%08x",
              info[0], info[1], (unsigned)s_img_buf_addr);

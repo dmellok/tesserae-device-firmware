@@ -42,8 +42,10 @@
 #define EPD_COL_BLACK   0x0
 #define EPD_COL_WHITE   0xF
 
-/* IT8951 VCOM for the ED103TC2, in mV (negative). */
-#define EPD_VCOM_MV     1600
+/* IT8951 VCOM, in mV (magnitude of the negative VCOM). FastEPD uses 1500
+ * (-1.5 V) as a safe value for large panels; the ED103TC2's rated VCOM may
+ * differ slightly (tune if contrast is off). */
+#define EPD_VCOM_MV     1500
 
 /* Battery sense (reTerminal E1003): GPIO3 = ADC1 channel 2, 2:1 divider,
  * load switch on GPIO40 (active-high). NOTE: different pins from E1001/2/4. */
