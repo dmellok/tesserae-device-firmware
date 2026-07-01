@@ -166,13 +166,16 @@ static void sleep_forever_or_until_timer(void)
 
 /* ---------- app ---------- */
 
-static void run_provisioning_then_reboot(void)
+static void run_provisioning_then_reboot(const char *note)
 {
-    ESP_LOGW(TAG, "no usable wifi creds; painting portal splash + captive portal");
+    ESP_LOGW(TAG, "opening captive portal%s%s", note ? ": " : "", note ? note : "");
     /* Paint logo + WPA QR before bringing up the AP so the user can scan
      * to join Tesserae-Setup instead of typing the SSID. ~30 s panel refresh
-     * runs concurrently with the AP/HTTPD/DNS bringup that's about to happen. */
-    splash_show_portal();
+     * runs concurrently with the AP/HTTPD/DNS bringup that's about to happen.
+     * `note` (when set) replaces the "Setup mode" subtitle with the reason the
+     * user was sent back here (failed WiFi / unreachable server). */
+    if (note) splash_show_portal_note(note);
+    else      splash_show_portal();
     esp_err_t err = provisioning_run_blocking();
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "creds saved; rebooting to use them");
@@ -217,16 +220,24 @@ static void maybe_show_splash(esp_reset_reason_t reset_reason, bool has_creds)
 #define EPOCH_REASONABLE_MIN 1700000000LL   /* 2023-11-14 */
 #define EPOCH_REASONABLE_MAX 2200000000LL   /* 2039-09-13 */
 
-/* First-boot onboarding: obtain a device token. Returns true once we hold one
- * (continue the cycle); false means "no token yet", with a backoff written to
- * rest_config's sleep_s for the caller to sleep on. Zero-touch discover/claim
- * by default (admin clicks Register in Tesserae, no typing on the device);
- * a stored pairing code opts into strict admin-gated register. Ported from
- * tesserae-device-pico-bin main.c rest_bootstrap(). */
-static bool rest_bootstrap(uint16_t pw, uint16_t ph, const char *mac, bool *dirty)
+/* Onboarding outcome, so the caller can give the right on-screen feedback. */
+typedef enum {
+    BOOTSTRAP_OK,           /* hold a token now -- continue the cycle          */
+    BOOTSTRAP_PENDING,      /* server reachable, awaiting admin approval        */
+    BOOTSTRAP_UNREACHABLE,  /* can't reach Tesserae / code rejected -> portal   */
+} bootstrap_res_t;
+
+/* First-boot onboarding: obtain a device token. On a non-OK result a backoff is
+ * written to rest_config's sleep_s and a short human reason into `note` (for the
+ * portal subtitle on UNREACHABLE, or the message body on PENDING). Zero-touch
+ * discover/claim by default (admin clicks Register in Tesserae, no typing on the
+ * device); a stored pairing code opts into strict admin-gated register. Ported
+ * from tesserae-device-pico-bin main.c rest_bootstrap(). */
+static bootstrap_res_t rest_bootstrap(uint16_t pw, uint16_t ph, const char *mac,
+                                      bool *dirty, char *note, size_t note_sz)
 {
     const rest_config_t *c = rest_config_get();
-    if (c->device_token[0] != '\0') return true;   /* already bootstrapped */
+    if (c->device_token[0] != '\0') return BOOTSTRAP_OK;   /* already bootstrapped */
 
     if (c->pairing_code[0] != '\0') {
         rest_register_out_t ro;
@@ -242,20 +253,25 @@ static bool rest_bootstrap(uint16_t pw, uint16_t ph, const char *mac, bool *dirt
             *dirty = true;
             ESP_LOGI(TAG, "registered via pairing code; token stored (id=%s)",
                      rest_config_device_id());
-            return true;
+            return BOOTSTRAP_OK;
         }
         int32_t backoff = (c->sleep_s > 0) ? c->sleep_s : 900;
+        bootstrap_res_t res = BOOTSTRAP_UNREACHABLE;
         if (rs == REST_UNAUTH || rs == REST_FORBIDDEN) {
             backoff = 3600;
             ESP_LOGW(TAG, "register rejected (%d); sleeping 1h to re-pair", rs);
+            snprintf(note, note_sz, "Pairing code rejected");   /* -> portal */
         } else if (rs == REST_RATELIMIT) {
             backoff = (ro.retry_after_s > 0) ? ro.retry_after_s : 3600;
             ESP_LOGW(TAG, "register rate-limited; backoff %lds", (long)backoff);
+            snprintf(note, note_sz, "Tesserae is busy; it will keep retrying.");
+            res = BOOTSTRAP_PENDING;
         } else {
             ESP_LOGW(TAG, "register failed (%d); retry next cycle", rs);
+            snprintf(note, note_sz, "Can't reach the server");   /* -> portal */
         }
         rest_config_set_sleep_s(backoff);
-        return false;
+        return res;
     }
 
     /* Zero-touch: announce via discover and claim the token once the admin
@@ -273,30 +289,41 @@ static bool rest_bootstrap(uint16_t pw, uint16_t ph, const char *mac, bool *dirt
         *dirty = true;
         ESP_LOGI(TAG, "claimed token via discover; bootstrap complete (id=%s)",
                  rest_config_device_id());
-        return true;
+        return BOOTSTRAP_OK;
     }
     int32_t backoff;
+    bootstrap_res_t res;
     if (ds == REST_OK) {            /* registered:false, awaiting admin Register */
         backoff = (dd.retry_after_s > 0) ? dd.retry_after_s : 30;
         ESP_LOGI(TAG, "discovered, waiting for admin to Register; retry in %lds",
                  (long)backoff);
+        snprintf(note, note_sz, "Approve this device in Tesserae, Settings > Devices.");
+        res = BOOTSTRAP_PENDING;
     } else if (ds == REST_RATELIMIT) {
         backoff = (dd.retry_after_s > 0) ? dd.retry_after_s : 60;
         ESP_LOGW(TAG, "discover rate-limited; backoff %lds", (long)backoff);
+        snprintf(note, note_sz, "Tesserae is busy; it will keep retrying.");
+        res = BOOTSTRAP_PENDING;
     } else {
-        backoff = 30;   /* unreachable (e.g. wrong server URL): retry soon */
+        backoff = 30;   /* unreachable (e.g. wrong server URL): send to portal */
         ESP_LOGW(TAG, "discover failed (%d); retry in %lds", ds, (long)backoff);
+        snprintf(note, note_sz, "Can't reach the server");
+        res = BOOTSTRAP_UNREACHABLE;
     }
     rest_config_set_sleep_s(backoff);
-    return false;
+    return res;
 }
 
 void app_main(void)
 {
     esp_reset_reason_t reset_reason = esp_reset_reason();
     bool settings_mode = detect_settings_mode(reset_reason);
-    ESP_LOGI(TAG, "boot; reset_reason=%d wakeup_cause=%d settings_mode=%d",
-             reset_reason, esp_sleep_get_wakeup_cause(), settings_mode);
+    /* A "first boot" (power-on, RESET button, or the reboot right after a portal
+     * save) vs a timer wake from deep sleep. Connect-feedback splashes that we
+     * only want to show once (not on every 30 s retry wake) key off this. */
+    bool first_boot = (reset_reason != ESP_RST_DEEPSLEEP);
+    ESP_LOGI(TAG, "boot; reset_reason=%d wakeup_cause=%d settings_mode=%d first_boot=%d",
+             reset_reason, esp_sleep_get_wakeup_cause(), settings_mode, first_boot);
 
 #ifdef BATTERY_DEBUG_SWEEP
     /* Battery sense bring-up: log every ADC1 channel to find the real sense pin
@@ -333,9 +360,12 @@ void app_main(void)
     /* The captive portal collects both WiFi and the Tesserae server URL, so a
      * device missing either is not yet usable -- send it to provisioning. */
     if (!have_creds || !rest_config_has_server()) {
-        if (have_creds)
+        if (have_creds) {
             ESP_LOGW(TAG, "wifi set but no Tesserae server URL; opening portal");
-        run_provisioning_then_reboot();
+            run_provisioning_then_reboot("Add your Tesserae server URL");
+        } else {
+            run_provisioning_then_reboot(NULL);
+        }
         return;
     }
 
@@ -343,7 +373,7 @@ void app_main(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "STA connect failed (%s); falling back to portal",
                  esp_err_to_name(err));
-        run_provisioning_then_reboot();
+        run_provisioning_then_reboot("Wi-Fi didn't connect");
         return;
     }
 
@@ -373,22 +403,37 @@ void app_main(void)
     char mac[18];
     rest_config_mac(mac, sizeof mac);
 
-    bool cfg_dirty  = false;
-    bool skip_paint = false;
+    bool cfg_dirty      = false;
+    bool skip_paint     = false;
+    bool just_onboarded = false;
     uint8_t *frame  = NULL;
     char new_etag[80] = {0};
 
     /* 1. Bootstrap a device token (discover/claim, or register with a code). */
     if (c->device_token[0] == '\0') {
-        if (!rest_bootstrap(pw, ph, mac, &cfg_dirty)) {
+        char note[80] = {0};
+        bootstrap_res_t br = rest_bootstrap(pw, ph, mac, &cfg_dirty, note, sizeof note);
+        if (br != BOOTSTRAP_OK) {
             /* No token yet; rest_config sleep_s holds the backoff. The common
              * "waiting for admin" retry is not persisted (avoid flash wear);
              * only persist if a code register/adopt changed something. */
             if (cfg_dirty) rest_config_save();
             wifi_sta_stop();
+            if (br == BOOTSTRAP_UNREACHABLE) {
+                /* Genuinely can't reach Tesserae (bad URL / server down / code
+                 * rejected): keep the portal up with the reason so the user can
+                 * fix it. Reboots on save; deep-sleeps if the portal times out. */
+                run_provisioning_then_reboot(note[0] ? note : "Can't reach the server");
+                return;   /* not reached */
+            }
+            /* PENDING: reachable, just waiting for admin approval. Confirm on
+             * screen once (cold / post-provision boot), then sleep + retry so we
+             * don't repaint the slow panel on every backoff wake. */
+            if (first_boot && note[0]) splash_show_message("Almost done", note);
             sleep_forever_or_until_timer();
             return;
         }
+        just_onboarded = true;   /* got a token this cycle */
         c = rest_config_get();
     }
 
@@ -451,9 +496,7 @@ void app_main(void)
      * saving in the render path (~80 mA otherwise). */
     wifi_sta_stop();
 
-    if (skip_paint) {
-        /* nothing to paint */
-    } else if (frame != NULL) {
+    if (frame != NULL) {
         ESP_LOGI(TAG, "painting downloaded frame (~30 s)...");
         ESP_ERROR_CHECK(epd_port_init());
         epd_init();
@@ -461,6 +504,14 @@ void app_main(void)
         epd_sleep();
         free(frame);
         if (new_etag[0]) { rest_config_set_frame_etag(new_etag); cfg_dirty = true; }
+    } else if (just_onboarded) {
+        /* Onboarding completed this cycle but the server has no frame ready yet
+         * -- confirm the successful connect on screen so setup has clear closure
+         * (the frame lands on a later wake). */
+        ESP_LOGI(TAG, "onboarded, no frame yet; painting connected splash");
+        splash_show_message("Connected!", "Waiting for your first frame");
+    } else if (skip_paint) {
+        /* 304/204: nothing changed, leave the current image */
     } else if (rest_config_get()->last_frame_etag[0] != '\0') {
         ESP_LOGI(TAG, "no frame this cycle; keeping last image");
     } else {

@@ -25,11 +25,18 @@ one board (and thus one driver) per PlatformIO environment.
 | Seeed reTerminal **E1002** | Spectra-6, single | UC81xx | 800×480, 4bpp | `spectra6_spi_single` | `seeed-reterminal-e1002` |
 | Seeed reTerminal **E1001** | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `seeed-reterminal-e1001` |
 | Seeed reTerminal **E1003** | Grayscale (10.3") | IT8951 | 1872×1404, 4bpp gray | `it8951_gray` | `seeed-reterminal-e1003` |
+| Waveshare **PhotoPainter 7.3"** | Spectra-6, single | ED2208-GCA | 800×480, 4bpp | `spectra6_spi_single` | `waveshare-photopainter-73` |
 
-The four reTerminals have been verified end-to-end on real hardware; the
-Waveshare 13.3E6 is the seed target and builds green. Each board also has a
-`…-selftest` env that paints a driver-only test pattern (colour bars / gray
-ramp) with no networking — flash that first when bringing up a new unit.
+The four reTerminals and the PhotoPainter have been verified end-to-end on real
+hardware; the Waveshare 13.3E6 is the seed target and builds green. Each board
+also has a `…-selftest` env that paints a driver-only test pattern (colour bars
+/ gray ramp) with no networking — flash that first when bringing up a new unit.
+
+The PhotoPainter shares the E1002's `spectra6_spi_single` driver (its ED2208-GCA
+init is byte-identical); two board-header flags tailor it: `EPD_ROTATE_180` (the
+panel is mounted upside-down in the case) and `BOARD_HAS_PMIC` (panel power +
+battery come from an **AXP2101 PMIC over I2C**, not a GPIO gate / ADC divider —
+see `src/pmic.c`).
 
 ## Architecture
 
@@ -49,8 +56,10 @@ src/
   net_rest.c / rest_config  Tesserae REST client + NVS-backed config
   image_fetcher / _decoder  HTTP frame download + size-validated copy (no decode)
   provisioning.c            captive-portal setup (AP + DNS + scan + form)
-  splash.c                  on-device procedural splash (logo + QR), bpp-aware
-  battery.c                 board-gated Li-Po telemetry
+  splash.c                  on-device procedural splashes (logo, portal QR,
+                            connect-status messages), bpp-aware
+  battery.c                 board-gated Li-Po telemetry (ADC or PMIC gauge)
+  pmic.c                    AXP2101 PMIC over I2C (rails + battery), BOARD_HAS_PMIC
   wifi_manager.c            WiFi STA/AP
 ```
 
@@ -79,6 +88,23 @@ boot
 The wall clock is taken from each REST response's HTTP `Date` header (no SNTP),
 and an unchanged frame (ETag/304) skips both the download and the paint.
 
+### Onboarding feedback
+
+The panel always tells the user where setup stands, so a headless device is
+never a black box:
+
+- **WiFi won't connect** or **server unreachable** (bad URL / server down) —
+  the captive portal stays up and its subtitle says why (*"Wi-Fi didn't
+  connect"*, *"Can't reach the server"*), so it can be fixed on the spot.
+- **Reached the server, waiting for admin approval** — this is *not* a failure:
+  the panel shows *"Almost done — approve this device in Tesserae"* and the
+  device sleeps and retries (it does **not** reopen the portal).
+- **Onboarded, no frame yet** — paints *"Connected! Waiting for your first
+  frame"* so setup has clear closure; the frame lands on a later wake.
+
+To avoid re-refreshing the slow panel on every retry, these status splashes
+paint only on a cold / post-setup boot, not on timer wakes.
+
 ## Tesserae REST protocol
 
 The device talks to `<server_url>/api/v1/device/`:
@@ -97,9 +123,12 @@ format the firmware expects for that kind:
 | Kind | Frame format | Size |
 | --- | --- | --- |
 | `waveshare_133e6`, `seeed_reterminal_e1004` | 4bpp packed Spectra-6 | 960000 B |
-| `seeed_reterminal_e1002` | 4bpp packed Spectra-6 | 192000 B |
+| `seeed_reterminal_e1002`, `waveshare_photopainter_73` | 4bpp packed Spectra-6 | 192000 B |
 | `seeed_reterminal_e1001` | 1bpp packed mono (bit 1 = white) | 48000 B |
 | `seeed_reterminal_e1003` | 4bpp packed grayscale (0=black…0xF=white) | 1314144 B |
+
+The PhotoPainter reuses the E1002's 800×480 4bpp format exactly (render normally
+— the **180° rotation is done on-device**, so do not pre-rotate on the server).
 
 ## Build
 
@@ -119,14 +148,20 @@ artifact / `.bin` names. Local builds fall back to `0.0.0-dev`.
 
 ## Flash
 
-Devices flash through an onboard **WCH CH340** USB-serial bridge (not the ESP32-S3
-native USB). On macOS install the WCH CH34x DriverKit driver
+The **reTerminals** flash through an onboard **WCH CH340** USB-serial bridge
+(not the ESP32-S3 native USB). On macOS install the WCH CH34x DriverKit driver
 ([WCHSoftGroup/ch34xser_macos](https://github.com/WCHSoftGroup/ch34xser_macos))
 and enable it under *System Settings → General → Login Items & Extensions →
 Driver Extensions*; the port then appears as `/dev/cu.wchusbserial*`.
 
+The **PhotoPainter** has no CH340 — it flashes over the S3's **native
+USB-Serial-JTAG**, which enumerates as `/dev/cu.usbmodem*` (no driver needed).
+Note its app logs go out UART0 (GPIO43/44), so they are *not* visible over that
+USB port; use the panel splashes for feedback, or wire a UART adapter.
+
 ```sh
-pio run -e <env> -t upload --upload-port /dev/cu.wchusbserial*
+pio run -e <env> -t upload --upload-port /dev/cu.wchusbserial*   # reTerminals
+pio run -e waveshare-photopainter-73 -t upload --upload-port /dev/cu.usbmodem*
 ```
 
 Or with esptool directly (from the build dir):
@@ -182,6 +217,9 @@ work of several open-source projects, with thanks:
   panel/controller drivers (Spectra-6, UC8179 mono, IT8951 grayscale).
 - the **Waveshare 13.3E6** ESP-IDF demo and the
   **[Pimoroni Inky](https://github.com/pimoroni/inky)** drivers.
+- **[waveshareteam/ESP32-S3-PhotoPainter](https://github.com/waveshareteam/ESP32-S3-PhotoPainter)**
+  and **[aitjcize/esp32-photoframe](https://github.com/aitjcize/esp32-photoframe)**
+  for the PhotoPainter's ED2208-GCA panel and AXP2101 PMIC bring-up.
 
 Bundled third-party code: the public-domain font8x8, and the MIT
 [qrcodegen](https://github.com/nayuki/QR-Code-generator) (`src/vendor/`).

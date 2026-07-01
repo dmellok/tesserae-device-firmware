@@ -28,3 +28,14 @@ esp_err_t splash_show_logo(void);
  * the right. Shown right before the captive portal comes up. The QR encodes the
  * SAME credentials the SoftAP advertises (PROVISION_AP_SSID/PASS). */
 esp_err_t splash_show_portal(void);
+
+/* Same provisioning splash, but the "Setup mode" subtitle is replaced by a
+ * short reason (e.g. "Wi-Fi didn't connect", "Can't reach the server") so a
+ * user sent back to the portal after a failed connect/onboard knows why and
+ * what to fix. Keep `subtitle` short (fits one ~26-char line). */
+esp_err_t splash_show_portal_note(const char *subtitle);
+
+/* Logo + a bold title + a word-wrapped body, centered. No QR. Used for connect
+ * feedback: "Connected! / Waiting for your first frame", "Almost done /
+ * Approve this device in Tesserae". */
+esp_err_t splash_show_message(const char *title, const char *body);

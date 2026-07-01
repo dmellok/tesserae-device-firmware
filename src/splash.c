@@ -38,6 +38,11 @@ static const int s_W = EPD_WIDTH;
 static const int s_H = EPD_HEIGHT;
 static int       s_bpp = 4;   /* set per call from the active driver */
 
+/* Per-call text for the portal-note / message splashes (set before render). */
+static const char *s_portal_note;   /* NULL -> default "Setup mode" subtitle */
+static const char *s_msg_title;
+static const char *s_msg_body;
+
 /* ---------- primitives (display coords: x across, y down) ---------- */
 
 static inline void px(int x, int y, uint8_t c)
@@ -105,6 +110,37 @@ static void draw_text_in(int x0, int w, int y, const char *str, int s, uint8_t c
 {
     int x = x0 + (w - text_w(str, s)) / 2;
     for (const char *p = str; *p; p++, x += 8 * s) draw_char(x, y, *p, s, c);
+}
+
+/* Word-wrap `text` into lines that fit `w`, each centered in [x0, x0+w),
+ * starting at `y`. Returns the y past the last line. Breaks on spaces; a word
+ * longer than one line is hard-cut. */
+static int draw_paragraph(int x0, int w, int y, const char *text, int s, uint8_t c)
+{
+    const int line_h  = 8 * s + 4 * s;                 /* glyph + interline gap */
+    int max_chars = w / (8 * s); if (max_chars < 1) max_chars = 1;
+    char line[96];
+    int  ll = 0;
+    const char *p = text;
+    while (*p) {
+        while (*p == ' ') p++;                          /* skip spaces */
+        const char *we = p; while (*we && *we != ' ') we++;
+        int wl = (int)(we - p);
+        if (wl == 0) break;
+        if (wl > max_chars) wl = max_chars;             /* hard-cut overlong word */
+        if (ll == 0) {
+            memcpy(line, p, wl); ll = wl;
+        } else if (ll + 1 + wl <= max_chars) {
+            line[ll++] = ' '; memcpy(line + ll, p, wl); ll += wl;
+        } else {
+            line[ll] = '\0';
+            draw_text_in(x0, w, y, line, s, c); y += line_h;
+            memcpy(line, p, wl); ll = wl;
+        }
+        p = we;
+    }
+    if (ll) { line[ll] = '\0'; draw_text_in(x0, w, y, line, s, c); y += line_h; }
+    return y;
 }
 
 /* ---------- QR ---------- */
@@ -213,7 +249,8 @@ static void draw_portal_portrait(void)
 
     blit_logo(s_W / 2, y, logo);                              y += logo + gap;
     draw_text_in(0, s_W, y, "Tesserae", ts, COL_BLK);         y += 8 * ts + gap;
-    draw_text_in(0, s_W, y, "Setup mode", s, COL_BLK);        y += 8 * s + gap;
+    draw_text_in(0, s_W, y, s_portal_note ? s_portal_note : "Setup mode", s, COL_BLK);
+                                                              y += 8 * s + gap;
     draw_text_in(0, s_W, y, line_ssid, s, COL_BLK);           y += 8 * s + gap;
     draw_text_in(0, s_W, y, k_url, s, COL_BLK);               y += 8 * s + gap;
     if (qn) { y += qz; draw_qr(qr, (s_W - qpix) / 2, y, qscale); }
@@ -247,7 +284,8 @@ static void draw_portal_landscape(void)
     int cx = lm + lw / 2;                               /* left-column centre */
     blit_logo(cx, y, logo);                             y += logo + gap;
     draw_text_in(lm, lw, y, "Tesserae", ts, COL_BLK);   y += 8 * ts + gap;
-    draw_text_in(lm, lw, y, "Setup mode", s, COL_BLK);  y += 8 * s + gap;
+    draw_text_in(lm, lw, y, s_portal_note ? s_portal_note : "Setup mode", s, COL_BLK);
+                                                        y += 8 * s + gap;
     draw_text_in(lm, lw, y, line_ssid, s, COL_BLK);     y += 8 * s + gap;
     draw_text_in(lm, lw, y, k_url, s, COL_BLK);
 
@@ -268,7 +306,42 @@ static void draw_portal(void)
     else           draw_portal_portrait();
 }
 
+/* ---------- message (logo + title + wrapped body, no QR) ---------- */
+
+static void draw_message(void)
+{
+    int side = (s_W < s_H) ? s_W : s_H;
+    int logo = side / 4;
+    int s    = side / 240; if (s < 2) s = 2;
+    int ts   = 2 * s;
+    int gap  = 8 * s;
+    int x0   = s_W / 10;
+    int w    = s_W - 2 * x0;
+
+    int y = s_H / 6;
+    blit_logo(s_W / 2, y, logo);                                   y += logo + gap;
+    if (s_msg_title && *s_msg_title) {
+        draw_text_in(0, s_W, y, s_msg_title, ts, COL_BLK);         y += 8 * ts + gap;
+    }
+    if (s_msg_body && *s_msg_body) {
+        draw_paragraph(x0, w, y, s_msg_body, s, COL_BLK);
+    }
+}
+
 /* ---------- public API ---------- */
 
-esp_err_t splash_show_logo(void)   { return render_and_paint(draw_logo,   "logo"); }
-esp_err_t splash_show_portal(void) { return render_and_paint(draw_portal, "portal"); }
+esp_err_t splash_show_logo(void)   { s_portal_note = NULL; return render_and_paint(draw_logo,   "logo"); }
+esp_err_t splash_show_portal(void) { s_portal_note = NULL; return render_and_paint(draw_portal, "portal"); }
+
+esp_err_t splash_show_portal_note(const char *subtitle)
+{
+    s_portal_note = subtitle;
+    return render_and_paint(draw_portal, "portal-note");
+}
+
+esp_err_t splash_show_message(const char *title, const char *body)
+{
+    s_msg_title = title;
+    s_msg_body  = body;
+    return render_and_paint(draw_message, "message");
+}
