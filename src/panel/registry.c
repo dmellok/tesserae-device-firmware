@@ -20,6 +20,9 @@ const epd_driver_t *epd_active_driver(void) { return &spectra6_spi_single_driver
 #elif defined(PANEL_DRIVER_MONO_SPI)
 #  include "drivers/mono_spi.h"
 const epd_driver_t *epd_active_driver(void) { return &mono_spi_driver; }
+#elif defined(PANEL_DRIVER_IT8951_GRAY)
+#  include "drivers/it8951_gray.h"
+const epd_driver_t *epd_active_driver(void) { return &it8951_gray_driver; }
 #else
 #  error "No PANEL_DRIVER_* selected by the board header."
 #endif

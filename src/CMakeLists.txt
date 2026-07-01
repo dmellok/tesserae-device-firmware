@@ -7,6 +7,7 @@ idf_component_register(
         "panel/drivers/spectra6_t133a01_dual.c"
         "panel/drivers/spectra6_spi_single.c"
         "panel/drivers/mono_spi.c"
+        "panel/drivers/it8951_gray.c"
         "battery.c"
         "wifi_manager.c"
         "provisioning.c"
