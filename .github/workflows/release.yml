@@ -1,0 +1,142 @@
+name: release
+
+# On a published GitHub Release, build every target, merge each into a single
+# flashable factory image (offset 0), and publish the images + a catalog.json to
+# the Cloudflare R2 bucket the tesserae.ink flasher reads. Cutting a release is
+# all it takes for new firmware to appear in the browser flasher.
+#
+# Requires repo secrets: CLOUDFLARE_API_TOKEN (R2 edit), CLOUDFLARE_ACCOUNT_ID.
+# The version is the release tag (e.g. v1.0.0), baked into FW_VERSION and the
+# image filenames.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag to build and publish (e.g. v1.0.0)'
+        required: true
+
+env:
+  R2_BUCKET: tesserae-firmware
+
+jobs:
+  build:
+    name: build ${{ matrix.env }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env:
+          - waveshare-133e6
+          - waveshare-photopainter-73
+          - seeed-reterminal-e1001
+          - seeed-reterminal-e1002
+          - seeed-reterminal-e1003
+          - seeed-reterminal-e1004
+          - seeed-ee02
+          - xiao-epaper-75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Resolve version
+        id: ver
+        run: echo "version=${{ github.event.release.tag_name || inputs.tag }}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini', 'sdkconfig.defaults') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Install tools
+        # Pin esptool to v4: its `merge_bin` subcommand + underscore flags
+        # (--flash_mode/_freq/_size) differ from v5's hyphenated forms.
+        run: pip install -U platformio && pip install "esptool<5"
+
+      - name: Build ${{ matrix.env }}
+        env:
+          PLATFORMIO_BUILD_FLAGS: '-DFW_VERSION=\"${{ steps.ver.outputs.version }}\"'
+        run: pio run -e ${{ matrix.env }}
+
+      # Merge the three images (bootloader 0x0, partitions 0x8000, app 0x10000)
+      # into one factory image flashed at offset 0. `keep` leaves the flash
+      # mode/freq/size exactly as the build set them in the bootloader header.
+      - name: Merge + hash
+        run: |
+          set -euo pipefail
+          v='${{ steps.ver.outputs.version }}'
+          e='${{ matrix.env }}'
+          b=".pio/build/$e"
+          mkdir -p dist
+          bin="dist/$e-$v.factory.bin"
+          python -m esptool --chip esp32s3 merge_bin -o "$bin" \
+            --flash_mode keep --flash_freq keep --flash_size keep \
+            0x0 "$b/bootloader.bin" \
+            0x8000 "$b/partitions.bin" \
+            0x10000 "$b/firmware.bin"
+          sha=$(shasum -a 256 "$bin" | awk '{print $1}')
+          cat > "dist/$e.meta.json" <<JSON
+          {"env":"$e","chipFamily":"ESP32-S3","offset":0,"webSerial":true,"version":"$v","path":"$e/$v.factory.bin","sha256":"$sha"}
+          JSON
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fw-${{ matrix.env }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: publish to R2
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: fw-*
+          merge-multiple: true
+
+      - name: Install wrangler
+        run: npm i -g wrangler
+
+      - name: Fetch existing catalog
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if ! wrangler r2 object get "$R2_BUCKET/catalog.json" --remote --file existing-catalog.json 2>/dev/null; then
+            echo '{}' > existing-catalog.json
+          fi
+
+      - name: Assemble catalog
+        run: |
+          python tools/build_catalog.py artifacts existing-catalog.json catalog.json \
+            "${{ github.event.release.tag_name || inputs.tag }}"
+
+      - name: Upload images + catalog to R2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          while IFS=$'\t' read -r local key; do
+            echo "put $key"
+            wrangler r2 object put "$R2_BUCKET/$key" --file "$local" --remote
+          done < upload_manifest.tsv
+          wrangler r2 object put "$R2_BUCKET/catalog.json" \
+            --file catalog.json --remote --content-type application/json
