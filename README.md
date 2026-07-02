@@ -20,23 +20,37 @@ one board (and thus one driver) per PlatformIO environment.
 
 | Device | Panel family | Controller | Resolution / depth | Driver | Env |
 | --- | --- | --- | --- | --- | --- |
-| Waveshare 13.3" E6 | Spectra-6, dual-controller | UC81xx ×2 | 1200×1600, 4bpp | `spectra6_spi_dual` | `waveshare-133e6` |
-| Seeed reTerminal **E1004** | Spectra-6, dual-chip | T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `seeed-reterminal-e1004` |
-| Seeed reTerminal **E1002** | Spectra-6, single | UC81xx | 800×480, 4bpp | `spectra6_spi_single` | `seeed-reterminal-e1002` |
-| Seeed reTerminal **E1001** | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `seeed-reterminal-e1001` |
-| Seeed reTerminal **E1003** | Grayscale (10.3") | IT8951 | 1872×1404, 4bpp gray | `it8951_gray` | `seeed-reterminal-e1003` |
-| Waveshare **PhotoPainter 7.3"** | Spectra-6, single | ED2208-GCA | 800×480, 4bpp | `spectra6_spi_single` | `waveshare-photopainter-73` |
+| [Seeed reTerminal **E1001**](https://www.seeedstudio.com/reTerminal-E1001-p-6534.html) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `seeed-reterminal-e1001` |
+| [Seeed reTerminal **E1002**](https://www.seeedstudio.com/reTerminal-E1002-p-6533.html) | Spectra-6, single | UC81xx | 800×480, 4bpp | `spectra6_spi_single` | `seeed-reterminal-e1002` |
+| [Seeed reTerminal **E1003**](https://www.seeedstudio.com/reTerminal-E1003-p-6731.html) | Grayscale (10.3") | IT8951 | 1872×1404, 4bpp gray | `it8951_gray` | `seeed-reterminal-e1003` |
+| [Seeed reTerminal **E1004**](https://www.seeedstudio.com/reTerminal-E1004-p-6692.html) | Spectra-6, dual-chip | T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `seeed-reterminal-e1004` |
+| [Seeed **XIAO ePaper Kit — EE02**](https://www.seeedstudio.com/XIAO-ePaper-DIY-Kit-EE02-for-13-3-Spectratm-6-E-Ink.html) | Spectra-6, dual-chip | T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `seeed-ee02` |
+| [**TRMNL 7.5" OG DIY Kit**](https://www.seeedstudio.com/TRMNL-7-5-Inch-OG-DIY-Kit-p-6481.html) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `xiao-epaper-75` |
+| [Waveshare **ESP32-S3-ePaper-13.3E6**](https://www.waveshare.com/esp32-s3-epaper-13.3e6.htm) | Spectra-6, dual-controller | UC81xx ×2 | 1200×1600, 4bpp | `spectra6_spi_dual` | `waveshare-133e6` |
+| [Waveshare **PhotoPainter 7.3"**](https://www.waveshare.com/esp32-s3-photopainter.htm) | Spectra-6, single | ED2208-GCA | 800×480, 4bpp | `spectra6_spi_single` | `waveshare-photopainter-73` |
 
-The four reTerminals and the PhotoPainter have been verified end-to-end on real
-hardware; the Waveshare 13.3E6 is the seed target and builds green. Each board
-also has a `…-selftest` env that paints a driver-only test pattern (colour bars
-/ gray ramp) with no networking — flash that first when bringing up a new unit.
+The four reTerminals, the PhotoPainter, the EE02, and the TRMNL 7.5" kit have been
+verified end-to-end on real hardware; the Waveshare 13.3E6 is the seed target and
+builds green. Each board also has a `…-selftest` env that paints a driver-only
+test pattern (colour bars / gray ramp / mono stripes) with no networking — flash
+that first when bringing up a new unit.
 
-The PhotoPainter shares the E1002's `spectra6_spi_single` driver (its ED2208-GCA
-init is byte-identical); two board-header flags tailor it: `EPD_ROTATE_180` (the
-panel is mounted upside-down in the case) and `BOARD_HAS_PMIC` (panel power +
-battery come from an **AXP2101 PMIC over I2C**, not a GPIO gate / ADC divider —
-see `src/pmic.c`).
+Reuse is the norm — most boards share an existing driver and differ only in the
+board header:
+
+- The **PhotoPainter** shares the E1002's `spectra6_spi_single` driver (its
+  ED2208-GCA init is byte-identical); two board flags tailor it: `EPD_ROTATE_180`
+  (panel mounted upside-down) and `BOARD_HAS_PMIC` (panel power + battery from an
+  **AXP2101 PMIC over I2C**, not a GPIO gate / ADC divider — see `src/pmic.c`).
+- The **XIAO ePaper Kit — EE02** shares the E1004's `spectra6_t133a01_dual`
+  driver (same T133A01 panel), with only a different pin map.
+- The **TRMNL 7.5" OG DIY Kit** shares the E1001's `mono_spi` driver (same
+  800×480 mono panel), with its own pin map.
+
+The three XIAO ESP32-S3 boards (PhotoPainter, EE02, TRMNL 7.5") are **native-USB**
+(no CH340), so their console runs on USB-Serial-JTAG via
+`sdkconfig.usbjtag.defaults` — which also frees UART0 (GPIO43/44) on the boards
+that route those pins to the panel.
 
 ## Architecture
 
@@ -122,9 +136,9 @@ format the firmware expects for that kind:
 
 | Kind | Frame format | Size |
 | --- | --- | --- |
-| `waveshare_133e6`, `seeed_reterminal_e1004` | 4bpp packed Spectra-6 | 960000 B |
+| `waveshare_133e6`, `seeed_reterminal_e1004`, `seeed_ee02` | 4bpp packed Spectra-6 | 960000 B |
 | `seeed_reterminal_e1002`, `waveshare_photopainter_73` | 4bpp packed Spectra-6 | 192000 B |
-| `seeed_reterminal_e1001` | 1bpp packed mono (bit 1 = white) | 48000 B |
+| `seeed_reterminal_e1001`, `xiao_epaper_75` | 1bpp packed mono (bit 1 = white) | 48000 B |
 | `seeed_reterminal_e1003` | 4bpp packed grayscale (0=black…0xF=white) | 1314144 B |
 
 The PhotoPainter reuses the E1002's 800×480 4bpp format exactly (render normally
@@ -154,15 +168,20 @@ The **reTerminals** flash through an onboard **WCH CH340** USB-serial bridge
 and enable it under *System Settings → General → Login Items & Extensions →
 Driver Extensions*; the port then appears as `/dev/cu.wchusbserial*`.
 
-The **PhotoPainter** has no CH340 — it flashes over the S3's **native
-USB-Serial-JTAG**, which enumerates as `/dev/cu.usbmodem*` (no driver needed).
-Note its app logs go out UART0 (GPIO43/44), so they are *not* visible over that
-USB port; use the panel splashes for feedback, or wire a UART adapter.
+The **XIAO ESP32-S3 boards** (PhotoPainter, EE02, TRMNL 7.5") have no CH340 — they
+flash over the S3's **native USB-Serial-JTAG**, which enumerates as
+`/dev/cu.usbmodem*` (no driver needed). These boards route the console to
+USB-Serial-JTAG, so app logs *are* visible over that USB port (except the
+PhotoPainter, whose console stays on UART0 — use the panel splashes there).
 
 ```sh
 pio run -e <env> -t upload --upload-port /dev/cu.wchusbserial*   # reTerminals
-pio run -e waveshare-photopainter-73 -t upload --upload-port /dev/cu.usbmodem*
+pio run -e xiao-epaper-75 -t upload --upload-port /dev/cu.usbmodem*   # XIAO boards
 ```
+
+If a native-USB board's port keeps flickering/disappearing (the app deep-sleeps,
+which drops the USB), force ROM download mode: **hold BOOT, unplug, replug while
+holding BOOT, release** — the port then stays steady for flashing.
 
 Or with esptool directly (from the build dir):
 
