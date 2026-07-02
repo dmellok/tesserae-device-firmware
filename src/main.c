@@ -227,6 +227,11 @@ typedef enum {
     BOOTSTRAP_UNREACHABLE,  /* can't reach Tesserae / code rejected -> portal   */
 } bootstrap_res_t;
 
+/* Persisted onboarding-splash state (rest_config_get/set_ui_state), so a status
+ * splash repaints only on a real transition -- not on every retry wake or, on
+ * USB dev power, every software-restart loop while the state is unchanged. */
+enum { UI_NONE = 0, UI_PENDING = 1, UI_CONNECTED = 2 };
+
 /* First-boot onboarding: obtain a device token. On a non-OK result a backoff is
  * written to rest_config's sleep_s and a short human reason into `note` (for the
  * portal subtitle on UNREACHABLE, or the message body on PENDING). Zero-touch
@@ -426,10 +431,14 @@ void app_main(void)
                 run_provisioning_then_reboot(note[0] ? note : "Can't reach the server");
                 return;   /* not reached */
             }
-            /* PENDING: reachable, just waiting for admin approval. Confirm on
-             * screen once (cold / post-provision boot), then sleep + retry so we
-             * don't repaint the slow panel on every backoff wake. */
-            if (first_boot && note[0]) splash_show_message("Almost done", note);
+            /* PENDING: reachable, just waiting for admin approval. Paint the
+             * status only when we first enter the pending state, so the slow
+             * panel isn't redrawn on every retry wake / USB dev-loop restart
+             * while it stays pending. */
+            if (rest_config_get_ui_state() != UI_PENDING) {
+                if (note[0]) splash_show_message("Almost done", note);
+                rest_config_set_ui_state(UI_PENDING);
+            }
             sleep_forever_or_until_timer();
             return;
         }
@@ -504,12 +513,16 @@ void app_main(void)
         epd_sleep();
         free(frame);
         if (new_etag[0]) { rest_config_set_frame_etag(new_etag); cfg_dirty = true; }
+        rest_config_set_ui_state(UI_CONNECTED);   /* a real frame is up now */
     } else if (just_onboarded) {
-        /* Onboarding completed this cycle but the server has no frame ready yet
-         * -- confirm the successful connect on screen so setup has clear closure
-         * (the frame lands on a later wake). */
-        ESP_LOGI(TAG, "onboarded, no frame yet; painting connected splash");
-        splash_show_message("Connected!", "Waiting for your first frame");
+        /* Onboarding completed but the server has no frame ready yet -- confirm
+         * the successful connect once, on the transition, so setup has clear
+         * closure (the frame lands on a later wake) without redrawing each loop. */
+        if (rest_config_get_ui_state() != UI_CONNECTED) {
+            ESP_LOGI(TAG, "onboarded, no frame yet; painting connected splash");
+            splash_show_message("Connected!", "Waiting for your first frame");
+            rest_config_set_ui_state(UI_CONNECTED);
+        }
     } else if (skip_paint) {
         /* 304/204: nothing changed, leave the current image */
     } else if (rest_config_get()->last_frame_etag[0] != '\0') {

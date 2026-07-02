@@ -17,6 +17,7 @@ static const char *TAG = "rest_cfg";
 #define NVS_KEY_DEVID      "devid"
 #define NVS_KEY_ETAG       "etag"
 #define NVS_KEY_SLEEP_S    "sleep_s"
+#define NVS_KEY_UI_STATE   "ui_state"
 
 static rest_config_t s_cfg;
 static bool          s_loaded;
@@ -139,3 +140,29 @@ void rest_config_set_device_id(const char *id)     { set_str(s_cfg.device_id, si
 void rest_config_set_device_token(const char *tok) { set_str(s_cfg.device_token, sizeof s_cfg.device_token, tok); }
 void rest_config_set_frame_etag(const char *etag)  { set_str(s_cfg.last_frame_etag, sizeof s_cfg.last_frame_etag, etag); }
 void rest_config_set_sleep_s(int32_t s)            { if (s > 0) s_cfg.sleep_s = s; }
+
+/* Persisted onboarding-splash state (a small standalone NVS u8, not part of the
+ * main blob) so the panel is repainted only when the state actually changes --
+ * not on every retry wake or USB dev-loop restart while still pending. */
+uint8_t rest_config_get_ui_state(void)
+{
+    uint8_t v = 0;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS_REST, NVS_READONLY, &h) == ESP_OK) {
+        if (nvs_get_u8(h, NVS_KEY_UI_STATE, &v) != ESP_OK) v = 0;
+        nvs_close(h);
+    }
+    return v;
+}
+
+void rest_config_set_ui_state(uint8_t v)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS_REST, NVS_READWRITE, &h) != ESP_OK) return;
+    uint8_t cur = 0;
+    /* Skip the write if unchanged -- avoids needless flash churn. */
+    if (nvs_get_u8(h, NVS_KEY_UI_STATE, &cur) != ESP_OK || cur != v) {
+        if (nvs_set_u8(h, NVS_KEY_UI_STATE, v) == ESP_OK) nvs_commit(h);
+    }
+    nvs_close(h);
+}

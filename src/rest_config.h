@@ -57,3 +57,8 @@ void rest_config_set_device_id(const char *id);
 void rest_config_set_device_token(const char *token);
 void rest_config_set_frame_etag(const char *etag);
 void rest_config_set_sleep_s(int32_t s);
+
+/* Persisted onboarding-splash state (0 = none/fresh, board-defined otherwise),
+ * used to repaint connect-status splashes only when the state changes. */
+uint8_t rest_config_get_ui_state(void);
+void    rest_config_set_ui_state(uint8_t v);

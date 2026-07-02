@@ -474,6 +474,7 @@ static esp_err_t h_save(httpd_req_t *req)
     if (server_changed || have_pairing) {
         rest_config_set_device_token("");
         rest_config_set_frame_etag("");
+        rest_config_set_ui_state(0);   /* re-onboard -> show "Almost done" again */
     }
     if (rest_config_save() != ESP_OK) {
         return render_form(req, "Failed to write Tesserae settings to NVS.");
