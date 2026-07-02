@@ -90,8 +90,26 @@ done:
     return pin_mv * BOARD_BATTERY_DIVIDER;
 }
 
+#else  /* no battery sense configured for this board */
+
+int battery_read_mv(void) { return 0; }
+
+#endif
+
 #ifdef BATTERY_DEBUG_SWEEP
+/* Board-agnostic ADC1 channel sweep for battery-pin bring-up: logs raw +
+ * calibrated mV for every ADC1 channel (GPIO1..10) in a loop. Self-contained --
+ * available on ANY board when built with -DBATTERY_DEBUG_SWEEP, regardless of
+ * whether a battery channel is configured. Drives BOARD_VBAT_SWITCH_PIN if the
+ * board defines one. Called from main.c before networking; never returns. */
 #include "esp_log.h"
+#include "driver/gpio.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+#include "esp_adc/adc_oneshot.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 void battery_debug_sweep(void)
 {
     static const char *T = "BATSWEEP";
@@ -100,6 +118,17 @@ void battery_debug_sweep(void)
     gpio_set_level(BOARD_VBAT_SWITCH_PIN, 1);
     vTaskDelay(pdMS_TO_TICKS(20));
     ESP_LOGW(T, "load switch GPIO%d driven HIGH", BOARD_VBAT_SWITCH_PIN);
+#endif
+#ifdef BATTERY_SWEEP_ENABLE_PINS
+    /* Probe: drive candidate battery-divider enable pins HIGH before sweeping,
+     * in case the sense divider is gated behind a load switch. */
+    { const int en[] = { BATTERY_SWEEP_ENABLE_PINS };
+      for (unsigned i = 0; i < sizeof(en)/sizeof(en[0]); i++) {
+          gpio_set_direction(en[i], GPIO_MODE_OUTPUT);
+          gpio_set_level(en[i], 1);
+          ESP_LOGW(T, "candidate enable GPIO%d driven HIGH", en[i]);
+      }
+      vTaskDelay(pdMS_TO_TICKS(30)); }
 #endif
     adc_oneshot_unit_handle_t adc = NULL;
     adc_oneshot_unit_init_cfg_t init = { .unit_id = ADC_UNIT_1 };
@@ -132,10 +161,4 @@ void battery_debug_sweep(void)
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
 }
-#endif
-
-#else  /* no battery sense configured for this board */
-
-int battery_read_mv(void) { return 0; }
-
 #endif
