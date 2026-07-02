@@ -35,6 +35,7 @@ jobs:
           - seeed-reterminal-e1004
           - waveshare-photopainter-73
           - seeed-ee02
+          - xiao-epaper-75
     steps:
       - uses: actions/checkout@v4
 
