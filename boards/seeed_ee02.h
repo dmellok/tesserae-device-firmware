@@ -64,16 +64,21 @@
 #define BOARD_BATTERY_DIVIDER      2
 #define BOARD_VBAT_SWITCH_PIN      6
 
-/* Front buttons: the three physical keys on GPIO2/3/5 (per the Seeed EE02
- * firmware; matches the EE04 key layout). All active-low, RTC-capable -> ext1
- * deep-sleep wake sources. GPIO2 = "Button 1" (closest to USB-C) is confirmed as
- * the wake key; it's assigned to refresh. GPIO3/GPIO5 are the other two keys,
- * mapped to right/left as a guess. A press wakes early and reports the button so
- * the server rotates / repaints (see buttons.h).
- * TODO(verify): confirm GPIO3=right / GPIO5=left on hardware. */
+/* Front buttons: the three physical keys labelled Key1/Key2/Key3 on GPIO2/3/5
+ * (per the Seeed EE02 firmware; matches the EE04 key layout). All active-low,
+ * RTC-capable -> ext1 deep-sleep wake sources. GPIO2 = Key1 (closest to USB-C)
+ * is confirmed as the wake key. The keys are only numbered, so the action
+ * assignment is our choice: Key1=refresh, Key2=left, Key3=right. A press wakes
+ * early and reports the button so the server rotates / repaints (see buttons.h).
+ *
+ * TODO(verify on battery): only Key1=GPIO2 is confirmed. Key2/Key3 are assumed
+ * to be GPIO3/GPIO5 sequentially, so Key2=left=GPIO3 and Key3=right=GPIO5 are a
+ * best guess. Can't serial-test on USB (native-USB board: USB-JTAG console dies
+ * in deep sleep, and on USB it never sleeps), so verify once the server handles
+ * button events -- run on battery and watch the panel rotate/refresh. */
 #define BOARD_BTN_REFRESH_PIN  2
-#define BOARD_BTN_RIGHT_PIN    3
-#define BOARD_BTN_LEFT_PIN     5
+#define BOARD_BTN_LEFT_PIN     3
+#define BOARD_BTN_RIGHT_PIN    5
 
 /* MCU tier: ESP32-S3 + octal PSRAM. */
 #define MCU_TIER_S3_OCTAL_PSRAM 1
