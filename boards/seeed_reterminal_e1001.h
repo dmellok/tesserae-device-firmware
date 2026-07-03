@@ -58,7 +58,9 @@
  * unverified. All active-low, RTC-capable, and clear of the panel pins
  * (7/9/10/11/12/13). refresh->repaint, left->rotate prev, right->rotate next
  * (mapping is configurable server-side; see buttons.h).
- * TODO(verify): confirm GPIO4=right / GPIO5=left on hardware. */
+ * VERIFIED on E1001 hardware by button icon (serial log, 2026-07-03): the
+ * left/right/refresh keys report left/right/refresh respectively. Physical order
+ * left-to-right is Left, Right, Refresh (green on the end, not the middle). */
 #define BOARD_BTN_REFRESH_PIN  3
 #define BOARD_BTN_RIGHT_PIN    4
 #define BOARD_BTN_LEFT_PIN     5
