@@ -52,6 +52,17 @@
 #define BOARD_BATTERY_DIVIDER      2
 #define BOARD_VBAT_SWITCH_PIN      21
 
+/* Front buttons (reTerminal E baseboard). The middle "green" key on GPIO3 is
+ * confirmed (Seeed/TRMNL firmware use it as the wake/interrupt pin); the
+ * left/right keys on GPIO5/GPIO4 come from Seeed's ESPHome reference and are
+ * unverified. All active-low, RTC-capable, and clear of the panel pins
+ * (7/9/10/11/12/13). refresh->repaint, left->rotate prev, right->rotate next
+ * (mapping is configurable server-side; see buttons.h).
+ * TODO(verify): confirm GPIO4=right / GPIO5=left on hardware. */
+#define BOARD_BTN_REFRESH_PIN  3
+#define BOARD_BTN_RIGHT_PIN    4
+#define BOARD_BTN_LEFT_PIN     5
+
 /* MCU tier: ESP32-S3 + PSRAM (assumed octal; verify on hardware). */
 #define MCU_TIER_S3_OCTAL_PSRAM 1
 

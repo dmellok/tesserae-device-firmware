@@ -56,6 +56,15 @@
 #define BOARD_BATTERY_DIVIDER      2
 #define BOARD_VBAT_SWITCH_PIN      40
 
+/* Front buttons (reTerminal E baseboard). Middle "green" key on GPIO3 confirmed
+ * (Seeed/TRMNL firmware wake/interrupt pin); left/right on GPIO5/GPIO4 from
+ * Seeed's ESPHome reference, unverified. Active-low, RTC-capable, clear of the
+ * panel pins. refresh->repaint, left->rotate prev, right->rotate next (see
+ * buttons.h). TODO(verify): confirm GPIO4=right / GPIO5=left on hardware. */
+#define BOARD_BTN_REFRESH_PIN  3
+#define BOARD_BTN_RIGHT_PIN    4
+#define BOARD_BTN_LEFT_PIN     5
+
 /* Board model -> default device id "reTerminal_E1003_<mac-suffix>". */
 #define TESSERAE_DEVICE_MODEL  "reTerminal_E1003"
 

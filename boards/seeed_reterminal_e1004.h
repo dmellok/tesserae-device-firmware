@@ -66,6 +66,19 @@
 #define BOARD_BATTERY_DIVIDER      2
 #define BOARD_VBAT_SWITCH_PIN      21
 
+/* Front buttons -- SPECULATIVE, whole set unverified. The E1004 is NOT in the
+ * TRMNL firmware and Seeed hasn't published its schematic, so neither the button
+ * type (the 13.3" may use capacitive/touch keys instead of the E1001-3 tactile
+ * ones) nor the pins are confirmed. We reuse the E1001-3 GPIO3/4/5 mapping as a
+ * best guess: GPIO3/4/5 are free of this board's panel pins (note GPIO2 here is
+ * EPD_PIN_CS_S, so the EE02's GPIO2 key does NOT apply). Low-risk -- if the keys
+ * are actually a touch controller, ext1 simply never fires and they stay inert.
+ * TODO(verify): probe on hardware (tactile vs cap; scan I2C 0x44 for a touch IC)
+ * before trusting these. See buttons.h. */
+#define BOARD_BTN_REFRESH_PIN  3
+#define BOARD_BTN_RIGHT_PIN    4
+#define BOARD_BTN_LEFT_PIN     5
+
 /* ------------------------------------------------------------------ */
 /* MCU tier: ESP32-S3 + PSRAM (assumed octal, verify on hardware).     */
 /* ------------------------------------------------------------------ */

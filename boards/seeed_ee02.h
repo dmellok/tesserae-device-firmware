@@ -64,12 +64,16 @@
 #define BOARD_BATTERY_DIVIDER      2
 #define BOARD_VBAT_SWITCH_PIN      6
 
-/* Manual wake + refresh button: GPIO2 = the board's "Button 1" (closest to the
- * USB-C), one of the three physical keys on GPIO2/3/5 (per the Seeed EE02
- * firmware; matches the EE04 key layout). Active-low, RTC-capable -> usable as an
- * ext1 deep-sleep wake source. A press wakes the device early and forces a
- * repaint (main.c). GPIO3/GPIO5 are the other two keys, free for future use. */
-#define BOARD_WAKE_BTN_PIN     2
+/* Front buttons: the three physical keys on GPIO2/3/5 (per the Seeed EE02
+ * firmware; matches the EE04 key layout). All active-low, RTC-capable -> ext1
+ * deep-sleep wake sources. GPIO2 = "Button 1" (closest to USB-C) is confirmed as
+ * the wake key; it's assigned to refresh. GPIO3/GPIO5 are the other two keys,
+ * mapped to right/left as a guess. A press wakes early and reports the button so
+ * the server rotates / repaints (see buttons.h).
+ * TODO(verify): confirm GPIO3=right / GPIO5=left on hardware. */
+#define BOARD_BTN_REFRESH_PIN  2
+#define BOARD_BTN_RIGHT_PIN    3
+#define BOARD_BTN_LEFT_PIN     5
 
 /* MCU tier: ESP32-S3 + octal PSRAM. */
 #define MCU_TIER_S3_OCTAL_PSRAM 1

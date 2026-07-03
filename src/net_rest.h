@@ -73,6 +73,13 @@ rest_status_t rest_register(uint16_t panel_w, uint16_t panel_h,
                             const char *mac, const char *fw_version,
                             rest_register_out_t *out, uint32_t timeout_ms);
 
+/* Report a front-button press with the subsequent frame + status requests.
+ * name is "refresh"/"left"/"right" (see buttons.h); NULL/"" clears it. event_id
+ * is a monotonic per-press id the server can dedup on. Sticky until cleared:
+ * adds ?button=<name>&event=<id> to the frame GET and {"button","button_event_id"}
+ * to the status POST. */
+void rest_set_button(const char *name, uint32_t event_id);
+
 /* GET /api/v1/device/<id>/frame with Bearer auth and If-None-Match (cached
  * etag). REST_OK fills out (incl. the new etag); REST_NOT_MODIFIED and
  * REST_NO_CONTENT mean skip the paint. */

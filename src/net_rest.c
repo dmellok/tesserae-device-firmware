@@ -37,6 +37,18 @@ static char     s_etag[80];
 static int      s_retry_after;
 static uint32_t s_server_date;
 
+/* Pending front-button press to report with the next frame/status request.
+ * Empty = none. Set by rest_set_button() on a button wake (see buttons.h). */
+static char     s_button[16];
+static uint32_t s_button_event;
+
+void rest_set_button(const char *name, uint32_t event_id)
+{
+    if (name && name[0]) snprintf(s_button, sizeof s_button, "%s", name);
+    else                 s_button[0] = '\0';
+    s_button_event = event_id;
+}
+
 /* Days since the Unix epoch for a civil date (Howard Hinnant's algorithm). */
 static long days_from_civil(int y, unsigned m, unsigned d)
 {
@@ -279,7 +291,11 @@ rest_status_t rest_get_frame(rest_frame_out_t *out, uint32_t timeout_ms)
     memset(out, 0, sizeof *out);
     const rest_config_t *c = rest_config_get();
     char url[256];
-    snprintf(url, sizeof url, "%s/api/v1/device/%s/frame", c->server_url, rest_config_device_id());
+    int un = snprintf(url, sizeof url, "%s/api/v1/device/%s/frame", c->server_url, rest_config_device_id());
+    /* A button wake asks the server to act (rotate/refresh) before it responds;
+     * event= lets the server dedup a retried request to one rotation step. */
+    if (s_button[0] && un > 0 && un < (int)sizeof url)
+        snprintf(url + un, sizeof url - un, "?button=%s&event=%u", s_button, (unsigned)s_button_event);
 
     char auth[300], inm[128];
     snprintf(auth, sizeof auth, "Bearer %s", c->device_token);
@@ -334,6 +350,10 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     cJSON_AddNumberToObject(o, "panel_w", panel_w);
     cJSON_AddNumberToObject(o, "panel_h", panel_h);
     if (sleep_until) cJSON_AddNumberToObject(o, "sleep_until", (double)sleep_until);
+    if (s_button[0]) {   /* telemetry: which button drove this wake, + dedup id */
+        cJSON_AddStringToObject(o, "button", s_button);
+        cJSON_AddNumberToObject(o, "button_event_id", s_button_event);
+    }
     char *body = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     if (!body) return REST_NET_ERR;
