@@ -28,6 +28,9 @@
 #include "freertos/task.h"
 
 #include "app_config.h"
+#ifdef BOARD_WAKE_BTN_PIN     /* board macro comes from app_config.h -> board.h */
+#include "driver/rtc_io.h"
+#endif
 #include "battery.h"
 #include "epd_driver.h"
 #include "image_decoder.h"
@@ -53,6 +56,15 @@ static const char *TAG = "main";
 RTC_NOINIT_ATTR static uint32_t s_rtc_magic;
 RTC_NOINIT_ATTR static uint32_t s_reset_taps;
 
+/* Consecutive failed WiFi connects across deep-sleep wakes (RTC-retained). An
+ * already-onboarded device retries a few wakes on a transient outage before it
+ * gives up and reopens the portal, instead of dropping to AP on the first miss. */
+RTC_NOINIT_ATTR static uint32_t s_wifi_fail_count;
+
+/* One-shot deep-sleep interval override (seconds); 0 = use the server interval.
+ * Set before sleep to schedule a shorter WiFi retry backoff. */
+static int32_t s_sleep_override_s = 0;
+
 /* Increment on each manual reset; two within one wake window => settings mode.
  * The window is closed by zeroing the counter when we commit to deep sleep
  * (see sleep_forever_or_until_timer), so single taps minutes apart don't add
@@ -62,6 +74,7 @@ static bool detect_settings_mode(esp_reset_reason_t reason)
     if (s_rtc_magic != RTC_TAP_MAGIC) {   /* power-on / garbage: seed it */
         s_rtc_magic = RTC_TAP_MAGIC;
         s_reset_taps = 0;
+        s_wifi_fail_count = 0;
     }
 
     bool manual = (reason == ESP_RST_POWERON || reason == ESP_RST_EXT);
@@ -153,12 +166,21 @@ static void sleep_forever_or_until_timer(void)
         esp_restart();
     }
 
-    int interval = effective_sleep_s();
+    int interval = (s_sleep_override_s > 0) ? s_sleep_override_s : effective_sleep_s();
     ESP_LOGI(TAG, "on battery; deep sleep for %d s%s",
              interval,
-             (interval == SLEEP_INTERVAL_S) ? " (default)" : " (server-driven)");
+             s_sleep_override_s > 0 ? " (retry backoff)"
+               : (interval == SLEEP_INTERVAL_S) ? " (default)" : " (server-driven)");
     /* epd_sleep() already dropped the panel power rail; no extra cleanup
      * needed before going down. */
+#ifdef BOARD_WAKE_BTN_PIN
+    /* Wake on the manual button too (active-low; RTC pull-up so the idle level
+     * is high and doesn't spuriously wake us). Pin must be RTC-capable (S3
+     * GPIO0-21). Wakes early + forces a refresh on the next boot. */
+    rtc_gpio_pullup_en(BOARD_WAKE_BTN_PIN);
+    rtc_gpio_pulldown_dis(BOARD_WAKE_BTN_PIN);
+    esp_sleep_enable_ext1_wakeup(1ULL << BOARD_WAKE_BTN_PIN, ESP_EXT1_WAKEUP_ANY_LOW);
+#endif
     esp_sleep_enable_timer_wakeup((uint64_t)interval * 1000000ULL);
     esp_deep_sleep_start();
     /* not reached */
@@ -169,14 +191,17 @@ static void sleep_forever_or_until_timer(void)
 static void run_provisioning_then_reboot(const char *note)
 {
     ESP_LOGW(TAG, "opening captive portal%s%s", note ? ": " : "", note ? note : "");
-    /* Paint logo + WPA QR before bringing up the AP so the user can scan
-     * to join Tesserae-Setup instead of typing the SSID. ~30 s panel refresh
-     * runs concurrently with the AP/HTTPD/DNS bringup that's about to happen.
-     * `note` (when set) replaces the "Setup mode" subtitle with the reason the
-     * user was sent back here (failed WiFi / unreachable server). */
+    /* Bring the AP up FIRST (joinable in ~1-2 s), THEN paint the portal splash.
+     * The splash is a ~25-30 s blocking panel refresh (worst on the 13.3"), so
+     * doing it first would leave the AP dark that whole time -- and the QR it
+     * shows would point at an AP that isn't up yet. With begin() first, the AP
+     * is live while the panel renders, and a submit during the paint is captured
+     * on the httpd task (serve() picks it up). `note` (when set) replaces the
+     * "Setup mode" subtitle with why the user was sent back here. */
+    provisioning_begin();
     if (note) splash_show_portal_note(note);
     else      splash_show_portal();
-    esp_err_t err = provisioning_run_blocking();
+    esp_err_t err = provisioning_serve();
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "creds saved; rebooting to use them");
         esp_restart();
@@ -330,6 +355,17 @@ void app_main(void)
     ESP_LOGI(TAG, "boot; reset_reason=%d wakeup_cause=%d settings_mode=%d first_boot=%d",
              reset_reason, esp_sleep_get_wakeup_cause(), settings_mode, first_boot);
 
+#ifdef BOARD_WAKE_BTN_PIN
+    /* Manual wake button: armed as an ext1 deep-sleep source (see the sleep
+     * path). A press both wakes the device early and forces a fresh paint this
+     * cycle (we drop the cached ETag below so the server returns 200, not 304). */
+    bool woke_by_button = (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1);
+    if (woke_by_button)
+        ESP_LOGI(TAG, "woke on button (GPIO%d): manual refresh", BOARD_WAKE_BTN_PIN);
+#else
+    const bool woke_by_button = false;
+#endif
+
 #ifdef BATTERY_DEBUG_SWEEP
     /* Battery sense bring-up: log every ADC1 channel to find the real sense pin
      * + divider. No networking. Enable with -DBATTERY_DEBUG_SWEEP. */
@@ -376,11 +412,33 @@ void app_main(void)
 
     esp_err_t err = wifi_sta_connect_stored();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "STA connect failed (%s); falling back to portal",
-                 esp_err_to_name(err));
+        /* A device that has already onboarded (holds a token) almost always
+         * fails here because of a transient outage -- a router reboot or being
+         * briefly out of range -- not bad credentials. Don't drop a working
+         * device into AP mode on the first miss (that strands it off-network and
+         * burns the battery on an always-on radio). Retry over a few short-sleep
+         * wakes; only after WIFI_FAIL_AP_THRESHOLD consecutive misses reopen the
+         * portal. A never-onboarded device goes straight to the portal, since
+         * there the creds themselves are the likely problem. */
+        bool onboarded = rest_config_get()->device_token[0] != '\0';
+        if (onboarded && ++s_wifi_fail_count < WIFI_FAIL_AP_THRESHOLD) {
+            ESP_LOGW(TAG, "STA connect failed (%s); onboarded, retry %lu/%d in %ds "
+                     "(not opening AP)", esp_err_to_name(err),
+                     (unsigned long)s_wifi_fail_count, WIFI_FAIL_AP_THRESHOLD,
+                     WIFI_RETRY_SLEEP_S);
+            wifi_sta_stop();
+            s_sleep_override_s = WIFI_RETRY_SLEEP_S;
+            sleep_forever_or_until_timer();
+            return;
+        }
+        ESP_LOGE(TAG, "STA connect failed (%s)%s; opening portal",
+                 esp_err_to_name(err),
+                 onboarded ? " after repeated retries" : " (not onboarded)");
+        s_wifi_fail_count = 0;
         run_provisioning_then_reboot("Wi-Fi didn't connect");
         return;
     }
+    s_wifi_fail_count = 0;   /* connected -> clear the retry streak */
 
     /* Double-tap reset: serve the always-on settings editor on the LAN instead
      * of running the paint cycle. Stays up until a save (then reboot) or the
@@ -445,6 +503,12 @@ void app_main(void)
         just_onboarded = true;   /* got a token this cycle */
         c = rest_config_get();
     }
+
+    /* A manual button wake forces a repaint even if the frame is unchanged:
+     * drop the cached ETag so rest_get_frame() omits If-None-Match and the
+     * server returns 200 (full frame) instead of 304. In-memory only -- not
+     * persisted, so the next timer wake resumes normal 304 dedup. */
+    if (woke_by_button) rest_config_set_frame_etag("");
 
     /* 2. Frame metadata, with If-None-Match for the ETag/304 dedup. */
     rest_frame_out_t fo;

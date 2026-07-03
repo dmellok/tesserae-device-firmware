@@ -521,7 +521,14 @@ static void do_wifi_scan(void)
      * WIFI_EVENT_STA_START has been processed. Calling scan_start before that
      * returns ESP_ERR_WIFI_STATE (races ahead on faster-booting boards, e.g.
      * the E1002). Retry briefly until the STA is ready (~1.5 s cap). */
-    wifi_scan_config_t cfg = {0};
+    /* Active scan with a short per-channel dwell: this runs on the critical
+     * path before the AP comes up (see provisioning_begin), so keep it fast.
+     * Active (probe-request) at 30-80 ms/channel is ~0.5-1 s vs the passive
+     * default's ~2-3 s -- the picker is a convenience, not worth a slow AP. */
+    wifi_scan_config_t cfg = {
+        .scan_type          = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time.active   = { .min = 30, .max = 80 },
+    };
     err = ESP_ERR_WIFI_STATE;
     for (int attempt = 0; attempt < 15 && err == ESP_ERR_WIFI_STATE; attempt++) {
         err = esp_wifi_scan_start(&cfg, /* block */ true);
@@ -674,13 +681,14 @@ static void idle_tracker_uninstall(void)
 
 /* ---------- public API ---------- */
 
-esp_err_t provisioning_run_blocking(void)
+void provisioning_begin(void)
 {
     s_done = xEventGroupCreate();
 
     /* Quick STA scan first so the form can offer a click-to-fill picker of
      * nearby networks; runs only on the captive-portal path (not the
-     * always-on settings editor, where we're already STA-associated). */
+     * always-on settings editor, where we're already STA-associated). Must
+     * precede start_ap(), which takes the radio. */
     do_wifi_scan();
 
     start_ap();
@@ -690,10 +698,15 @@ esp_err_t provisioning_run_blocking(void)
 
     ESP_LOGI(TAG, "captive portal up; %ds idle timeout (resets on each STA join)",
              PROVISION_PORTAL_TIMEOUT_S);
+}
 
+esp_err_t provisioning_serve(void)
+{
     /* Poll in 1 s chunks so we can react to either a credential save OR the
      * idle deadline elapsing without a client connected. The idle deadline
-     * is zeroed by the AP event handler whenever >=1 STA is associated. */
+     * is zeroed by the AP event handler whenever >=1 STA is associated. The
+     * save handler runs on the httpd task, so a submit that lands while the
+     * caller was painting the splash (before this call) is captured too. */
     EventBits_t bits = 0;
     while (1) {
         bits = xEventGroupWaitBits(s_done, BIT_CREDS_SAVED,
@@ -717,6 +730,12 @@ esp_err_t provisioning_run_blocking(void)
     esp_wifi_stop();
 
     return (bits & BIT_CREDS_SAVED) ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+esp_err_t provisioning_run_blocking(void)
+{
+    provisioning_begin();
+    return provisioning_serve();
 }
 
 esp_err_t settings_server_run_blocking(void)

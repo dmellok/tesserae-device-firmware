@@ -71,6 +71,13 @@
 #define WIFI_CONNECT_RETRIES   5
 #define WIFI_CONNECT_TIMEOUT_MS 15000
 
+/* Resilience for an already-onboarded device: if WiFi fails on a wake (router
+ * reboot, briefly out of range), don't nuke a working device into AP mode and
+ * drain the battery. Sleep this long and retry; only after this many consecutive
+ * failed wakes fall back to the captive portal. */
+#define WIFI_RETRY_SLEEP_S       60
+#define WIFI_FAIL_AP_THRESHOLD   12   /* ~12 min of retries before opening AP */
+
 /* Max idle window the captive portal stays up with no client associated
  * to the SoftAP. The timer resets each time a STA joins the AP, so a user
  * actively filling in the form never times out. After this many seconds

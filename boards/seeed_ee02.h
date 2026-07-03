@@ -11,7 +11,7 @@
  *   TFT_ENABLE=43, SCLK=D8=GPIO7, MOSI=D10=GPIO9.
  *
  * NOTE: CS_M (44) and EN (43) are the ESP32-S3 UART0 TX/RX pins. This env's
- * sdkconfig (sdkconfig.ee02.defaults, wired via platformio.ini) moves the
+ * sdkconfig (sdkconfig.usbjtag.defaults, wired via platformio.ini) moves the
  * console to USB-Serial-JTAG so UART0 doesn't fight the panel.
  *
  * Frame is the same 960000-byte 1200x1600 4bpp Spectra layout as the E1004, so
@@ -54,9 +54,22 @@
  * bytes) as the E1004, so the server maps this to the existing renderer. */
 #define TESSERAE_DEVICE_KIND   "seeed_ee02"
 
-/* No battery-sense pin wired yet (Seeed_GFX exposes none; the board has only a
- * charge-status LED). battery_read_mv() -> 0 = "unknown" until we find the ADC
- * pin from the schematic. Intentionally no BOARD_BATTERY_ADC_CHANNEL. */
+/* Battery sense: GPIO1 = ADC1 channel 0, 2:1 divider, gated by a load switch on
+ * GPIO6 (active-high) -- the same XIAO ePaper driver-board circuit as the 7.5"
+ * (mono) kit, which we isolated on hardware there (switch GPIO6, not the
+ * reTerminals' GPIO21). Same driver board -> same battery wiring.
+ * TODO(verify): confirm on an EE02 with the ADC sweep (-DBATTERY_DEBUG_SWEEP
+ * -DBATTERY_SWEEP_ENABLE_PINS=6); GPIO1 should read ~cell/2 with GPIO6 high. */
+#define BOARD_BATTERY_ADC_CHANNEL  ADC_CHANNEL_0
+#define BOARD_BATTERY_DIVIDER      2
+#define BOARD_VBAT_SWITCH_PIN      6
+
+/* Manual wake + refresh button: GPIO2 = the board's "Button 1" (closest to the
+ * USB-C), one of the three physical keys on GPIO2/3/5 (per the Seeed EE02
+ * firmware; matches the EE04 key layout). Active-low, RTC-capable -> usable as an
+ * ext1 deep-sleep wake source. A press wakes the device early and forces a
+ * repaint (main.c). GPIO3/GPIO5 are the other two keys, free for future use. */
+#define BOARD_WAKE_BTN_PIN     2
 
 /* MCU tier: ESP32-S3 + octal PSRAM. */
 #define MCU_TIER_S3_OCTAL_PSRAM 1
