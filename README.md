@@ -162,6 +162,23 @@ artifact / `.bin` names. Local builds fall back to `0.0.0-dev`.
 
 ## Flash
 
+### Web flasher — easiest, no toolchain
+
+The simplest way to flash a device is the browser flasher at
+**[tesserae.ink/flash](https://tesserae.ink/flash)** — no PlatformIO, no esptool,
+nothing to install. Plug the device in over USB, pick your board and version,
+and click flash; it talks to the ESP32 directly over **WebSerial** (use Chrome
+or Edge). Each release published here is built and uploaded automatically, so
+the flasher always offers the latest firmware for every target.
+
+One driver caveat: the **reTerminals** use a WCH CH340 bridge, so on macOS you
+still need the CH34x driver below for the browser to see the port. The XIAO
+boards (PhotoPainter, EE02, TRMNL 7.5") are native-USB and need no driver.
+
+### From source (PlatformIO)
+
+Prefer building yourself? Flash the env you [built](#build) over USB:
+
 The **reTerminals** flash through an onboard **WCH CH340** USB-serial bridge
 (not the ESP32-S3 native USB). On macOS install the WCH CH34x DriverKit driver
 ([WCHSoftGroup/ch34xser_macos](https://github.com/WCHSoftGroup/ch34xser_macos))
