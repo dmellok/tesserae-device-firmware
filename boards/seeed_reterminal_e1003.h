@@ -60,8 +60,8 @@
  * (Seeed/TRMNL firmware wake/interrupt pin); left/right on GPIO5/GPIO4 from
  * Seeed's ESPHome reference, unverified. Active-low, RTC-capable, clear of the
  * panel pins. refresh->repaint, left->rotate prev, right->rotate next (see
- * buttons.h). GPIO3/4/5 = refresh/right/left verified on E1001 hardware
- * (2026-07-03); same reTerminal E baseboard, so it carries here. */
+ * buttons.h). GPIO3/4/5 = refresh/right/left VERIFIED on E1003 hardware directly
+ * by button icon (2026-07-03); matches the E1001 baseboard. */
 #define BOARD_BTN_REFRESH_PIN  3
 #define BOARD_BTN_RIGHT_PIN    4
 #define BOARD_BTN_LEFT_PIN     5
