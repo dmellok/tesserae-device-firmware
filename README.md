@@ -128,7 +128,13 @@ The device talks to `<server_url>/api/v1/device/`:
 | `POST /discover` | none | Zero-touch onboarding. The admin approves the device in the Tesserae UI; the next discover returns the token (matched by MAC). |
 | `POST /register` | `X-Pairing-Code` | Onboarding gated by a pairing code (idempotent). |
 | `GET /<id>/frame` | `Bearer` + `If-None-Match` | Frame metadata + ETag; the `.bin` is fetched from the returned URL. |
-| `POST /<id>/status` | `Bearer` | Telemetry (battery, rssi, ip); returns `next_poll_s` (drives the sleep) and config. |
+| `POST /<id>/status` | `Bearer` | Telemetry (battery, rssi, ip, `fw_version`); returns `next_poll_s` (drives the sleep) and config. |
+
+The `/status` heartbeat JSON includes **`fw_version`**, the build's semantic
+version with no leading `v` (for example `1.2.0`; untagged builds report
+`0.0.<build>` or `0.0.0-dev`). The server compares it against the latest
+available build to flag when an update can be flashed. Reporting is passive: the
+firmware does no OTA.
 
 Each device reports a **kind** (`TESSERAE_DEVICE_KIND` in its board header) that
 selects the server-side renderer. The server must produce the exact panel-native
@@ -158,7 +164,10 @@ The first build fetches the ESP-IDF toolchain (a few minutes); later builds take
 Every push is built for all targets in CI (see
 `.github/workflows/firmware.yml`), which stamps an auto-incrementing
 `0.0.<build>` version (starting at `0.0.0`) into `FW_VERSION` and the uploaded
-artifact / `.bin` names. Local builds fall back to `0.0.0-dev`.
+artifact / `.bin` names. Local builds fall back to `0.0.0-dev`. Tagged releases
+(`.github/workflows/release.yml`) instead stamp the release tag's semantic
+version with the leading `v` stripped, so tag `v1.2.0` reports `FW_VERSION`
+`1.2.0` in the heartbeat while the artifact paths keep the `v` prefix.
 
 ## Flash
 

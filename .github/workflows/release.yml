@@ -46,7 +46,14 @@ jobs:
 
       - name: Resolve version
         id: ver
-        run: echo "version=${{ github.event.release.tag_name || inputs.tag }}" >> "$GITHUB_OUTPUT"
+        # version: raw tag (e.g. v1.2.0), used for the artifact + catalog paths.
+        # fw_version: leading v stripped, baked into FW_VERSION so the /status
+        # heartbeat reports plain SemVer (1.2.0). The server update check
+        # compares that against the latest available build.
+        run: |
+          v='${{ github.event.release.tag_name || inputs.tag }}'
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "fw_version=${v#v}" >> "$GITHUB_OUTPUT"
 
       - name: Cache PlatformIO
         uses: actions/cache@v4
@@ -64,7 +71,7 @@ jobs:
 
       - name: Build ${{ matrix.env }}
         env:
-          PLATFORMIO_BUILD_FLAGS: '-DFW_VERSION=\"${{ steps.ver.outputs.version }}\"'
+          PLATFORMIO_BUILD_FLAGS: '-DFW_VERSION=\"${{ steps.ver.outputs.fw_version }}\"'
         run: pio run -e ${{ matrix.env }}
 
       # Merge the three images (bootloader 0x0, partitions 0x8000, app 0x10000)
