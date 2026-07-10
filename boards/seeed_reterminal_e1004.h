@@ -66,6 +66,14 @@
 #define BOARD_BATTERY_DIVIDER      2
 #define BOARD_VBAT_SWITCH_PIN      21
 
+/* Onboard SHT4x environmental sensor shared by all reTerminal E models. */
+#define BOARD_HAS_SHT4X            1
+#define BOARD_SHT4X_I2C_PORT       0
+#define BOARD_SHT4X_I2C_SDA        19
+#define BOARD_SHT4X_I2C_SCL        20
+#define BOARD_SHT4X_I2C_HZ         100000
+#define BOARD_SHT4X_I2C_ADDR       0x44
+
 /* Front buttons -- VERIFIED on E1004 hardware by button icon (serial log,
  * 2026-07-03): the keys are plain active-low GPIOs (ext1 wakes fire), NOT a
  * capacitive/touch controller as feared. The pin->key wiring DIFFERS from the

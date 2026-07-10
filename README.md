@@ -74,6 +74,7 @@ src/
                             connect-status messages), bpp-aware
   battery.c                 board-gated Li-Po telemetry (ADC or PMIC gauge)
   pmic.c                    AXP2101 PMIC over I2C (rails + battery), BOARD_HAS_PMIC
+  sht4x.c                   E-Series environment telemetry, BOARD_HAS_SHT4X
   wifi_manager.c            WiFi STA/AP
 ```
 
@@ -93,7 +94,7 @@ boot
   -> GET frame (If-None-Match)         304 -> skip paint
                                        204 -> nothing rendered yet
                                        200 -> download the panel-native .bin
-  -> POST status (battery, rssi, next_poll_s)
+  -> POST status (battery, rssi, optional temperature/humidity, next_poll_s)
   -> WiFi off
   -> paint the frame (radio off for the slow refresh)
   -> deep sleep for the server-driven interval
@@ -128,13 +129,18 @@ The device talks to `<server_url>/api/v1/device/`:
 | `POST /discover` | none | Zero-touch onboarding. The admin approves the device in the Tesserae UI; the next discover returns the token (matched by MAC). |
 | `POST /register` | `X-Pairing-Code` | Onboarding gated by a pairing code (idempotent). |
 | `GET /<id>/frame` | `Bearer` + `If-None-Match` | Frame metadata + ETag; the `.bin` is fetched from the returned URL. |
-| `POST /<id>/status` | `Bearer` | Telemetry (battery, rssi, ip, `fw_version`); returns `next_poll_s` (drives the sleep) and config. |
+| `POST /<id>/status` | `Bearer` | Telemetry (battery, rssi, ip, `fw_version`, optional environment); returns `next_poll_s` (drives the sleep) and config. |
 
 The `/status` heartbeat JSON includes **`fw_version`**, the build's semantic
 version with no leading `v` (for example `1.2.0`; untagged builds report
 `0.0.<build>` or `0.0.0-dev`). The server compares it against the latest
 available build to flag when an update can be flashed. Reporting is passive: the
 firmware does no OTA.
+
+Seeed reTerminal E1001-E1004 boards also report the onboard SHT4x reading as
+**`temperature_c`** (degrees Celsius) and **`humidity_pct`** (relative humidity
+percentage), plus `env_sensor: "sht4x"`. A failed sensor read omits these fields
+without interrupting the heartbeat or frame cycle.
 
 Each device reports a **kind** (`TESSERAE_DEVICE_KIND` in its board header) that
 selects the server-side renderer. The server must produce the exact panel-native

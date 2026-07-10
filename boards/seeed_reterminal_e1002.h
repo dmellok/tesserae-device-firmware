@@ -54,6 +54,14 @@
 #define BOARD_BATTERY_DIVIDER      2
 #define BOARD_VBAT_SWITCH_PIN      21
 
+/* Onboard SHT4x environmental sensor shared by all reTerminal E models. */
+#define BOARD_HAS_SHT4X            1
+#define BOARD_SHT4X_I2C_PORT       0
+#define BOARD_SHT4X_I2C_SDA        19
+#define BOARD_SHT4X_I2C_SCL        20
+#define BOARD_SHT4X_I2C_HZ         100000
+#define BOARD_SHT4X_I2C_ADDR       0x44
+
 /* Front buttons (reTerminal E baseboard). Middle "green" key on GPIO3 confirmed
  * (Seeed/TRMNL firmware wake/interrupt pin); left/right on GPIO5/GPIO4 from
  * Seeed's ESPHome reference, unverified. Active-low, RTC-capable, clear of the

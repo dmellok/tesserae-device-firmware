@@ -10,6 +10,7 @@ idf_component_register(
         "panel/drivers/it8951_gray.c"
         "battery.c"
         "pmic.c"
+        "sht4x.c"
         "wifi_manager.c"
         "provisioning.c"
         "net_rest.c"
