@@ -11,6 +11,7 @@
 #include "rest_config.h"
 #include "app_config.h"
 #include "battery.h"
+#include "sht4x.h"
 
 #include <string.h>
 #include <strings.h>
@@ -349,6 +350,19 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     cJSON_AddStringToObject(o, "fw_version", fw_version);
     cJSON_AddNumberToObject(o, "panel_w", panel_w);
     cJSON_AddNumberToObject(o, "panel_h", panel_h);
+#ifdef BOARD_HAS_SHT4X
+    sht4x_sample_t environment;
+    esp_err_t environment_err = sht4x_read(&environment);
+    if (environment_err == ESP_OK) {
+        ESP_LOGI(TAG, "status: environment=%.1f C, %.1f %%RH",
+                 environment.temperature_c, environment.humidity_pct);
+        cJSON_AddNumberToObject(o, "temperature_c", environment.temperature_c);
+        cJSON_AddNumberToObject(o, "humidity_pct", environment.humidity_pct);
+        cJSON_AddStringToObject(o, "env_sensor", "sht4x");
+    } else {
+        ESP_LOGW(TAG, "status: SHT4x read failed: %s", esp_err_to_name(environment_err));
+    }
+#endif
     if (sleep_until) cJSON_AddNumberToObject(o, "sleep_until", (double)sleep_until);
     if (s_button[0]) {   /* telemetry: which button drove this wake, + dedup id */
         cJSON_AddStringToObject(o, "button", s_button);
