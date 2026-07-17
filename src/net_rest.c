@@ -50,6 +50,32 @@ void rest_set_button(const char *name, uint32_t event_id)
     s_button_event = event_id;
 }
 
+#if BOARD_HAS_TOUCH
+/* Pending touch stroke to report with the next frame GET. s_touch_on gates it;
+ * a NULL/empty digest disables (the server needs the displayed ETag). */
+static bool     s_touch_on;
+static int      s_touch_x0, s_touch_y0, s_touch_x1, s_touch_y1;
+static uint32_t s_touch_ms;
+static uint32_t s_touch_event;
+static char     s_touch_digest[80];
+
+void rest_set_touch(int x0, int y0, int x1, int y1, uint32_t ms,
+                    const char *digest, uint32_t event_id)
+{
+    if (!digest || !digest[0]) { s_touch_on = false; s_touch_digest[0] = '\0'; return; }
+    s_touch_on = true;
+    s_touch_x0 = x0; s_touch_y0 = y0; s_touch_x1 = x1; s_touch_y1 = y1;
+    s_touch_ms = ms; s_touch_event = event_id;
+    /* Strip surrounding quotes off the ETag; the server tolerates either. */
+    const char *d = digest;
+    size_t n = strlen(d);
+    if (n >= 2 && d[0] == '"' && d[n - 1] == '"') { d++; n -= 2; }
+    if (n >= sizeof s_touch_digest) n = sizeof s_touch_digest - 1;
+    memcpy(s_touch_digest, d, n);
+    s_touch_digest[n] = '\0';
+}
+#endif /* BOARD_HAS_TOUCH */
+
 /* Days since the Unix epoch for a civil date (Howard Hinnant's algorithm). */
 static long days_from_civil(int y, unsigned m, unsigned d)
 {
@@ -293,10 +319,23 @@ rest_status_t rest_get_frame(rest_frame_out_t *out, uint32_t timeout_ms)
     const rest_config_t *c = rest_config_get();
     char url[256];
     int un = snprintf(url, sizeof url, "%s/api/v1/device/%s/frame", c->server_url, rest_config_device_id());
-    /* A button wake asks the server to act (rotate/refresh) before it responds;
-     * event= lets the server dedup a retried request to one rotation step. */
-    if (s_button[0] && un > 0 && un < (int)sizeof url)
-        snprintf(url + un, sizeof url - un, "?button=%s&event=%u", s_button, (unsigned)s_button_event);
+    /* A wake action is dispatched on the GET so the server acts before it
+     * responds (event= dedups a retried request). A wake is button XOR touch. */
+    if (s_button[0] && un > 0 && un < (int)sizeof url) {
+        un += snprintf(url + un, sizeof url - un, "?button=%s&event=%u",
+                       s_button, (unsigned)s_button_event);
+    }
+#if BOARD_HAS_TOUCH
+    else if (s_touch_on && un > 0 && un < (int)sizeof url) {
+        /* Coordinates are in the served frame's pixel space; the server
+         * classifies tap/swipe/slide and repaints in the same response. */
+        snprintf(url + un, sizeof url - un,
+                 "?touch_x0=%d&touch_y0=%d&touch_x1=%d&touch_y1=%d"
+                 "&touch_ms=%u&touch_digest=%s&touch_event_id=%u",
+                 s_touch_x0, s_touch_y0, s_touch_x1, s_touch_y1,
+                 (unsigned)s_touch_ms, s_touch_digest, (unsigned)s_touch_event);
+    }
+#endif
 
     char auth[300], inm[128];
     snprintf(auth, sizeof auth, "Bearer %s", c->device_token);
@@ -333,6 +372,10 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     memset(out, 0, sizeof *out);
     out->next_poll_s = -1;
     out->sleep_interval_s = -1;
+#if BOARD_HAS_TOUCH
+    out->touch_enabled = -1;
+    out->touch_linger_s = -1;
+#endif
 
     const rest_config_t *c = rest_config_get();
     char url[256];
@@ -387,7 +430,15 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     out->next_poll_s = json_get_int(r, "next_poll_s", -1);
     out->server_time = (uint32_t)json_get_int(r, "server_time", 0);
     cJSON *cfg = cJSON_GetObjectItemCaseSensitive(r, "config");
-    if (cfg) out->sleep_interval_s = json_get_int(cfg, "sleep_interval_s", -1);
+    if (cfg) {
+        out->sleep_interval_s = json_get_int(cfg, "sleep_interval_s", -1);
+#if BOARD_HAS_TOUCH
+        cJSON *te = cJSON_GetObjectItemCaseSensitive(cfg, "touch_enabled");
+        if (cJSON_IsBool(te))        out->touch_enabled = cJSON_IsTrue(te) ? 1 : 0;
+        else if (cJSON_IsNumber(te)) out->touch_enabled = te->valueint ? 1 : 0;
+        out->touch_linger_s = json_get_int(cfg, "touch_linger_s", -1);
+#endif
+    }
     cJSON_Delete(r);
     return REST_OK;
 }

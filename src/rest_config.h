@@ -16,6 +16,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "app_config.h"   /* BOARD_HAS_TOUCH gates the touch config below */
 
 typedef struct {
     char    server_url[160];      /* e.g. http://tesserae.local:8765 (no trailing slash) */
@@ -24,6 +25,10 @@ typedef struct {
     char    device_id[33];        /* canonical id (server-assigned, MAC-matched) */
     char    last_frame_etag[80];  /* cached across wakes for If-None-Match */
     int32_t sleep_s;              /* deep-sleep interval, seconds */
+#if BOARD_HAS_TOUCH
+    bool    touch_enabled;        /* server config: arm GT911 touch wake (default false) */
+    int32_t touch_linger_s;       /* server config: stay awake N s after a touch (0-60) */
+#endif
 } rest_config_t;
 
 /* Load config from NVS into the RAM cache. Never fails; missing keys default
@@ -57,6 +62,12 @@ void rest_config_set_device_id(const char *id);
 void rest_config_set_device_token(const char *token);
 void rest_config_set_frame_etag(const char *etag);
 void rest_config_set_sleep_s(int32_t s);
+
+#if BOARD_HAS_TOUCH
+/* Touch config, delivered in the status response's "config" object (like
+ * sleep_interval_s). linger is clamped to 0-60 s. Persist with rest_config_save. */
+void rest_config_set_touch(bool enabled, int32_t linger_s);
+#endif
 
 /* Persisted onboarding-splash state (0 = none/fresh, board-defined otherwise),
  * used to repaint connect-status splashes only when the state changes. */

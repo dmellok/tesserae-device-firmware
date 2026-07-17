@@ -18,6 +18,10 @@ static const char *TAG = "rest_cfg";
 #define NVS_KEY_ETAG       "etag"
 #define NVS_KEY_SLEEP_S    "sleep_s"
 #define NVS_KEY_UI_STATE   "ui_state"
+#if BOARD_HAS_TOUCH
+#define NVS_KEY_TOUCH_EN   "touch_en"
+#define NVS_KEY_TOUCH_LIN  "touch_lin"
+#endif
 
 static rest_config_t s_cfg;
 static bool          s_loaded;
@@ -65,6 +69,12 @@ void rest_config_load(void)
         load_str(h, NVS_KEY_ETAG,    s_cfg.last_frame_etag,sizeof s_cfg.last_frame_etag);
         int32_t s = 0;
         if (nvs_get_i32(h, NVS_KEY_SLEEP_S, &s) == ESP_OK && s > 0) s_cfg.sleep_s = s;
+#if BOARD_HAS_TOUCH
+        uint8_t te = 0;
+        if (nvs_get_u8(h, NVS_KEY_TOUCH_EN, &te) == ESP_OK) s_cfg.touch_enabled = (te != 0);
+        int32_t tl = 0;
+        if (nvs_get_i32(h, NVS_KEY_TOUCH_LIN, &tl) == ESP_OK && tl >= 0) s_cfg.touch_linger_s = tl;
+#endif
         nvs_close(h);
     }
 
@@ -96,6 +106,10 @@ esp_err_t rest_config_save(void)
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DEVID,   s_cfg.device_id);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_ETAG,    s_cfg.last_frame_etag);
     if (err == ESP_OK) err = nvs_set_i32(h, NVS_KEY_SLEEP_S, s_cfg.sleep_s);
+#if BOARD_HAS_TOUCH
+    if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_TOUCH_EN, s_cfg.touch_enabled ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_i32(h, NVS_KEY_TOUCH_LIN, s_cfg.touch_linger_s);
+#endif
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err;
@@ -140,6 +154,16 @@ void rest_config_set_device_id(const char *id)     { set_str(s_cfg.device_id, si
 void rest_config_set_device_token(const char *tok) { set_str(s_cfg.device_token, sizeof s_cfg.device_token, tok); }
 void rest_config_set_frame_etag(const char *etag)  { set_str(s_cfg.last_frame_etag, sizeof s_cfg.last_frame_etag, etag); }
 void rest_config_set_sleep_s(int32_t s)            { if (s > 0) s_cfg.sleep_s = s; }
+
+#if BOARD_HAS_TOUCH
+void rest_config_set_touch(bool enabled, int32_t linger_s)
+{
+    if (linger_s < 0)  linger_s = 0;
+    if (linger_s > 60) linger_s = 60;
+    s_cfg.touch_enabled  = enabled;
+    s_cfg.touch_linger_s = linger_s;
+}
+#endif
 
 /* Persisted onboarding-splash state (a small standalone NVS u8, not part of the
  * main blob) so the panel is repainted only when the state actually changes --

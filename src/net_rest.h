@@ -16,6 +16,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "app_config.h"   /* BOARD_HAS_TOUCH gates the touch fields below */
+
 /* Outcome of a REST call, mapping the HTTP statuses the cycle reacts to. */
 typedef enum {
     REST_OK = 0,          /* 200 / 201 */
@@ -57,6 +59,10 @@ typedef struct {
     int32_t  sleep_interval_s;  /* from config object, -1 if absent */
     uint32_t server_time;       /* unix seconds, 0 if absent */
     int      retry_after_s;     /* set on REST_RATELIMIT */
+#if BOARD_HAS_TOUCH
+    int      touch_enabled;     /* config.touch_enabled: -1 absent, else 0/1 */
+    int32_t  touch_linger_s;    /* config.touch_linger_s: -1 absent */
+#endif
 } rest_status_out_t;
 
 /* POST /api/v1/device/discover (unauthenticated). Zero-touch onboarding: the
@@ -79,6 +85,17 @@ rest_status_t rest_register(uint16_t panel_w, uint16_t panel_h,
  * adds ?button=<name>&event=<id> to the frame GET and {"button","button_event_id"}
  * to the status POST. */
 void rest_set_button(const char *name, uint32_t event_id);
+
+#if BOARD_HAS_TOUCH
+/* Report a touch stroke with the subsequent frame GET. Coordinates are in the
+ * served frame's pixel space; x1/y1 is the stroke end (== start for a point
+ * tap). digest is the ETag currently displayed (quotes stripped). event_id
+ * shares the button wake-event counter and dedups retries. Clear with
+ * rest_set_touch(0,0,0,0,0,NULL,0) (a zero digest disables the params). Sticky
+ * until cleared. A stale digest or miss degrades server-side to a plain poll. */
+void rest_set_touch(int x0, int y0, int x1, int y1, uint32_t ms,
+                    const char *digest, uint32_t event_id);
+#endif
 
 /* GET /api/v1/device/<id>/frame with Bearer auth and If-None-Match (cached
  * etag). REST_OK fills out (incl. the new etag); REST_NOT_MODIFIED and

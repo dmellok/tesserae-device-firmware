@@ -23,12 +23,14 @@
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include "app_config.h"
 #include "buttons.h"        /* front-button wake/report (header-only; no-op if none) */
+#include "touch_gt911.h"    /* GT911 touch wake (guarded by BOARD_HAS_TOUCH) */
 #include "battery.h"
 #include "epd_driver.h"
 #include "image_decoder.h"
@@ -180,6 +182,12 @@ static void sleep_forever_or_until_timer(void)
      * has none). A press wakes early and, via the button report, drives the
      * server action (refresh / rotate) on the next boot. See buttons.h. */
     buttons_arm_ext1();
+#if BOARD_HAS_TOUCH
+    /* Arm touch wake (EXT0 on TP_INT) alongside the button EXT1 when the server
+     * enabled it. Leaves the GT911 scanning and latches TP_RST across sleep so
+     * the controller keeps its address. Off by default -> zero change. */
+    if (rest_config_get()->touch_enabled) touch_prepare_sleep();
+#endif
     esp_sleep_enable_timer_wakeup((uint64_t)interval * 1000000ULL);
     esp_deep_sleep_start();
     /* not reached */
@@ -343,6 +351,33 @@ static bootstrap_res_t rest_bootstrap(uint16_t pw, uint16_t ph, const char *mac,
     return res;
 }
 
+#if BOARD_HAS_TOUCH
+/* Fetch the current frame and paint it if the server returned a new one. Used
+ * inside the touch linger loop, where WiFi is kept up so repeated touches don't
+ * pay reconnect/boot latency. The touch params must already be set on the REST
+ * client (rest_set_touch). Returns true if a new frame was painted. */
+static bool touch_fetch_and_paint(const char *server_url)
+{
+    rest_frame_out_t fo;
+    if (rest_get_frame(&fo, 8000) != REST_OK) return false;   /* 304/204/err: nothing new */
+    char fullurl[512];
+    resolve_url(server_url, fo.url, fullurl, sizeof fullurl);
+    fetched_image_t img;
+    if (image_fetch(fullurl, &img) != ESP_OK) return false;
+    uint8_t *frame = NULL;
+    if (image_decode_to_frame(&img, fullurl, &frame) != ESP_OK) frame = NULL;
+    free(img.data);
+    if (!frame) return false;
+    ESP_ERROR_CHECK(epd_port_init());
+    epd_init();
+    epd_display(frame);
+    epd_sleep();
+    free(frame);
+    if (fo.etag[0]) rest_config_set_frame_etag(fo.etag);
+    return true;
+}
+#endif
+
 void app_main(void)
 {
     esp_reset_reason_t reset_reason = esp_reset_reason();
@@ -385,12 +420,64 @@ void app_main(void)
     epd_init();
     epd_show_color_bars();
     epd_sleep();
+#if BOARD_HAS_TOUCH
+    /* Touch wiring check: probe the GT911 and stream raw + frame-translated
+     * coordinates on every touch, so the digitiser and the orientation flags can
+     * be verified with no server. A panel-corner tap should print frame (0,0). */
+    if (touch_init() == ESP_OK) {
+        ESP_LOGW(TAG, "EPD_SELFTEST: GT911 id=0x%08x; touch the panel (raw -> frame)",
+                 (unsigned)touch_product_id());
+        while (1) {
+            int rx = 0, ry = 0, fx = 0, fy = 0; bool pressed = false;
+            if (touch_read_raw(&rx, &ry, &pressed) == ESP_OK && pressed) {
+                touch_translate_raw(rx, ry, &fx, &fy);   /* same point, no re-read */
+                ESP_LOGI(TAG, "touch raw=(%d,%d) -> frame=(%d,%d)", rx, ry, fx, fy);
+            }
+            vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+        }
+    }
+    ESP_LOGW(TAG, "EPD_SELFTEST: GT911 not found; halting. Press RESET to repeat.");
+#else
     ESP_LOGW(TAG, "EPD_SELFTEST: done; halting. Press RESET to repeat.");
+#endif
     while (1) vTaskDelay(pdMS_TO_TICKS(1000));
 #endif
 
     ESP_ERROR_CHECK(wifi_manager_init());
     rest_config_load();
+
+#if BOARD_HAS_TOUCH
+    bool will_linger = false;
+    /* Touch wake (GT911, EXT0). Capture the stroke ASAP -- before the multi-second
+     * WiFi connect -- while the finger may still be down, then dispatch it on the
+     * frame GET exactly like a button wake (server classifies + repaints). A wake
+     * is button XOR touch (different wake causes). Off unless the server enabled
+     * touch_enabled; the wake source was armed on last sleep from that config. */
+    bool woke_by_touch = rest_config_get()->touch_enabled &&
+                         esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0;
+    if (woke_by_touch) {
+        if (touch_init() == ESP_OK) {
+            touch_stroke_t st;
+            touch_capture_stroke(&st, TOUCH_FIRST_POINT_MS, TOUCH_CAP_MS);
+            if (st.valid) {
+                uint32_t ev = ++s_button_event_seq;   /* shares the wake-event counter */
+                ESP_LOGI(TAG, "touch (%d,%d)->(%d,%d) %ums (event %u)",
+                         st.x0, st.y0, st.x1, st.y1, (unsigned)st.ms, (unsigned)ev);
+                rest_set_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
+                               rest_config_get()->last_frame_etag, ev);
+            } else {
+                /* Quick-tap race: finger lifted before we could read a point.
+                 * Fall back to a plain refresh wake (force a 200). */
+                ESP_LOGI(TAG, "touch wake, no point readable in %d ms; plain refresh",
+                         TOUCH_FIRST_POINT_MS);
+                rest_config_set_frame_etag("");
+            }
+        } else {
+            ESP_LOGW(TAG, "touch wake but GT911 init failed; plain refresh");
+            rest_config_set_frame_etag("");
+        }
+    }
+#endif
 
     /* Skip the 30 s splash when entering settings mode -- the user is waiting
      * on the editor, not a panel sanity check. */
@@ -558,6 +645,20 @@ void app_main(void)
                 cfg_dirty = true;
             }
             if (so.next_poll_s > 0) rest_config_set_sleep_s(so.next_poll_s);  /* drives this sleep */
+#if BOARD_HAS_TOUCH
+            /* Touch config arrives in the same "config" object as sleep_interval_s.
+             * -1 means the field was absent; keep the current value then. */
+            if (so.touch_enabled >= 0 || so.touch_linger_s >= 0) {
+                const rest_config_t *tc = rest_config_get();
+                bool    en  = (so.touch_enabled  >= 0) ? (so.touch_enabled != 0) : tc->touch_enabled;
+                int32_t lin = (so.touch_linger_s >= 0) ? so.touch_linger_s       : tc->touch_linger_s;
+                if (en != tc->touch_enabled || lin != tc->touch_linger_s) {
+                    rest_config_set_touch(en, lin);
+                    cfg_dirty = true;
+                    ESP_LOGI(TAG, "touch config: enabled=%d linger=%lds", en, (long)lin);
+                }
+            }
+#endif
         } else {
             ESP_LOGW(TAG, "status post failed (%d)", ss);
             if (ss == REST_UNAUTH || ss == REST_FORBIDDEN) {
@@ -567,8 +668,14 @@ void app_main(void)
     }
 
     /* 4. Radio down before the slow (~30 s) refresh -- the biggest battery
-     * saving in the render path (~80 mA otherwise). */
+     * saving in the render path (~80 mA otherwise). A touch wake with a linger
+     * window keeps WiFi up instead, so repeated touches stay responsive. */
+#if BOARD_HAS_TOUCH
+    will_linger = woke_by_touch && rest_config_get()->touch_linger_s > 0;
+    if (!will_linger) wifi_sta_stop();
+#else
     wifi_sta_stop();
+#endif
 
     if (frame != NULL) {
         ESP_LOGI(TAG, "painting downloaded frame (~30 s)...");
@@ -595,6 +702,33 @@ void app_main(void)
     } else {
         ESP_LOGI(TAG, "no frame yet; leaving panel as-is");
     }
+
+#if BOARD_HAS_TOUCH
+    /* Touch linger: stay awake touch_linger_s after the interaction, polling the
+     * GT911 INT and firing further touch GETs at full responsiveness (no deep
+     * sleep + boot + reconnect between rapid touches). WiFi is still up here.
+     * The window resets on each interaction; it ends when idle for the window. */
+    if (will_linger) {
+        int linger_s = rest_config_get()->touch_linger_s;
+        ESP_LOGI(TAG, "touch linger: up to %d s awake for further touches", linger_s);
+        int64_t deadline = esp_timer_get_time() + (int64_t)linger_s * 1000000;
+        while (esp_timer_get_time() < deadline) {
+            if (!touch_int_asserted()) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
+            touch_stroke_t st;
+            touch_capture_stroke(&st, TOUCH_FIRST_POINT_MS, TOUCH_CAP_MS);
+            if (!st.valid) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
+            uint32_t ev = ++s_button_event_seq;
+            ESP_LOGI(TAG, "linger touch (%d,%d)->(%d,%d) %ums (event %u)",
+                     st.x0, st.y0, st.x1, st.y1, (unsigned)st.ms, (unsigned)ev);
+            rest_set_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
+                           rest_config_get()->last_frame_etag, ev);
+            if (touch_fetch_and_paint(rest_config_get()->server_url)) cfg_dirty = true;
+            deadline = esp_timer_get_time() + (int64_t)linger_s * 1000000;   /* reset */
+        }
+        rest_set_touch(0, 0, 0, 0, 0, NULL, 0);   /* clear pending touch */
+        wifi_sta_stop();
+    }
+#endif
 
     /* 5. Persist any config changes, then sleep (interval from rest_config). */
     if (cfg_dirty) {

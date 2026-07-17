@@ -64,6 +64,24 @@
 #define BOARD_SHT4X_I2C_HZ         100000
 #define BOARD_SHT4X_I2C_ADDR       0x44
 
+/* Onboard Goodix GT911 capacitive touch controller (reTerminal E1003 only).
+ * Shares the SHT4x I2C bus (port 0, GPIO19/20). TP_INT on GPIO2 is RTC-capable
+ * (ext0 wake); TP_RST on GPIO48 is digital-domain (latched via gpio_hold across
+ * deep sleep). Address 0x5d is selected explicitly during reset (see
+ * touch_gt911.c). Enabled at runtime by the server (touch_enabled config);
+ * disabled by default. From the Zephyr reterminal_e1003 board port + schematic.
+ *
+ * Orientation flags map GT911 raw coords to the 1872x1404 frame. Defaults are
+ * identity; TODO(verify on hardware): a panel-corner tap must land at frame
+ * (0,0). Flip/swap here (like the button mapping was verified) if not. */
+#define BOARD_HAS_TOUCH            1
+#define BOARD_TOUCH_INT_PIN        2
+#define BOARD_TOUCH_RST_PIN        48
+#define BOARD_TOUCH_I2C_ADDR       0x5d
+#define BOARD_TOUCH_SWAP_XY        0
+#define BOARD_TOUCH_INVERT_X       0
+#define BOARD_TOUCH_INVERT_Y       0
+
 /* Front buttons (reTerminal E baseboard). Middle "green" key on GPIO3 confirmed
  * (Seeed/TRMNL firmware wake/interrupt pin); left/right on GPIO5/GPIO4 from
  * Seeed's ESPHome reference, unverified. Active-low, RTC-capable, clear of the

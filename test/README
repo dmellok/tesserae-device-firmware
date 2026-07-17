@@ -1,6 +1,12 @@
 
 This directory is intended for PlatformIO Test Runner and project tests.
 
+Host-side unit tests (pure logic, no hardware) can be built and run directly
+with the system compiler. GT911 touch coordinate translation:
+
+    cc -I src test/test_touch_coords.c src/touch_coords.c -o /tmp/tt && /tmp/tt
+
+
 Unit Testing is a software testing method by which individual units of
 source code, sets of one or more MCU program modules together with associated
 control data, usage procedures, and operating procedures, are tested to

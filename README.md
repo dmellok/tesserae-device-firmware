@@ -52,6 +52,16 @@ The three XIAO ESP32-S3 boards (PhotoPainter, EE02, TRMNL 7.5") are **native-USB
 `sdkconfig.usbjtag.defaults` — which also frees UART0 (GPIO43/44) on the boards
 that route those pins to the panel.
 
+**Touch (reTerminal E1003 only).** The E1003's onboard **GT911** capacitive
+digitiser can be enabled per-device from the server (Tesserae >= 0.140.0). It is
+a deep-sleep wake source: a tap or swipe wakes the device, which reports the raw
+stroke on the frame GET; the server classifies the gesture and repaints in the
+same response (no on-device gesture logic). Battery cost: keeping touch armed
+holds the GT911 scanning through deep sleep, drawing a few mA continuously, which
+materially shortens battery life, so it is best used docked or on USB. Off by
+default; a touch-less E1003 is unchanged, and the other seven boards build
+byte-identical (all touch code is behind `#if BOARD_HAS_TOUCH`).
+
 ## Architecture
 
 ```

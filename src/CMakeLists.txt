@@ -11,6 +11,9 @@ idf_component_register(
         "battery.c"
         "pmic.c"
         "sht4x.c"
+        "i2c_bus.c"
+        "touch_coords.c"
+        "touch_gt911.c"
         "wifi_manager.c"
         "provisioning.c"
         "net_rest.c"
@@ -33,6 +36,7 @@ idf_component_register(
         esp_http_client
         esp_http_server
         esp_netif
+        esp_timer
         esp_wifi
         esp-tls
         json
