@@ -71,15 +71,20 @@
  * touch_gt911.c). Enabled at runtime by the server (touch_enabled config);
  * disabled by default. From the Zephyr reterminal_e1003 board port + schematic.
  *
- * Orientation flags map GT911 raw coords to the 1872x1404 frame. Defaults are
- * identity; TODO(verify on hardware): a panel-corner tap must land at frame
- * (0,0). Flip/swap here (like the button mapping was verified) if not. */
+ * Orientation flags map GT911 raw coords into the 1872x1404 FRAME pixel space
+ * the server hit-tests against -- which is NOT the glass: the it8951 driver
+ * paints this ED103TC2 panel MIRROR_X (each row reversed, see it8951_gray.c), so
+ * frame column 0 shows at the right edge. INVERT_X below undoes that mirror
+ * (assuming the GT911 reports X in the natural left-to-right glass direction);
+ * without it every touch would hit the horizontally-flipped region. Y is not
+ * mirrored. TODO(verify on hardware) with the e1003-selftest: a top-left panel
+ * tap must print frame (0,0). Flip these if the GT911's native axes differ. */
 #define BOARD_HAS_TOUCH            1
 #define BOARD_TOUCH_INT_PIN        2
 #define BOARD_TOUCH_RST_PIN        48
 #define BOARD_TOUCH_I2C_ADDR       0x5d
 #define BOARD_TOUCH_SWAP_XY        0
-#define BOARD_TOUCH_INVERT_X       0
+#define BOARD_TOUCH_INVERT_X       1   /* compensate for the it8951 MIRROR_X paint */
 #define BOARD_TOUCH_INVERT_Y       0
 
 /* Front buttons (reTerminal E baseboard). Middle "green" key on GPIO3 confirmed
