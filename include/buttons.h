@@ -85,8 +85,37 @@ static inline void buttons_arm_ext1(void)
     esp_sleep_enable_ext1_wakeup(BUTTON_WAKE_MASK, ESP_EXT1_WAKEUP_ANY_LOW);
 }
 
-/* Which button (if any) woke us from deep sleep. Reads the ext1 status latch;
- * if we woke on our mask but the latch is ambiguous, defaults to refresh. */
+/* As buttons_arm_ext1(), but also folds extra active-low RTC-GPIO pins into the
+ * same ext1 ANY_LOW mask (e.g. an active-low touch INT). RTC pull-ups keep every
+ * line idling high so only a real low edge wakes us. This is the reliable wake
+ * path on the reTerminal hardware (ext0 did not fire on the touch INT). */
+static inline void buttons_arm_ext1_with(uint64_t extra_low_mask)
+{
+#ifdef BOARD_BTN_REFRESH_PIN
+    rtc_gpio_pullup_en((gpio_num_t)BOARD_BTN_REFRESH_PIN);
+    rtc_gpio_pulldown_dis((gpio_num_t)BOARD_BTN_REFRESH_PIN);
+#endif
+#ifdef BOARD_BTN_LEFT_PIN
+    rtc_gpio_pullup_en((gpio_num_t)BOARD_BTN_LEFT_PIN);
+    rtc_gpio_pulldown_dis((gpio_num_t)BOARD_BTN_LEFT_PIN);
+#endif
+#ifdef BOARD_BTN_RIGHT_PIN
+    rtc_gpio_pullup_en((gpio_num_t)BOARD_BTN_RIGHT_PIN);
+    rtc_gpio_pulldown_dis((gpio_num_t)BOARD_BTN_RIGHT_PIN);
+#endif
+    for (int g = 0; g < 22; g++) {   /* RTC GPIOs 0..21 on the ESP32-S3 */
+        if (extra_low_mask & (1ULL << g)) {
+            rtc_gpio_pullup_en((gpio_num_t)g);
+            rtc_gpio_pulldown_dis((gpio_num_t)g);
+        }
+    }
+    esp_sleep_enable_ext1_wakeup(BUTTON_WAKE_MASK | extra_low_mask,
+                                 ESP_EXT1_WAKEUP_ANY_LOW);
+}
+
+/* Which button (if any) woke us from deep sleep. Reads the ext1 status latch.
+ * Returns BTN_NONE when ext1 fired but no button bit is set -- e.g. a touch INT
+ * sharing the mask -- so the caller distinguishes touch from button itself. */
 static inline button_id_t buttons_which_woke(void)
 {
     if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT1)
@@ -95,12 +124,13 @@ static inline button_id_t buttons_which_woke(void)
     if (st & BUTTONS__REFRESH_BIT) return BTN_REFRESH;
     if (st & BUTTONS__LEFT_BIT)    return BTN_LEFT;
     if (st & BUTTONS__RIGHT_BIT)   return BTN_RIGHT;
-    return BTN_REFRESH;   /* woke on our mask but latch unclear -> treat as refresh */
+    return BTN_NONE;   /* ext1 fired but not a button (e.g. touch INT) */
 }
 
 #else  /* !BOARD_HAS_BUTTONS */
 
 static inline void        buttons_arm_ext1(void) { }
+static inline void        buttons_arm_ext1_with(uint64_t m) { (void)m; }
 static inline button_id_t buttons_which_woke(void) { return BTN_NONE; }
 
 #endif /* BOARD_HAS_BUTTONS */

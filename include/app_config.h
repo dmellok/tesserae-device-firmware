@@ -71,6 +71,11 @@
 #define WIFI_CONNECT_RETRIES   5
 #define WIFI_CONNECT_TIMEOUT_MS 15000
 
+/* Fast connect: reuse the last AP's BSSID + channel to skip the ~1-2 s scan on a
+ * wake. Try it with few retries so a stale hint (AP moved channel) falls back to
+ * a full scan quickly. */
+#define WIFI_FAST_CONNECT_RETRIES 1
+
 /* Resilience for an already-onboarded device: if WiFi fails on a wake (router
  * reboot, briefly out of range), don't nuke a working device into AP mode and
  * drain the battery. Sleep this long and retry; only after this many consecutive
@@ -129,6 +134,8 @@
 #define NVS_NS_WIFI        "wifi"
 #define NVS_KEY_SSID       "ssid"
 #define NVS_KEY_PASS       "pass"
+#define NVS_KEY_BSSID      "bssid"   /* last AP BSSID (6-byte blob), fast-connect hint */
+#define NVS_KEY_CHAN       "chan"    /* last AP primary channel (u8), fast-connect hint */
 
 /* Sanity bounds on the deep-sleep interval. The lower bound stops the server
  * accidentally turning the device into a spinner; the upper bound is just

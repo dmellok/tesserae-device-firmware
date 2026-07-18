@@ -8,6 +8,7 @@
 #include "i2c_bus.h"
 
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
 #include "driver/i2c_master.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
@@ -37,7 +38,11 @@ static const char *TAG = "touch";
 #define GT_REG_CONFIG_Y    0x804a   /* Y output max, little-endian u16 */
 #define GT_REG_PRODUCT_ID  0x8140   /* 4 ASCII bytes, e.g. "911\0"     */
 #define GT_REG_STATUS      0x814e   /* bit7 = buffer ready, low nibble = #points */
-#define GT_REG_POINT1_XY   0x8151   /* Xl,Xh,Yl,Yh of the first touch point */
+/* First touch point coordinate block: X low/high, Y low/high, little-endian.
+ * Verified on real E1003 hardware to start at 0x8150 (X-low), NOT the 0x8151
+ * of the common GT9xx map -- a swipe sweeps the 0x8150 byte smoothly while the
+ * would-be track-id at 0x8150 stays put, confirming X-low lives here. */
+#define GT_REG_POINT1_XY   0x8150   /* Xl,Xh,Yl,Yh of the first touch point */
 
 #define GT_TIMEOUT_MS      50
 
@@ -107,11 +112,18 @@ esp_err_t touch_init(void)
         if (err != ESP_OK) { ESP_LOGW(TAG, "add dev: %s", esp_err_to_name(err)); return err; }
     }
 
-    gt_reset_select_5d();
-
+    /* The GT911 keeps running across our deep sleep (TP_RST external pull-up), so
+     * on a touch wake it is already alive at 0x5d. Try reading the product id
+     * WITHOUT the ~120 ms reset first -- that latency is subtracted straight off
+     * the wake-to-first-sample window, which is what a quick tap races. Only if it
+     * does not answer (cold boot / lost address) do the full reset + select. */
     uint8_t id[4] = {0};
-    err = gt_read(GT_REG_PRODUCT_ID, id, sizeof id);
-    if (err != ESP_OK) { ESP_LOGW(TAG, "product-id read: %s", esp_err_to_name(err)); return err; }
+    if (gt_read(GT_REG_PRODUCT_ID, id, sizeof id) != ESP_OK ||
+        id[0] != '9' || id[1] != '1' || id[2] != '1') {
+        gt_reset_select_5d();
+        err = gt_read(GT_REG_PRODUCT_ID, id, sizeof id);
+        if (err != ESP_OK) { ESP_LOGW(TAG, "product-id read: %s", esp_err_to_name(err)); return err; }
+    }
     s_product_id = (uint32_t)id[0] | ((uint32_t)id[1] << 8) |
                    ((uint32_t)id[2] << 16) | ((uint32_t)id[3] << 24);
 
@@ -240,15 +252,17 @@ void touch_prepare_sleep(void)
      * raises INT on a touch. Clear the buffer so a fresh touch triggers. */
     gt_write_u8(GT_REG_STATUS, 0);
 
-    /* Latch TP_RST high through deep sleep: it is a digital-domain pin, so
-     * without a hold it would float and reset the controller (which then
-     * re-samples its I2C address off INT/RST). */
-    gpio_hold_en(BOARD_TOUCH_RST_PIN);
-    gpio_deep_sleep_hold_en();
+    /* Do NOT latch TP_RST with gpio_deep_sleep_hold_en(): verified on E1003
+     * hardware that enabling it breaks the ext1 touch wake (the controller stops
+     * asserting INT / the SoC never wakes). TP_RST has an external pull-up on the
+     * reTerminal, so it stays high through deep sleep on its own and the GT911
+     * keeps scanning -- confirmed by a touch waking the device via ext1. */
 
-    /* Wake on TP_INT going high (RTC-capable pin), alongside the button EXT1. */
-    esp_err_t err = esp_sleep_enable_ext0_wakeup(BOARD_TOUCH_INT_PIN, 1);
-    if (err != ESP_OK) ESP_LOGW(TAG, "ext0 arm: %s", esp_err_to_name(err));
+    /* TP_INT is ACTIVE-LOW (verified on E1003 hardware: idles high, the GT911
+     * pulls it low on a touch -- the "active high" board note was wrong). The
+     * wake is armed by the caller as an ext1 ANY_LOW bit shared with the buttons
+     * (buttons_arm_ext1_with(TOUCH_INT_WAKE_MASK)); ext0 did not fire on this
+     * line, but the button ext1 path wakes reliably on the same hardware. */
 }
 
 #endif /* BOARD_HAS_TOUCH */

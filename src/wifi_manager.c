@@ -20,6 +20,7 @@ static EventGroupHandle_t s_events;
 #define BIT_FAIL       BIT1
 
 static int s_retries = 0;
+static int s_max_retries = WIFI_CONNECT_RETRIES;   /* lowered for the fast attempt */
 static esp_netif_t *s_sta_netif = NULL;
 static bool s_inited = false;
 
@@ -36,9 +37,9 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         if (!s_autoconnect) {
             /* not our connect attempt (e.g. a scan tore the STA down) */
-        } else if (s_retries < WIFI_CONNECT_RETRIES) {
+        } else if (s_retries < s_max_retries) {
             s_retries++;
-            ESP_LOGW(TAG, "disconnect; retry %d/%d", s_retries, WIFI_CONNECT_RETRIES);
+            ESP_LOGW(TAG, "disconnect; retry %d/%d", s_retries, s_max_retries);
             esp_wifi_connect();
         } else {
             xEventGroupSetBits(s_events, BIT_FAIL);
@@ -178,6 +179,84 @@ static esp_err_t load_creds(char *ssid, size_t ssid_sz, char *pass, size_t pass_
     return ESP_ERR_NVS_NOT_FOUND;
 }
 
+/* Fast-connect hint: the BSSID + channel of the AP we last associated with.
+ * Reusing them lets esp_wifi skip the ~1-2 s all-channel scan on a wake. */
+static void save_ap_hint(void)
+{
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS_WIFI, NVS_READWRITE, &h) != ESP_OK) return;
+    /* Skip the write if unchanged, to spare flash wear across wakes. */
+    uint8_t cur_bssid[6]; size_t l = sizeof cur_bssid; uint8_t cur_chan = 0;
+    bool same = (nvs_get_blob(h, NVS_KEY_BSSID, cur_bssid, &l) == ESP_OK && l == 6 &&
+                 memcmp(cur_bssid, ap.bssid, 6) == 0 &&
+                 nvs_get_u8(h, NVS_KEY_CHAN, &cur_chan) == ESP_OK && cur_chan == ap.primary);
+    if (!same) {
+        nvs_set_blob(h, NVS_KEY_BSSID, ap.bssid, 6);
+        nvs_set_u8(h, NVS_KEY_CHAN, ap.primary);
+        nvs_commit(h);
+    }
+    nvs_close(h);
+}
+
+static bool load_ap_hint(uint8_t bssid[6], uint8_t *chan)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS_WIFI, NVS_READONLY, &h) != ESP_OK) return false;
+    size_t l = 6;
+    bool ok = (nvs_get_blob(h, NVS_KEY_BSSID, bssid, &l) == ESP_OK && l == 6 &&
+               nvs_get_u8(h, NVS_KEY_CHAN, chan) == ESP_OK && *chan >= 1 && *chan <= 14);
+    nvs_close(h);
+    return ok;
+}
+
+static void clear_ap_hint(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS_WIFI, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_erase_key(h, NVS_KEY_BSSID);
+    nvs_erase_key(h, NVS_KEY_CHAN);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+/* One STA connect attempt. If bssid != NULL, targets that BSSID/channel directly
+ * (fast, no scan). max_retries bounds the disconnect-retry loop. */
+static esp_err_t connect_once(const char *ssid, const char *pass,
+                              const uint8_t *bssid, uint8_t chan, int max_retries)
+{
+    s_events = xEventGroupCreate();
+    s_retries = 0;
+    s_max_retries = max_retries;
+    s_autoconnect = true;   /* enable STA_START -> connect for this attempt */
+
+    if (!s_sta_netif) s_sta_netif = esp_netif_create_default_wifi_sta();
+
+    wifi_config_t wc = {0};
+    strncpy((char *)wc.sta.ssid,     ssid, sizeof(wc.sta.ssid)     - 1);
+    strncpy((char *)wc.sta.password, pass, sizeof(wc.sta.password) - 1);
+    wc.sta.threshold.authmode = pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    if (bssid) {
+        memcpy(wc.sta.bssid, bssid, 6);
+        wc.sta.bssid_set = true;
+        wc.sta.channel   = chan;
+    }
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "connecting to '%s'%s", ssid, bssid ? " (fast)" : "");
+    EventBits_t bits = xEventGroupWaitBits(
+        s_events, BIT_CONNECTED | BIT_FAIL, pdTRUE, pdFALSE,
+        pdMS_TO_TICKS((uint32_t)WIFI_CONNECT_TIMEOUT_MS * (max_retries + 1)));
+
+    if (bits & BIT_CONNECTED) return ESP_OK;
+    if (bits & BIT_FAIL)      return ESP_FAIL;
+    return ESP_ERR_TIMEOUT;
+}
+
 esp_err_t wifi_sta_connect_stored(void)
 {
     char ssid[33] = {0};
@@ -188,29 +267,21 @@ esp_err_t wifi_sta_connect_stored(void)
         return err;
     }
 
-    s_events = xEventGroupCreate();
-    s_retries = 0;
-    s_autoconnect = true;   /* enable STA_START -> connect for this attempt */
+    /* Fast path: target the last AP's BSSID/channel to skip the scan. A stale
+     * hint (AP moved channel / roamed) fails fast, then we clear it and fall back
+     * to a normal full-scan connect. */
+    uint8_t bssid[6], chan;
+    if (load_ap_hint(bssid, &chan)) {
+        err = connect_once(ssid, pass, bssid, chan, WIFI_FAST_CONNECT_RETRIES);
+        if (err == ESP_OK) { save_ap_hint(); return ESP_OK; }
+        ESP_LOGW(TAG, "fast connect failed; clearing hint + full scan");
+        clear_ap_hint();
+        wifi_sta_stop();   /* tear down before the fallback attempt */
+    }
 
-    if (!s_sta_netif) s_sta_netif = esp_netif_create_default_wifi_sta();
-
-    wifi_config_t wc = {0};
-    strncpy((char *)wc.sta.ssid,     ssid, sizeof(wc.sta.ssid)     - 1);
-    strncpy((char *)wc.sta.password, pass, sizeof(wc.sta.password) - 1);
-    wc.sta.threshold.authmode = pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    ESP_LOGI(TAG, "connecting to '%s'", ssid);
-    EventBits_t bits = xEventGroupWaitBits(
-        s_events, BIT_CONNECTED | BIT_FAIL, pdTRUE, pdFALSE,
-        pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS * WIFI_CONNECT_RETRIES));
-
-    if (bits & BIT_CONNECTED) return ESP_OK;
-    if (bits & BIT_FAIL)      return ESP_FAIL;
-    return ESP_ERR_TIMEOUT;
+    err = connect_once(ssid, pass, NULL, 0, WIFI_CONNECT_RETRIES);
+    if (err == ESP_OK) save_ap_hint();
+    return err;
 }
 
 void wifi_sta_stop(void)

@@ -66,25 +66,28 @@
 
 /* Onboard Goodix GT911 capacitive touch controller (reTerminal E1003 only).
  * Shares the SHT4x I2C bus (port 0, GPIO19/20). TP_INT on GPIO2 is RTC-capable
- * (ext0 wake); TP_RST on GPIO48 is digital-domain (latched via gpio_hold across
- * deep sleep). Address 0x5d is selected explicitly during reset (see
- * touch_gt911.c). Enabled at runtime by the server (touch_enabled config);
- * disabled by default. From the Zephyr reterminal_e1003 board port + schematic.
+ * and ACTIVE-LOW (idles high, pulses low on touch -- verified on hardware); it
+ * shares the buttons' ext1 ANY_LOW wake mask (ext0 did not fire on this line).
+ * TP_RST on GPIO48 has an external pull-up and is NOT held across sleep (holding
+ * it broke the ext1 wake). Address 0x5d is selected explicitly during reset, and
+ * the point-1 coordinate block is at 0x8150 (not the usual 0x8151) -- both
+ * verified on hardware (see touch_gt911.c). Enabled at runtime by the server
+ * (touch_enabled config); disabled by default.
  *
  * Orientation flags map GT911 raw coords into the 1872x1404 FRAME pixel space
- * the server hit-tests against -- which is NOT the glass: the it8951 driver
- * paints this ED103TC2 panel MIRROR_X (each row reversed, see it8951_gray.c), so
- * frame column 0 shows at the right edge. INVERT_X below undoes that mirror
- * (assuming the GT911 reports X in the natural left-to-right glass direction);
- * without it every touch would hit the horizontally-flipped region. Y is not
- * mirrored. TODO(verify on hardware) with the e1003-selftest: a top-left panel
- * tap must print frame (0,0). Flip these if the GT911's native axes differ. */
+ * the server hit-tests against. No flips are needed: the it8951 driver's MIRROR_X
+ * COMPENSATES for the ED103TC2 panel's own physical X-mirror, so the glass shows
+ * the frame in normal orientation, and the GT911's raw axes already run
+ * left-to-right / top-to-bottom with it. VERIFIED on hardware (e1003-selftest
+ * corner taps + live touch): a top-left tap reads frame ~(0,0), so raw maps
+ * straight through. (An earlier build wrongly set INVERT_X=1 to "undo" the
+ * MIRROR_X and reversed every touch horizontally.) */
 #define BOARD_HAS_TOUCH            1
 #define BOARD_TOUCH_INT_PIN        2
 #define BOARD_TOUCH_RST_PIN        48
 #define BOARD_TOUCH_I2C_ADDR       0x5d
 #define BOARD_TOUCH_SWAP_XY        0
-#define BOARD_TOUCH_INVERT_X       1   /* compensate for the it8951 MIRROR_X paint */
+#define BOARD_TOUCH_INVERT_X       0
 #define BOARD_TOUCH_INVERT_Y       0
 
 /* Front buttons (reTerminal E baseboard). Middle "green" key on GPIO3 confirmed

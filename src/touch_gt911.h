@@ -29,6 +29,10 @@ typedef struct {
 
 #include "esp_err.h"
 
+/* Active-low TP_INT as an ext1 wake bit. The touch controller shares the button
+ * ext1 ANY_LOW mask (folded in via buttons_arm_ext1_with) rather than ext0. */
+#define TOUCH_INT_WAKE_MASK   (1ULL << BOARD_TOUCH_INT_PIN)
+
 /* Timing budget for a wake-triggered capture. */
 #define TOUCH_CAP_MS          1500   /* max time to keep sampling a live stroke */
 #define TOUCH_FIRST_POINT_MS   200   /* if no point by now, treat as quick tap  */

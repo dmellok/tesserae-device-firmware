@@ -181,12 +181,19 @@ static void sleep_forever_or_until_timer(void)
     /* Wake on any front button too (armed as one ext1 mask; no-op if the board
      * has none). A press wakes early and, via the button report, drives the
      * server action (refresh / rotate) on the next boot. See buttons.h. */
-    buttons_arm_ext1();
 #if BOARD_HAS_TOUCH
-    /* Arm touch wake (EXT0 on TP_INT) alongside the button EXT1 when the server
-     * enabled it. Leaves the GT911 scanning and latches TP_RST across sleep so
-     * the controller keeps its address. Off by default -> zero change. */
-    if (rest_config_get()->touch_enabled) touch_prepare_sleep();
+    /* Fold the active-low touch INT into the button ext1 ANY_LOW mask when the
+     * server enabled touch. touch_prepare_sleep() leaves the GT911 scanning and
+     * latches TP_RST across sleep so the controller keeps its address. Off by
+     * default -> touch_wake_mask stays 0 and this is just the buttons. */
+    uint64_t touch_wake_mask = 0;
+    if (rest_config_get()->touch_enabled) {
+        touch_prepare_sleep();
+        touch_wake_mask = TOUCH_INT_WAKE_MASK;
+    }
+    buttons_arm_ext1_with(touch_wake_mask);
+#else
+    buttons_arm_ext1();
 #endif
     esp_sleep_enable_timer_wakeup((uint64_t)interval * 1000000ULL);
     esp_deep_sleep_start();
@@ -453,8 +460,12 @@ void app_main(void)
      * frame GET exactly like a button wake (server classifies + repaints). A wake
      * is button XOR touch (different wake causes). Off unless the server enabled
      * touch_enabled; the wake source was armed on last sleep from that config. */
+    /* Touch shares the button ext1 ANY_LOW mask (TP_INT is active-low); a touch
+     * wake is an ext1 wake whose status latch shows the TP_INT bit and no button
+     * bit (so buttons_which_woke() above returned BTN_NONE for it). */
     bool woke_by_touch = rest_config_get()->touch_enabled &&
-                         esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0;
+                         esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1 &&
+                         (esp_sleep_get_ext1_wakeup_status() & TOUCH_INT_WAKE_MASK);
     if (woke_by_touch) {
         if (touch_init() == ESP_OK) {
             touch_stroke_t st;
@@ -466,15 +477,17 @@ void app_main(void)
                 rest_set_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
                                rest_config_get()->last_frame_etag, ev);
             } else {
-                /* Quick-tap race: finger lifted before we could read a point.
-                 * Fall back to a plain refresh wake (force a 200). */
-                ESP_LOGI(TAG, "touch wake, no point readable in %d ms; plain refresh",
+                /* Quick-tap race: the finger lifted before the ~1 s deep-sleep
+                 * boot let us read a point. Do NOT force a repaint -- fall through
+                 * to a normal poll (keeps If-None-Match, so an unchanged frame
+                 * 304s and the slow panel is not needlessly redrawn). A press is
+                 * only dispatched when we actually capture a coordinate; hold
+                 * briefly, or use touch_linger for responsive follow-up taps. */
+                ESP_LOGI(TAG, "touch wake, no point readable in %d ms; normal poll",
                          TOUCH_FIRST_POINT_MS);
-                rest_config_set_frame_etag("");
             }
         } else {
-            ESP_LOGW(TAG, "touch wake but GT911 init failed; plain refresh");
-            rest_config_set_frame_etag("");
+            ESP_LOGW(TAG, "touch wake but GT911 init failed; normal poll");
         }
     }
 #endif
