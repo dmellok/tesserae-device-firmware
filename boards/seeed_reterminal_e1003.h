@@ -83,6 +83,12 @@
  * straight through. (An earlier build wrongly set INVERT_X=1 to "undo" the
  * MIRROR_X and reversed every touch horizontally.) */
 #define BOARD_HAS_TOUCH            1
+/* Deep-sleep wake stub: bit-bang the GT911 from RTC memory ~1 ms after wake so a
+ * quick tap is captured before the ~1 s boot lets the finger lift (recovers the
+ * "1 in 10" misses seen on hardware). Bit-bang uses SDA=GPIO19/SCL=GPIO20 (both
+ * in the low GPIO bank). Fully fail-safe -- bounded loops, always releases the
+ * bus, esp_default_wake_deep_sleep() runs first. Undefine to disable. */
+#define BOARD_TOUCH_WAKE_STUB      1
 #define BOARD_TOUCH_INT_PIN        2
 #define BOARD_TOUCH_RST_PIN        48
 #define BOARD_TOUCH_I2C_ADDR       0x5d

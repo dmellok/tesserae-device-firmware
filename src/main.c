@@ -31,6 +31,8 @@
 #include "app_config.h"
 #include "buttons.h"        /* front-button wake/report (header-only; no-op if none) */
 #include "touch_gt911.h"    /* GT911 touch wake (guarded by BOARD_HAS_TOUCH) */
+#include "touch_queue.h"    /* RTC replay queue for unsent touches (guarded) */
+#include "touch_wakestub.h" /* RTC wake-stub early touch capture (guarded) */
 #include "battery.h"
 #include "epd_driver.h"
 #include "image_decoder.h"
@@ -383,6 +385,25 @@ static bool touch_fetch_and_paint(const char *server_url)
     if (fo.etag[0]) rest_config_set_frame_etag(fo.etag);
     return true;
 }
+
+/* Replay strokes queued from earlier wakes whose WiFi connect had failed. Each
+ * is dispatched via a frame GET (the response is not painted -- the current
+ * cycle paints the live frame); a completed request pops it, a transient network
+ * error keeps it for next time. Call while WiFi is up. */
+static void touch_queue_flush(void)
+{
+    touch_qentry_t e;
+    int guard = 0;
+    while (touch_queue_front(&e) && guard++ < TOUCH_QUEUE_MAX) {
+        rest_set_touch(e.x0, e.y0, e.x1, e.y1, e.ms, e.digest, e.event_id);
+        rest_frame_out_t fo;
+        rest_status_t fs = rest_get_frame(&fo, 8000);
+        if (fs == REST_NET_ERR || fs == REST_RATELIMIT) break;   /* transient: retry next wake */
+        ESP_LOGI(TAG, "replayed queued touch (event %u) -> %d", (unsigned)e.event_id, fs);
+        touch_queue_pop();   /* dispatched, stale-dropped, or unrecoverable -> remove */
+    }
+    rest_set_touch(0, 0, 0, 0, 0, NULL, 0);   /* clear so it doesn't leak into later GETs */
+}
 #endif
 
 void app_main(void)
@@ -466,16 +487,43 @@ void app_main(void)
     bool woke_by_touch = rest_config_get()->touch_enabled &&
                          esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1 &&
                          (esp_sleep_get_ext1_wakeup_status() & TOUCH_INT_WAKE_MASK);
+    /* Kept in function scope so the WiFi-fail path can queue an unsent stroke. */
+    touch_stroke_t touch_st = { .valid = false };
+    uint32_t       touch_ev = 0;
     if (woke_by_touch) {
         if (touch_init() == ESP_OK) {
-            touch_stroke_t st;
-            touch_capture_stroke(&st, TOUCH_FIRST_POINT_MS, TOUCH_CAP_MS);
-            if (st.valid) {
-                uint32_t ev = ++s_button_event_seq;   /* shares the wake-event counter */
+            /* The RTC wake stub may have grabbed the point ~1 ms after wake. Take
+             * it now (unconditionally, so it can never replay on a later wake) and
+             * fall back to it only if the live read races an already-lifted finger. */
+            int  stub_rx = 0, stub_ry = 0;
+            bool have_stub = touch_wakestub_take(&stub_rx, &stub_ry);
+#ifdef BOARD_TOUCH_WAKE_STUB
+            ESP_LOGI(TAG, "wake stub: runs=%u stage=%u status=0x%02x captured=%d",
+                     (unsigned)g_touch_wake_capture.runs,
+                     (unsigned)g_touch_wake_capture.stage,
+                     (unsigned)g_touch_wake_capture.status, (int)have_stub);
+#endif
+
+            touch_capture_stroke(&touch_st, TOUCH_FIRST_POINT_MS, TOUCH_CAP_MS);
+            if (!touch_st.valid && have_stub) {
+                /* Quick tap: finger gone before the ~1 s boot let us read a live
+                 * point, but the stub caught it. Dispatch it as a zero-length tap. */
+                int fx = 0, fy = 0;
+                touch_translate_raw(stub_rx, stub_ry, &fx, &fy);
+                touch_st.x0 = touch_st.x1 = fx;
+                touch_st.y0 = touch_st.y1 = fy;
+                touch_st.ms = 0;
+                touch_st.valid = true;
+                ESP_LOGI(TAG, "touch recovered from wake stub: raw (%d,%d) -> frame (%d,%d)",
+                         stub_rx, stub_ry, fx, fy);
+            }
+            if (touch_st.valid) {
+                touch_ev = ++s_button_event_seq;   /* shares the wake-event counter */
                 ESP_LOGI(TAG, "touch (%d,%d)->(%d,%d) %ums (event %u)",
-                         st.x0, st.y0, st.x1, st.y1, (unsigned)st.ms, (unsigned)ev);
-                rest_set_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
-                               rest_config_get()->last_frame_etag, ev);
+                         touch_st.x0, touch_st.y0, touch_st.x1, touch_st.y1,
+                         (unsigned)touch_st.ms, (unsigned)touch_ev);
+                rest_set_touch(touch_st.x0, touch_st.y0, touch_st.x1, touch_st.y1,
+                               touch_st.ms, rest_config_get()->last_frame_etag, touch_ev);
             } else {
                 /* Quick-tap race: the finger lifted before the ~1 s deep-sleep
                  * boot let us read a point. Do NOT force a repaint -- fall through
@@ -513,6 +561,13 @@ void app_main(void)
 
     esp_err_t err = wifi_sta_connect_stored();
     if (err != ESP_OK) {
+#if BOARD_HAS_TOUCH
+        /* Couldn't send this wake's touch -- queue it (RTC) to replay once WiFi
+         * is back. The displayed frame rarely changes on e-paper between wakes,
+         * so the digest is usually still valid then. */
+        if (touch_st.valid)
+            touch_queue_push(&touch_st, touch_ev, rest_config_get()->last_frame_etag);
+#endif
         /* A device that has already onboarded (holds a token) almost always
          * fails here because of a transient outage -- a router reboot or being
          * briefly out of range -- not bad credentials. Don't drop a working
@@ -679,6 +734,13 @@ void app_main(void)
             }
         }
     }
+
+#if BOARD_HAS_TOUCH
+    /* WiFi is up and we hold a token: replay any strokes queued from earlier
+     * wakes whose connect had failed (dispatched, not painted). */
+    if (rest_config_get()->device_token[0] != '\0' && touch_queue_count() > 0)
+        touch_queue_flush();
+#endif
 
     /* 4. Radio down before the slow (~30 s) refresh -- the biggest battery
      * saving in the render path (~80 mA otherwise). A touch wake with a linger

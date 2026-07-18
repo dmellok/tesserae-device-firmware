@@ -194,7 +194,11 @@ esp_err_t touch_read_frame(int *fx, int *fy, bool *pressed)
 
 bool touch_int_asserted(void)
 {
-    return gpio_get_level(BOARD_TOUCH_INT_PIN) == 1;   /* active high */
+    /* ACTIVE-LOW, matching the verified E1003 wiring (idles high, the GT911
+     * pulls it low on a touch report -- same polarity the ext1 wake uses). The
+     * original "== 1" had this backwards, which inverted the linger loop's gate:
+     * it busy-captured while idle and slept 20 ms during actual touches. */
+    return gpio_get_level(BOARD_TOUCH_INT_PIN) == 0;
 }
 
 esp_err_t touch_capture_stroke(touch_stroke_t *out,
