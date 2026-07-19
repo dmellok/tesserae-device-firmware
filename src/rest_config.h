@@ -25,6 +25,8 @@ typedef struct {
     char    device_id[33];        /* canonical id (server-assigned, MAC-matched) */
     char    last_frame_etag[80];  /* cached across wakes for If-None-Match */
     int32_t sleep_s;              /* deep-sleep interval, seconds */
+    int32_t button_wake_s;        /* server config: stay awake N s after a button
+                                     press listening for more (0-60, 0 = off) */
 #if BOARD_HAS_TOUCH
     bool    touch_enabled;        /* server config: arm GT911 touch wake (default false) */
     int32_t touch_linger_s;       /* server config: stay awake N s after a touch (0-60) */
@@ -62,6 +64,11 @@ void rest_config_set_device_id(const char *id);
 void rest_config_set_device_token(const char *token);
 void rest_config_set_frame_etag(const char *etag);
 void rest_config_set_sleep_s(int32_t s);
+
+/* Post-button stay-awake window (issue #123), delivered in the /frame 200 body
+ * and the register/status "config" objects. Clamped to 0-60 s. Persist with
+ * rest_config_save. */
+void rest_config_set_button_wake_s(int32_t s);
 
 #if BOARD_HAS_TOUCH
 /* Touch config, delivered in the status response's "config" object (like

@@ -288,6 +288,7 @@ rest_status_t rest_register(uint16_t panel_w, uint16_t panel_h,
 {
     memset(out, 0, sizeof *out);
     out->sleep_interval_s = -1;
+    out->button_wake_s = -1;
 
     char url[200];
     snprintf(url, sizeof url, "%s/api/v1/device/register", rest_config_get()->server_url);
@@ -308,7 +309,10 @@ rest_status_t rest_register(uint16_t panel_w, uint16_t panel_h,
     json_get_str(r, "device_id", out->device_id, sizeof out->device_id);
     out->server_time = (uint32_t)json_get_int(r, "server_time", 0);
     cJSON *cfg = cJSON_GetObjectItemCaseSensitive(r, "config");
-    if (cfg) out->sleep_interval_s = json_get_int(cfg, "sleep_interval_s", -1);
+    if (cfg) {
+        out->sleep_interval_s = json_get_int(cfg, "sleep_interval_s", -1);
+        out->button_wake_s    = json_get_int(cfg, "button_wake_s", -1);
+    }
     cJSON_Delete(r);
     return out->token[0] ? REST_OK : REST_HTTP_ERR;
 }
@@ -316,6 +320,7 @@ rest_status_t rest_register(uint16_t panel_w, uint16_t panel_h,
 rest_status_t rest_get_frame(rest_frame_out_t *out, uint32_t timeout_ms)
 {
     memset(out, 0, sizeof *out);
+    out->button_wake_s = -1;   /* only a 200 body can carry it */
     const rest_config_t *c = rest_config_get();
     char url[256];
     int un = snprintf(url, sizeof url, "%s/api/v1/device/%s/frame", c->server_url, rest_config_device_id());
@@ -359,6 +364,7 @@ rest_status_t rest_get_frame(rest_frame_out_t *out, uint32_t timeout_ms)
     json_get_str(r, "format", out->format, sizeof out->format);
     out->panel_w = (uint16_t)json_get_int(r, "panel_w", 0);
     out->panel_h = (uint16_t)json_get_int(r, "panel_h", 0);
+    out->button_wake_s = json_get_int(r, "button_wake_s", -1);
     cJSON_Delete(r);
     return out->url[0] ? REST_OK : REST_HTTP_ERR;
 }
@@ -372,6 +378,7 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     memset(out, 0, sizeof *out);
     out->next_poll_s = -1;
     out->sleep_interval_s = -1;
+    out->button_wake_s = -1;
 #if BOARD_HAS_TOUCH
     out->touch_enabled = -1;
     out->touch_linger_s = -1;
@@ -432,6 +439,7 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     cJSON *cfg = cJSON_GetObjectItemCaseSensitive(r, "config");
     if (cfg) {
         out->sleep_interval_s = json_get_int(cfg, "sleep_interval_s", -1);
+        out->button_wake_s    = json_get_int(cfg, "button_wake_s", -1);
 #if BOARD_HAS_TOUCH
         cJSON *te = cJSON_GetObjectItemCaseSensitive(cfg, "touch_enabled");
         if (cJSON_IsBool(te))        out->touch_enabled = cJSON_IsTrue(te) ? 1 : 0;

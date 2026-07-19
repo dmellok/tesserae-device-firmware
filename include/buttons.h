@@ -44,7 +44,9 @@ static inline const char *button_name(button_id_t b)
 
 #ifdef BOARD_HAS_BUTTONS
 
+#include <stdbool.h>
 #include <stdint.h>
+#include "driver/gpio.h"
 #include "driver/rtc_io.h"
 #include "esp_sleep.h"
 
@@ -65,6 +67,11 @@ static inline const char *button_name(button_id_t b)
 #endif
 
 #define BUTTON_WAKE_MASK (BUTTONS__REFRESH_BIT | BUTTONS__LEFT_BIT | BUTTONS__RIGHT_BIT)
+
+/* Client-side hard cap on one post-button stay-awake window (issue #123), on
+ * top of the server's 0-60 s bound on button_wake_s itself: repeated presses
+ * keep resetting the countdown, so this bounds the total. */
+#define BUTTON_WINDOW_CAP_S 300
 
 /* Arm every defined button as an ext1 wake source (active-low; RTC pull-up so
  * the idle level is high and won't spuriously wake us). Call on the sleep path. */
@@ -113,6 +120,56 @@ static inline void buttons_arm_ext1_with(uint64_t extra_low_mask)
                                  ESP_EXT1_WAKEUP_ANY_LOW);
 }
 
+/* Configure every defined button as a plain digital input with a pull-up, for
+ * live polling while awake (the post-button stay-awake window, issue #123). The
+ * RTC config armed at the last sleep does not carry over to the digital GPIO
+ * matrix, so this must run before buttons_poll_pressed(). */
+static inline void buttons_poll_init(void)
+{
+    gpio_config_t io = {
+        .pin_bit_mask = BUTTON_WAKE_MASK,
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io);
+}
+
+/* Edge-detecting poll: reports a button once, on its high->low transition (a
+ * NEW press), and not again until it is released -- so a held or stuck button
+ * fires a single event. Call every ~20 ms; that cadence is also the debounce
+ * (mechanical bounce settles well inside one period, and the seconds-long
+ * fetch+paint after a hit swallows any release bounce). */
+static inline button_id_t buttons_poll_pressed(void)
+{
+#ifdef BOARD_BTN_REFRESH_PIN
+    {
+        static bool down;
+        bool p = gpio_get_level((gpio_num_t)BOARD_BTN_REFRESH_PIN) == 0;
+        if (p && !down) { down = true; return BTN_REFRESH; }
+        if (!p) down = false;
+    }
+#endif
+#ifdef BOARD_BTN_LEFT_PIN
+    {
+        static bool down;
+        bool p = gpio_get_level((gpio_num_t)BOARD_BTN_LEFT_PIN) == 0;
+        if (p && !down) { down = true; return BTN_LEFT; }
+        if (!p) down = false;
+    }
+#endif
+#ifdef BOARD_BTN_RIGHT_PIN
+    {
+        static bool down;
+        bool p = gpio_get_level((gpio_num_t)BOARD_BTN_RIGHT_PIN) == 0;
+        if (p && !down) { down = true; return BTN_RIGHT; }
+        if (!p) down = false;
+    }
+#endif
+    return BTN_NONE;
+}
+
 /* Which button (if any) woke us from deep sleep. Reads the ext1 status latch.
  * Returns BTN_NONE when ext1 fired but no button bit is set -- e.g. a touch INT
  * sharing the mask -- so the caller distinguishes touch from button itself. */
@@ -132,5 +189,7 @@ static inline button_id_t buttons_which_woke(void)
 static inline void        buttons_arm_ext1(void) { }
 static inline void        buttons_arm_ext1_with(uint64_t m) { (void)m; }
 static inline button_id_t buttons_which_woke(void) { return BTN_NONE; }
+static inline void        buttons_poll_init(void) { }
+static inline button_id_t buttons_poll_pressed(void) { return BTN_NONE; }
 
 #endif /* BOARD_HAS_BUTTONS */

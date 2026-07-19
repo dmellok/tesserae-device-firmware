@@ -296,6 +296,7 @@ static bootstrap_res_t rest_bootstrap(uint16_t pw, uint16_t ph, const char *mac,
                 rest_config_set_device_id(ro.device_id);
             rest_config_set_pairing("");            /* one-shot; clear on success */
             if (ro.sleep_interval_s > 0) rest_config_set_sleep_s(ro.sleep_interval_s);
+            if (ro.button_wake_s >= 0) rest_config_set_button_wake_s(ro.button_wake_s);
             *dirty = true;
             ESP_LOGI(TAG, "registered via pairing code; token stored (id=%s)",
                      rest_config_device_id());
@@ -360,15 +361,18 @@ static bootstrap_res_t rest_bootstrap(uint16_t pw, uint16_t ph, const char *mac,
     return res;
 }
 
-#if BOARD_HAS_TOUCH
+#if BOARD_HAS_TOUCH || defined(BOARD_HAS_BUTTONS)
 /* Fetch the current frame and paint it if the server returned a new one. Used
- * inside the touch linger loop, where WiFi is kept up so repeated touches don't
- * pay reconnect/boot latency. The touch params must already be set on the REST
- * client (rest_set_touch). Returns true if a new frame was painted. */
-static bool touch_fetch_and_paint(const char *server_url)
+ * inside the touch-linger and button-wake windows, where WiFi is kept up so
+ * repeated interactions don't pay reconnect/boot latency. The touch/button
+ * params must already be set on the REST client. Returns true if a new frame
+ * was painted. */
+static bool fetch_and_paint_current(const char *server_url)
 {
     rest_frame_out_t fo;
     if (rest_get_frame(&fo, 8000) != REST_OK) return false;   /* 304/204/err: nothing new */
+    /* A 200 body carries the freshest button_wake_s; adopt it mid-window too. */
+    if (fo.button_wake_s >= 0) rest_config_set_button_wake_s(fo.button_wake_s);
     char fullurl[512];
     resolve_url(server_url, fo.url, fullurl, sizeof fullurl);
     fetched_image_t img;
@@ -385,7 +389,9 @@ static bool touch_fetch_and_paint(const char *server_url)
     if (fo.etag[0]) rest_config_set_frame_etag(fo.etag);
     return true;
 }
+#endif /* BOARD_HAS_TOUCH || BOARD_HAS_BUTTONS */
 
+#if BOARD_HAS_TOUCH
 /* Replay strokes queued from earlier wakes whose WiFi connect had failed. Each
  * is dispatched via a frame GET (the response is not painted -- the current
  * cycle paints the live frame); a completed request pops it, a transient network
@@ -474,8 +480,12 @@ void app_main(void)
     ESP_ERROR_CHECK(wifi_manager_init());
     rest_config_load();
 
+    /* Stay awake after the paint for further interaction? Set at the radio-down
+     * decision: a touch wake with touch_linger_s, or a button wake with
+     * button_wake_s (issue #123). Always false for timer/scheduled wakes. */
+    bool will_linger = false; (void)will_linger;
+
 #if BOARD_HAS_TOUCH
-    bool will_linger = false;
     /* Touch wake (GT911, EXT0). Capture the stroke ASAP -- before the multi-second
      * WiFi connect -- while the finger may still be down, then dispatch it on the
      * frame GET exactly like a button wake (server classifies + repaints). A wake
@@ -671,6 +681,13 @@ void app_main(void)
     rest_status_t fs = rest_get_frame(&fo, 10000);
     if (fs == REST_OK) {
         snprintf(new_etag, sizeof new_etag, "%s", fo.etag);
+        /* The 200 body is the freshest button_wake_s (a 304/204 has no body:
+         * the NVS-cached value from the last status/register stands). */
+        if (fo.button_wake_s >= 0 &&
+            fo.button_wake_s != rest_config_get()->button_wake_s) {
+            rest_config_set_button_wake_s(fo.button_wake_s);
+            cfg_dirty = true;
+        }
         char fullurl[512];
         resolve_url(c->server_url, fo.url, fullurl, sizeof fullurl);
         fetched_image_t img;
@@ -713,6 +730,13 @@ void app_main(void)
                 cfg_dirty = true;
             }
             if (so.next_poll_s > 0) rest_config_set_sleep_s(so.next_poll_s);  /* drives this sleep */
+            if (so.button_wake_s >= 0 &&
+                so.button_wake_s != rest_config_get()->button_wake_s) {
+                rest_config_set_button_wake_s(so.button_wake_s);
+                cfg_dirty = true;
+                ESP_LOGI(TAG, "button wake window config: %lds",
+                         (long)rest_config_get()->button_wake_s);
+            }
 #if BOARD_HAS_TOUCH
             /* Touch config arrives in the same "config" object as sleep_interval_s.
              * -1 means the field was absent; keep the current value then. */
@@ -744,13 +768,18 @@ void app_main(void)
 
     /* 4. Radio down before the slow (~30 s) refresh -- the biggest battery
      * saving in the render path (~80 mA otherwise). A touch wake with a linger
-     * window keeps WiFi up instead, so repeated touches stay responsive. */
+     * window, or a button wake with a button_wake_s window (issue #123), keeps
+     * WiFi up instead so repeated interactions stay responsive: re-fetching a
+     * page needs the radio, and a few seconds of it is cheaper than a full
+     * reconnect per press. Timer/scheduled wakes never linger. */
 #if BOARD_HAS_TOUCH
     will_linger = woke_by_touch && rest_config_get()->touch_linger_s > 0;
-    if (!will_linger) wifi_sta_stop();
-#else
-    wifi_sta_stop();
 #endif
+#ifdef BOARD_HAS_BUTTONS
+    will_linger = will_linger ||
+                  (woke_by_button && rest_config_get()->button_wake_s > 0);
+#endif
+    if (!will_linger) wifi_sta_stop();
 
     if (frame != NULL) {
         ESP_LOGI(TAG, "painting downloaded frame (~30 s)...");
@@ -797,10 +826,46 @@ void app_main(void)
                      st.x0, st.y0, st.x1, st.y1, (unsigned)st.ms, (unsigned)ev);
             rest_set_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
                            rest_config_get()->last_frame_etag, ev);
-            if (touch_fetch_and_paint(rest_config_get()->server_url)) cfg_dirty = true;
+            if (fetch_and_paint_current(rest_config_get()->server_url)) cfg_dirty = true;
             deadline = esp_timer_get_time() + (int64_t)linger_s * 1000000;   /* reset */
         }
         rest_set_touch(0, 0, 0, 0, 0, NULL, 0);   /* clear pending touch */
+        wifi_sta_stop();
+    }
+#endif
+
+#ifdef BOARD_HAS_BUTTONS
+    /* Post-button stay-awake window (issue #123): after a button wake's paint,
+     * stay awake with WiFi up for button_wake_s, polling for further presses.
+     * Each press re-fetches ?button=...&event=<n> with a fresh event id, paints,
+     * and RESETS the countdown, so continuous scrolling keeps it awake. The
+     * window elapsing resumes the normal sleep_interval_s cadence. A hard cap
+     * bounds total awake time client-side (a faulty bouncing button otherwise
+     * could re-trigger indefinitely; a merely held/stuck one fires only one
+     * edge in buttons_poll_pressed()). */
+    if (woke_by_button && rest_config_get()->button_wake_s > 0) {
+        int32_t win_s = rest_config_get()->button_wake_s;
+        ESP_LOGI(TAG, "button wake window: up to %ld s awake for further presses",
+                 (long)win_s);
+        buttons_poll_init();
+        int64_t hard_cap = esp_timer_get_time() + BUTTON_WINDOW_CAP_S * 1000000LL;
+        int64_t deadline = esp_timer_get_time() + (int64_t)win_s * 1000000;
+        while (esp_timer_get_time() < deadline && esp_timer_get_time() < hard_cap) {
+            button_id_t b = buttons_poll_pressed();
+            if (b == BTN_NONE) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
+            uint32_t ev = ++s_button_event_seq;
+            ESP_LOGI(TAG, "window press '%s' (event %u)", button_name(b), (unsigned)ev);
+            rest_set_button(button_name(b), ev);
+            /* Like the wake press: a manual press forces a repaint (200, not 304). */
+            rest_config_set_frame_etag("");
+            if (fetch_and_paint_current(rest_config_get()->server_url)) cfg_dirty = true;
+            /* Adopt the freshest window value (the /frame 200 body may have just
+             * changed it); 0 now means the admin turned the window off. */
+            win_s = rest_config_get()->button_wake_s;
+            if (win_s <= 0) break;
+            deadline = esp_timer_get_time() + (int64_t)win_s * 1000000;
+        }
+        rest_set_button(NULL, 0);   /* clear so it doesn't leak into later requests */
         wifi_sta_stop();
     }
 #endif

@@ -43,6 +43,7 @@ typedef struct {
     char     token[256];
     char     device_id[33];
     int32_t  sleep_interval_s;
+    int32_t  button_wake_s;     /* config.button_wake_s: -1 if absent */
     uint32_t server_time;
     int      retry_after_s;
 } rest_register_out_t;
@@ -52,11 +53,13 @@ typedef struct {
     char     format[16];        /* e.g. "bin" */
     uint16_t panel_w, panel_h;
     char     etag[80];          /* new ETag to persist (quotes stripped) */
+    int32_t  button_wake_s;     /* top-level "button_wake_s": -1 if absent */
 } rest_frame_out_t;
 
 typedef struct {
     int32_t  next_poll_s;       /* deep-sleep duration to use, -1 if absent */
     int32_t  sleep_interval_s;  /* from config object, -1 if absent */
+    int32_t  button_wake_s;     /* config.button_wake_s: -1 if absent */
     uint32_t server_time;       /* unix seconds, 0 if absent */
     int      retry_after_s;     /* set on REST_RATELIMIT */
 #if BOARD_HAS_TOUCH

@@ -17,6 +17,7 @@ static const char *TAG = "rest_cfg";
 #define NVS_KEY_DEVID      "devid"
 #define NVS_KEY_ETAG       "etag"
 #define NVS_KEY_SLEEP_S    "sleep_s"
+#define NVS_KEY_BTN_WAKE   "btn_wake"
 #define NVS_KEY_UI_STATE   "ui_state"
 #if BOARD_HAS_TOUCH
 #define NVS_KEY_TOUCH_EN   "touch_en"
@@ -69,6 +70,8 @@ void rest_config_load(void)
         load_str(h, NVS_KEY_ETAG,    s_cfg.last_frame_etag,sizeof s_cfg.last_frame_etag);
         int32_t s = 0;
         if (nvs_get_i32(h, NVS_KEY_SLEEP_S, &s) == ESP_OK && s > 0) s_cfg.sleep_s = s;
+        int32_t bw = 0;
+        if (nvs_get_i32(h, NVS_KEY_BTN_WAKE, &bw) == ESP_OK && bw >= 0) s_cfg.button_wake_s = bw;
 #if BOARD_HAS_TOUCH
         uint8_t te = 0;
         if (nvs_get_u8(h, NVS_KEY_TOUCH_EN, &te) == ESP_OK) s_cfg.touch_enabled = (te != 0);
@@ -106,6 +109,7 @@ esp_err_t rest_config_save(void)
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DEVID,   s_cfg.device_id);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_ETAG,    s_cfg.last_frame_etag);
     if (err == ESP_OK) err = nvs_set_i32(h, NVS_KEY_SLEEP_S, s_cfg.sleep_s);
+    if (err == ESP_OK) err = nvs_set_i32(h, NVS_KEY_BTN_WAKE, s_cfg.button_wake_s);
 #if BOARD_HAS_TOUCH
     if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_TOUCH_EN, s_cfg.touch_enabled ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_i32(h, NVS_KEY_TOUCH_LIN, s_cfg.touch_linger_s);
@@ -154,6 +158,13 @@ void rest_config_set_device_id(const char *id)     { set_str(s_cfg.device_id, si
 void rest_config_set_device_token(const char *tok) { set_str(s_cfg.device_token, sizeof s_cfg.device_token, tok); }
 void rest_config_set_frame_etag(const char *etag)  { set_str(s_cfg.last_frame_etag, sizeof s_cfg.last_frame_etag, etag); }
 void rest_config_set_sleep_s(int32_t s)            { if (s > 0) s_cfg.sleep_s = s; }
+
+void rest_config_set_button_wake_s(int32_t s)
+{
+    if (s < 0)  s = 0;
+    if (s > 60) s = 60;   /* server bounds it too; belt and braces */
+    s_cfg.button_wake_s = s;
+}
 
 #if BOARD_HAS_TOUCH
 void rest_config_set_touch(bool enabled, int32_t linger_s)
