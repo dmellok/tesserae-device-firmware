@@ -5,7 +5,14 @@ name: release
 # the Cloudflare R2 bucket the tesserae.ink flasher reads. Cutting a release is
 # all it takes for new firmware to appear in the browser flasher.
 #
-# Requires repo secrets: CLOUDFLARE_API_TOKEN (R2 edit), CLOUDFLARE_ACCOUNT_ID.
+# The `sign` job additionally signs each target's APP-ONLY OTA image with the
+# Tesserae OTA signing Worker and attaches the signed descriptors to the
+# release. It runs in the protected `ota-signing` environment, so it waits for
+# reviewer approval and does not gate the flasher publish.
+#
+# Requires repo secrets: CLOUDFLARE_API_TOKEN (R2 edit), CLOUDFLARE_ACCOUNT_ID;
+# and, in the `ota-signing` ENVIRONMENT's secrets (not repo-wide): OTA_SIGN_TOKEN.
+# Optional repo variable OTA_SIGN_URL overrides the signer base URL.
 # The version is the release tag (e.g. v1.0.0), baked into FW_VERSION and the
 # image filenames.
 
@@ -28,15 +35,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        env:
-          - waveshare-133e6
-          - waveshare-photopainter-73
-          - seeed-reterminal-e1001
-          - seeed-reterminal-e1002
-          - seeed-reterminal-e1003
-          - seeed-reterminal-e1004
-          - seeed-ee02
-          - xiao-epaper-75
+        # kind = the board's TESSERAE_DEVICE_KIND (see boards/<env>.h): the id
+        # the Tesserae hardware catalog keys on, and therefore the device_kind
+        # the OTA signer stamps into each signed descriptor.
+        include:
+          - { env: waveshare-133e6,           kind: waveshare_133e6 }
+          - { env: waveshare-photopainter-73, kind: waveshare_photopainter_73 }
+          - { env: seeed-reterminal-e1001,    kind: seeed_reterminal_e1001 }
+          - { env: seeed-reterminal-e1002,    kind: seeed_reterminal_e1002 }
+          - { env: seeed-reterminal-e1003,    kind: seeed_reterminal_e1003 }
+          - { env: seeed-reterminal-e1004,    kind: seeed_reterminal_e1004 }
+          - { env: seeed-ee02,                kind: seeed_ee02 }
+          - { env: xiao-epaper-75,            kind: xiao_epaper_75 }
     steps:
       - uses: actions/checkout@v4
 
@@ -95,6 +105,15 @@ jobs:
           {"env":"$e","chipFamily":"ESP32-S3","offset":0,"webSerial":true,"version":"$v","path":"$e/$v.factory.bin","sha256":"$sha"}
           JSON
 
+      # The app-only OTA image (what a device streams into its inactive slot),
+      # as opposed to the merged factory image above (USB flashing). OTA signing
+      # is detached -- the .bin is never modified or repackaged; the SAME binary
+      # serves manual flashing and OTA, and the signature lives in a sidecar
+      # descriptor. The catalog builder only globs *.meta.json, so staging this
+      # here does not affect the flasher publish.
+      - name: Stage app image (OTA signing input)
+        run: cp ".pio/build/${{ matrix.env }}/firmware.bin" "dist/${{ matrix.kind }}.app.bin"
+
       - uses: actions/upload-artifact@v4
         with:
           name: fw-${{ matrix.env }}
@@ -147,3 +166,119 @@ jobs:
           done < upload_manifest.tsv
           wrangler r2 object put "$R2_BUCKET/catalog.json" \
             --file catalog.json --remote --content-type application/json
+
+  # Detached OTA signing via the Tesserae OTA signing Worker. Per device kind:
+  # POST the app-only .bin to the Worker, which signs it with the active
+  # production key (and uploads the image to R2 itself -- hosting is part of the
+  # call); keep the returned descriptor as an artifact + release asset.
+  #
+  # SECURITY: OTA_SIGN_TOKEN authorises signing ARBITRARY bytes with the
+  # production key, so it is nearly as sensitive as the key itself. It lives in
+  # the PROTECTED `ota-signing` GitHub Environment (Settings -> Environments:
+  # create it with required reviewers and add OTA_SIGN_TOKEN to ITS secrets, not
+  # the repo's). This job therefore pauses for reviewer approval; the flasher
+  # publish above is deliberately not gated by it. The token is only ever sent
+  # as an Authorization header (never in a URL, never echoed); response headers
+  # are never logged. This workflow has no pull_request trigger, so fork PRs
+  # can never reach the token.
+  #
+  # SCOPE: signing + hosting + publishing the descriptor is the whole job.
+  # Rollout (offering the update to devices) is a separate, deliberate step
+  # done against the Tesserae server, never from CI.
+  sign:
+    name: sign OTA images
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ota-signing
+    permissions:
+      contents: write   # attach descriptor-<kind>.json to the release
+    steps:
+      - name: Resolve version
+        id: ver
+        run: |
+          v='${{ github.event.release.tag_name || inputs.tag }}'
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "fw_version=${v#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: fw-*
+          merge-multiple: true
+
+      - name: Sign each app image
+        env:
+          OTA_SIGN_TOKEN: ${{ secrets.OTA_SIGN_TOKEN }}
+          # Base URL as a repo variable so it can move to a custom domain
+          # without editing the workflow.
+          OTA_SIGN_URL: ${{ vars.OTA_SIGN_URL || 'https://tesserae-ota-signer.dmellok.workers.dev' }}
+        run: |
+          set -euo pipefail
+          fw='${{ steps.ver.outputs.fw_version }}'
+          mkdir -p descriptors
+          shopt -s nullglob
+          bins=(artifacts/*.app.bin)
+          if [ ${#bins[@]} -eq 0 ]; then
+            echo "no staged app images found in artifacts/" >&2
+            exit 1
+          fi
+          for bin in "${bins[@]}"; do
+            kind=$(basename "$bin" .app.bin)
+            echo "signing $kind @ $fw ($(stat -c%s "$bin") bytes)"
+            code=$(curl -sS -o resp.json -w '%{http_code}' \
+              -X POST "$OTA_SIGN_URL/sign?device_kind=$kind&fw_version=$fw" \
+              -H "Authorization: Bearer $OTA_SIGN_TOKEN" \
+              --data-binary "@$bin")
+            # Hard-fail on any non-200, an "error" key, or a missing descriptor.
+            # The response BODY is safe to print for diagnosis; headers are not
+            # logged anywhere.
+            if [ "$code" != "200" ]; then
+              echo "signer returned HTTP $code for $kind:" >&2
+              cat resp.json >&2
+              exit 1
+            fi
+            if ! jq -e 'has("error") | not' resp.json > /dev/null; then
+              echo "signer reported an error for $kind:" >&2
+              cat resp.json >&2
+              exit 1
+            fi
+            if ! jq -e '.descriptor.payload and .descriptor.signature' resp.json > /dev/null; then
+              echo "signer response for $kind has no descriptor:" >&2
+              cat resp.json >&2
+              exit 1
+            fi
+            got=$(jq -r '.manifest.fw_version // empty' resp.json)
+            if [ "$got" != "$fw" ]; then
+              echo "manifest fw_version '$got' does not match tag version '$fw'" >&2
+              exit 1
+            fi
+            url=$(jq -r '.image_url // empty' resp.json)
+            if [ -z "$url" ] || ! curl -sfI "$url" > /dev/null; then
+              echo "image_url missing or not fetchable for $kind: ${url:-<none>}" >&2
+              exit 1
+            fi
+            jq '.descriptor' resp.json > "descriptors/descriptor-$kind.json"
+            rm -f resp.json
+            echo "signed $kind -> descriptors/descriptor-$kind.json (image: $url)"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ota-descriptors
+          path: descriptors/
+          if-no-files-found: error
+
+      - name: Attach descriptors to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag='${{ steps.ver.outputs.version }}'
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" descriptors/descriptor-*.json --clobber
+          else
+            # workflow_dispatch against a tag with no GitHub Release: the
+            # descriptors are still published as the ota-descriptors artifact.
+            echo "no GitHub release for $tag; skipping asset attach"
+          fi
