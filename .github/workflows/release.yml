@@ -252,8 +252,10 @@ jobs:
               echo "manifest fw_version '$got' does not match tag version '$fw'" >&2
               exit 1
             fi
+            # Fetchability probe: 1-byte ranged GET, not HEAD -- the Worker only
+            # routes GET on /firmware/* (HEAD 404s even though the image is there).
             url=$(jq -r '.image_url // empty' resp.json)
-            if [ -z "$url" ] || ! curl -sfI "$url" > /dev/null; then
+            if [ -z "$url" ] || ! curl -sf -r 0-0 -o /dev/null "$url"; then
               echo "image_url missing or not fetchable for $kind: ${url:-<none>}" >&2
               exit 1
             fi
