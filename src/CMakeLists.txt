@@ -22,6 +22,10 @@ idf_component_register(
         "rest_config.c"
         "image_fetcher.c"
         "image_decoder.c"
+        "ota_verify.c"
+        "ota_manifest.c"
+        "ota_install.c"
+        "ota_boot.c"
         "splash.c"
         "vendor/qrcodegen.c"
     INCLUDE_DIRS
@@ -31,6 +35,7 @@ idf_component_register(
         "../include"
     REQUIRES
         driver
+        app_update
         esp_adc
         esp_driver_i2c
         esp_driver_usb_serial_jtag

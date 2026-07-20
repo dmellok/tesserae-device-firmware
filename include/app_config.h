@@ -50,6 +50,20 @@
 #define TESSERAE_DEVICE_KIND  "esp32_client"
 #endif
 
+/* Signed OTA protocol gate. Keep this disabled in shipped board environments
+ * until that board has a confirmed flash size, A/B partition table, and tested
+ * rollback path. E1004 enables it explicitly in its PlatformIO environment. */
+#ifndef TESSERAE_OTA_CAPABILITY_ENABLED
+#define TESSERAE_OTA_CAPABILITY_ENABLED 0
+#endif
+
+/* Conservative floor for starting a flash write when external power cannot be
+ * detected. E1004 has a battery ADC but its CH340 USB bridge does not expose
+ * VBUS state to the ESP32-S3, so an unknown reading is rejected too. */
+#ifndef TESSERAE_OTA_MIN_BATTERY_MV
+#define TESSERAE_OTA_MIN_BATTERY_MV 3600
+#endif
+
 /* Human-readable board model, used to build the default device id
  * "<model>_<mac-suffix>" (e.g. reTerminal_E1004_859878). Each board header
  * sets its own; this is just a fallback so the file compiles standalone. */

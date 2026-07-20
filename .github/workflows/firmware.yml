@@ -21,6 +21,34 @@ on:
   workflow_dispatch:
 
 jobs:
+  host-tests:
+    name: host logic tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: pip install -U platformio
+
+      - name: Touch coordinate tests
+        run: cc -I src test/test_touch_coords.c src/touch_coords.c -o /tmp/touch-coords && /tmp/touch-coords
+
+      - name: Signed OTA descriptor tests
+        env:
+          PIO_BIN: pio
+        run: sh tools/test_ota_verify.sh
+
+      # Compile the OTA path explicitly as a guard even though the E1004 release
+      # environment now enables it. Other board environments remain disabled.
+      - name: Build E1004 OTA path
+        env:
+          PLATFORMIO_BUILD_FLAGS: '-DTESSERAE_OTA_CAPABILITY_ENABLED=1'
+        run: pio run -e seeed-reterminal-e1004
+
   build:
     name: build ${{ matrix.env }}
     runs-on: ubuntu-latest

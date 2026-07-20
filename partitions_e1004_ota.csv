@@ -1,0 +1,10 @@
+# reTerminal E1004 32 MB layout. The first two data partitions deliberately
+# retain the factory firmware's offsets so USB migration does not erase NVS.
+# The unallocated flash after ota_1 is reserved for future data partitions.
+#
+# Name,    Type, SubType,  Offset,    Size,      Flags
+nvs,       data, nvs,      0x9000,    0x6000,
+phy_init,  data, phy,      0xf000,    0x1000,
+otadata,   data, ota,      0x10000,   0x2000,
+ota_0,     app,  ota_0,    0x20000,   0x400000,
+ota_1,     app,  ota_1,    0x420000,  0x400000,

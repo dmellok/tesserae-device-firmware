@@ -17,6 +17,9 @@
 #include <stdint.h>
 
 #include "app_config.h"   /* BOARD_HAS_TOUCH gates the touch fields below */
+#if TESSERAE_OTA_CAPABILITY_ENABLED
+#include "ota_manifest.h"
+#endif
 
 /* Outcome of a REST call, mapping the HTTP statuses the cycle reacts to. */
 typedef enum {
@@ -65,6 +68,11 @@ typedef struct {
 #if BOARD_HAS_TOUCH
     int      touch_enabled;     /* config.touch_enabled: -1 absent, else 0/1 */
     int32_t  touch_linger_s;    /* config.touch_linger_s: -1 absent */
+#endif
+#if TESSERAE_OTA_CAPABILITY_ENABLED
+    bool     ota_present;       /* response contained a top-level ota field */
+    ota_verify_reason_t ota_reason;
+    ota_manifest_t ota_manifest; /* populated only when ota_reason == OK */
 #endif
 } rest_status_out_t;
 
