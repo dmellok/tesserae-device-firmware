@@ -124,6 +124,16 @@ jobs:
     name: publish to R2
     needs: build
     runs-on: ubuntu-latest
+    # The browser flasher must only ever offer stable firmware, so pre-releases
+    # (e.g. v1.6.0-rc1 OTA canaries) are excluded from the R2 catalog publish.
+    # The build + sign jobs still run, so a pre-release's signed OTA descriptors
+    # are produced and attached to the GitHub Release for canary/bench testing
+    # without the images appearing at tesserae.ink. A release event uses GitHub's
+    # prerelease flag; a manual workflow_dispatch keys off a SemVer pre-release
+    # hyphen in the tag (e.g. 1.6.0-rc1).
+    if: >-
+      (github.event_name == 'release' && github.event.release.prerelease == false) ||
+      (github.event_name == 'workflow_dispatch' && !contains(inputs.tag, '-'))
     steps:
       - uses: actions/checkout@v4
 
