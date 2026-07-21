@@ -20,6 +20,45 @@ static void test_uses_canonical_event_parameter(void)
                   "?button=refresh&button_event_id=7") == 0);
 }
 
+static void test_invalid_offsets_leave_url_untouched(void)
+{
+    button_report_t report = {0};
+    char url[32] = "https://host/frame";
+    char original[sizeof url];
+    memcpy(original, url, sizeof url);
+    button_report_set(&report, "refresh", 7);
+
+    assert(button_report_append_frame_query(&report, url, sizeof url, 0) == 0);
+    assert(memcmp(url, original, sizeof url) == 0);
+
+    assert(button_report_append_frame_query(&report, url, sizeof url, -1) == -1);
+    assert(memcmp(url, original, sizeof url) == 0);
+
+    assert(button_report_append_frame_query(&report, url, sizeof url,
+                                            (int)sizeof url) == (int)sizeof url);
+    assert(memcmp(url, original, sizeof url) == 0);
+
+    assert(button_report_append_frame_query(&report, url, sizeof url,
+                                            (int)sizeof url + 1) == (int)sizeof url + 1);
+    assert(memcmp(url, original, sizeof url) == 0);
+}
+
+static void test_truncated_query_returns_bounded_offset(void)
+{
+    button_report_t report = {0};
+    char url[24] = "https://host/frame";
+    int offset = (int)strlen(url);
+    button_report_set(&report, "refresh", 7);
+
+    int next = button_report_append_frame_query(&report, url, sizeof url, offset);
+
+    assert(next == (int)sizeof url);
+    assert(next >= offset);
+    assert((size_t)next <= sizeof url);
+    assert(url[sizeof url - 1] == '\0');
+    assert(strncmp(url, "https://host/frame", (size_t)offset) == 0);
+}
+
 static void test_pre_ack_failure_retains_status_fallback(void)
 {
     button_report_t report = {0};
@@ -50,6 +89,8 @@ static void test_acknowledged_frame_clears_before_status(void)
 int main(void)
 {
     test_uses_canonical_event_parameter();
+    test_invalid_offsets_leave_url_untouched();
+    test_truncated_query_returns_bounded_offset();
     test_pre_ack_failure_retains_status_fallback();
     test_acknowledged_frame_clears_before_status();
     puts("button_report tests passed");

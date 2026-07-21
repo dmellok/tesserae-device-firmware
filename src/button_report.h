@@ -13,8 +13,9 @@ typedef struct {
 void button_report_set(button_report_t *report, const char *name, uint32_t event_id);
 bool button_report_pending(const button_report_t *report);
 
-/* Append the canonical frame query to an existing URL. Returns the resulting
- * logical length (snprintf semantics); a non-pending report leaves it alone. */
+/* Append the canonical frame query to an existing URL. Returns the next safe
+ * offset, clamped to url_size when the query is truncated; a non-pending or
+ * out-of-bounds offset leaves the URL and offset alone. */
 int button_report_append_frame_query(const button_report_t *report,
                                      char *url, size_t url_size, int offset);
 

@@ -19,9 +19,14 @@ int button_report_append_frame_query(const button_report_t *report,
 {
     if (!button_report_pending(report) || offset <= 0 || (size_t)offset >= url_size)
         return offset;
-    return offset + snprintf(url + offset, url_size - (size_t)offset,
-                             "?button=%s&button_event_id=%u",
-                             report->name, (unsigned)report->event_id);
+
+    int written = snprintf(url + offset, url_size - (size_t)offset,
+                           "?button=%s&button_event_id=%u",
+                           report->name, (unsigned)report->event_id);
+    if (written < 0) return offset;
+
+    size_t next = (size_t)offset + (size_t)written;
+    return next >= url_size ? (int)url_size : (int)next;
 }
 
 void button_report_finish_frame(button_report_t *report, bool acknowledged)
