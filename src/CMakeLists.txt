@@ -18,6 +18,7 @@ idf_component_register(
         "touch_wakestub.c"
         "wifi_manager.c"
         "provisioning.c"
+        "button_report.c"
         "net_rest.c"
         "rest_config.c"
         "image_fetcher.c"

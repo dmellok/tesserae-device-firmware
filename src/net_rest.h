@@ -90,11 +90,12 @@ rest_status_t rest_register(uint16_t panel_w, uint16_t panel_h,
                             const char *mac, const char *fw_version,
                             rest_register_out_t *out, uint32_t timeout_ms);
 
-/* Report a front-button press with the subsequent frame + status requests.
+/* Report a front-button press with the subsequent frame request.
  * name is "refresh"/"left"/"right" (see buttons.h); NULL/"" clears it. event_id
- * is a monotonic per-press id the server can dedup on. Sticky until cleared:
- * adds ?button=<name>&event=<id> to the frame GET and {"button","button_event_id"}
- * to the status POST. */
+ * is a monotonic per-press id the server can dedup on. Adds
+ * ?button=<name>&button_event_id=<id> to the frame GET. An acknowledged frame
+ * response clears it before /status; a pre-ack failure retains it so the status
+ * body can deliver {"button","button_event_id"} as a fallback. */
 void rest_set_button(const char *name, uint32_t event_id);
 
 #if BOARD_HAS_TOUCH

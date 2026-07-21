@@ -11,6 +11,7 @@
 #include "rest_config.h"
 #include "app_config.h"
 #include "battery.h"
+#include "button_report.h"
 #include "sht4x.h"
 
 #include <string.h>
@@ -40,14 +41,11 @@ static uint32_t s_server_date;
 
 /* Pending front-button press to report with the next frame/status request.
  * Empty = none. Set by rest_set_button() on a button wake (see buttons.h). */
-static char     s_button[16];
-static uint32_t s_button_event;
+static button_report_t s_button;
 
 void rest_set_button(const char *name, uint32_t event_id)
 {
-    if (name && name[0]) snprintf(s_button, sizeof s_button, "%s", name);
-    else                 s_button[0] = '\0';
-    s_button_event = event_id;
+    button_report_set(&s_button, name, event_id);
 }
 
 #if BOARD_HAS_TOUCH
@@ -339,10 +337,10 @@ rest_status_t rest_get_frame(rest_frame_out_t *out, uint32_t timeout_ms)
     char url[256];
     int un = snprintf(url, sizeof url, "%s/api/v1/device/%s/frame", c->server_url, rest_config_device_id());
     /* A wake action is dispatched on the GET so the server acts before it
-     * responds (event= dedups a retried request). A wake is button XOR touch. */
-    if (s_button[0] && un > 0 && un < (int)sizeof url) {
-        un += snprintf(url + un, sizeof url - un, "?button=%s&event=%u",
-                       s_button, (unsigned)s_button_event);
+     * responds. button_event_id dedups a retried request. A wake is button XOR
+     * touch. */
+    if (button_report_pending(&s_button) && un > 0 && un < (int)sizeof url) {
+        un = button_report_append_frame_query(&s_button, url, sizeof url, un);
     }
 #if BOARD_HAS_TOUCH
     else if (s_touch_on && un > 0 && un < (int)sizeof url) {
@@ -368,6 +366,14 @@ rest_status_t rest_get_frame(rest_frame_out_t *out, uint32_t timeout_ms)
 
     const char *rbody = NULL;
     rest_status_t st = do_request(HTTP_METHOD_GET, url, hdrs, nh, NULL, &rbody, timeout_ms);
+    /* 200/204/304 prove the server received the frame request and therefore
+     * dispatched its button action. Clear before the normal /status heartbeat
+     * so one physical press produces one event. Network/auth/HTTP failures keep
+     * it pending and /status remains the fallback delivery path. */
+    button_report_finish_frame(
+        &s_button,
+        st == REST_OK || st == REST_NOT_MODIFIED || st == REST_NO_CONTENT
+    );
     /* Capture the new ETag (from the response header) regardless of the JSON. */
     snprintf(out->etag, sizeof out->etag, "%s", s_etag);
     if (st != REST_OK) return st;   /* 304 / 204 / errors handled by caller */
@@ -431,9 +437,9 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     }
 #endif
     if (sleep_until) cJSON_AddNumberToObject(o, "sleep_until", (double)sleep_until);
-    if (s_button[0]) {   /* telemetry: which button drove this wake, + dedup id */
-        cJSON_AddStringToObject(o, "button", s_button);
-        cJSON_AddNumberToObject(o, "button_event_id", s_button_event);
+    if (button_report_pending(&s_button)) { /* failed /frame fallback */
+        cJSON_AddStringToObject(o, "button", s_button.name);
+        cJSON_AddNumberToObject(o, "button_event_id", s_button.event_id);
     }
     char *body = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);

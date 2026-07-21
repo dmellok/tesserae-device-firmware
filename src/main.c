@@ -867,7 +867,8 @@ void app_main(void)
 #ifdef BOARD_HAS_BUTTONS
     /* Post-button stay-awake window (issue #123): after a button wake's paint,
      * stay awake with WiFi up for button_wake_s, polling for further presses.
-     * Each press re-fetches ?button=...&event=<n> with a fresh event id, paints,
+     * Each press re-fetches ?button=...&button_event_id=<n> with a fresh event
+     * id, paints,
      * and RESETS the countdown, so continuous scrolling keeps it awake. The
      * window elapsing resumes the normal sleep_interval_s cadence. A hard cap
      * bounds total awake time client-side (a faulty bouncing button otherwise
