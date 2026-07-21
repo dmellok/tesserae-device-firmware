@@ -21,6 +21,17 @@ on:
   workflow_dispatch:
 
 jobs:
+  unit:
+    name: host unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Button report contract
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -I src \
+            test/test_button_report.c src/button_report.c -o /tmp/test-button-report
+          /tmp/test-button-report
+
   build:
     name: build ${{ matrix.env }}
     runs-on: ubuntu-latest
