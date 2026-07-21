@@ -226,9 +226,18 @@ static int32_t json_get_int(const cJSON *o, const char *k, int32_t dflt)
     return cJSON_IsNumber(v) ? (int32_t)v->valuedouble : dflt;
 }
 
+#if TESSERAE_OTA_CAPABILITY_ENABLED
+static void add_ota_capability(cJSON *o)
+{
+    cJSON *ota = cJSON_AddObjectToObject(o, "ota");
+    if (ota != NULL) cJSON_AddNumberToObject(ota, "schema", OTA_SCHEMA_VERSION);
+}
+#endif
+
 /* Identity body shared by /discover and /register. Caller frees. */
 static char *identity_body(uint16_t panel_w, uint16_t panel_h,
-                           const char *mac, const char *fw_version)
+                           const char *mac, const char *fw_version,
+                           bool advertise_ota)
 {
     cJSON *o = cJSON_CreateObject();
     if (!o) return NULL;
@@ -238,6 +247,11 @@ static char *identity_body(uint16_t panel_w, uint16_t panel_h,
     cJSON_AddNumberToObject(o, "panel_h", panel_h);
     cJSON_AddStringToObject(o, "fw_version", fw_version);
     cJSON_AddStringToObject(o, "mac", mac ? mac : "");
+#if TESSERAE_OTA_CAPABILITY_ENABLED
+    if (advertise_ota) add_ota_capability(o);
+#else
+    (void)advertise_ota;
+#endif
     char *body = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     return body;
@@ -254,7 +268,7 @@ rest_status_t rest_discover(uint16_t panel_w, uint16_t panel_h,
     char url[200];
     snprintf(url, sizeof url, "%s/api/v1/device/discover", rest_config_get()->server_url);
 
-    char *body = identity_body(panel_w, panel_h, mac, fw_version);
+    char *body = identity_body(panel_w, panel_h, mac, fw_version, false);
     if (!body) return REST_NET_ERR;
 
     const char *rbody = NULL;
@@ -291,7 +305,7 @@ rest_status_t rest_register(uint16_t panel_w, uint16_t panel_h,
     char url[200];
     snprintf(url, sizeof url, "%s/api/v1/device/register", rest_config_get()->server_url);
 
-    char *body = identity_body(panel_w, panel_h, mac, fw_version);
+    char *body = identity_body(panel_w, panel_h, mac, fw_version, true);
     if (!body) return REST_NET_ERR;
 
     rest_hdr_t hdrs[] = { { "X-Pairing-Code", rest_config_get()->pairing_code } };
@@ -406,6 +420,9 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     cJSON_AddStringToObject(o, "fw_version", fw_version);
     cJSON_AddNumberToObject(o, "panel_w", panel_w);
     cJSON_AddNumberToObject(o, "panel_h", panel_h);
+#if TESSERAE_OTA_CAPABILITY_ENABLED
+    add_ota_capability(o);
+#endif
 #ifdef BOARD_HAS_SHT4X
     sht4x_sample_t environment;
     esp_err_t environment_err = sht4x_read(&environment);
@@ -453,6 +470,30 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         out->touch_linger_s = json_get_int(cfg, "touch_linger_s", -1);
 #endif
     }
+#if TESSERAE_OTA_CAPABILITY_ENABLED
+    cJSON *ota = cJSON_GetObjectItemCaseSensitive(r, "ota");
+    if (ota != NULL) {
+        out->ota_present = true;
+        const cJSON *payload = cJSON_IsObject(ota)
+                                   ? cJSON_GetObjectItemCaseSensitive(ota, "payload")
+                                   : NULL;
+        const cJSON *signature = cJSON_IsObject(ota)
+                                     ? cJSON_GetObjectItemCaseSensitive(ota, "signature")
+                                     : NULL;
+        if (!cJSON_IsString(payload) || payload->valuestring == NULL ||
+            strlen(payload->valuestring) > OTA_MAX_PAYLOAD_B64URL ||
+            !cJSON_IsString(signature) || signature->valuestring == NULL ||
+            strlen(signature->valuestring) > OTA_ED25519_SIG_B64URL) {
+            out->ota_reason = OTA_VERIFY_MALFORMED_DESCRIPTOR;
+        } else {
+            out->ota_reason = ota_descriptor_check(payload->valuestring,
+                                                   signature->valuestring,
+                                                   TESSERAE_DEVICE_KIND,
+                                                   FW_VERSION,
+                                                   &out->ota_manifest);
+        }
+    }
+#endif
     cJSON_Delete(r);
     return REST_OK;
 }

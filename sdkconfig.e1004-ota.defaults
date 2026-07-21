@@ -1,0 +1,10 @@
+# E1004-only overrides layered after sdkconfig.defaults.
+# The production unit inspected on 2026-07-21 has 32 MB flash.
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_e1004_ota.csv"
+
+# A newly selected OTA image starts in PENDING_VERIFY. Application code must
+# mark it valid only after its local health checks pass; reset/crash first and
+# the bootloader returns to the previous slot.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

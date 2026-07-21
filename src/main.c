@@ -38,6 +38,10 @@
 #include "image_decoder.h"
 #include "image_fetcher.h"
 #include "net_rest.h"
+#include "ota_boot.h"
+#include "ota_install.h"
+#include "ota_manifest.h"
+#include "ota_verify.h"
 #include "provisioning.h"
 #include "rest_config.h"
 #include "splash.h"
@@ -605,6 +609,12 @@ void app_main(void)
         return;
     }
     s_wifi_fail_count = 0;   /* connected -> clear the retry streak */
+#if TESSERAE_OTA_CAPABILITY_ENABLED
+    /* Confirm a first-boot image only after the agreed local checks, including
+     * WiFi association, pass. Tesserae server reachability is intentionally not
+     * part of the rollback gate. */
+    ota_boot_confirm_if_pending();
+#endif
 
     /* Double-tap reset: serve the always-on settings editor on the LAN instead
      * of running the paint cycle. Stays up until a save (then reboot) or the
@@ -748,6 +758,26 @@ void app_main(void)
                     rest_config_set_touch(en, lin);
                     cfg_dirty = true;
                     ESP_LOGI(TAG, "touch config: enabled=%d linger=%lds", en, (long)lin);
+                }
+            }
+#endif
+#if TESSERAE_OTA_CAPABILITY_ENABLED
+            if (so.ota_present) {
+                if (so.ota_reason == OTA_VERIFY_OK) {
+                    ota_install_result_t install =
+                        ota_install_apply(&so.ota_manifest);
+                    if (install == OTA_INSTALL_APPLIED) {
+                        if (cfg_dirty) rest_config_save();
+                        free(frame);
+                        frame = NULL;
+                        ESP_LOGI(TAG, "rebooting into verified OTA image");
+                        esp_restart();
+                    }
+                    ESP_LOGW(TAG, "OTA install failed: %s",
+                             ota_install_result_name(install));
+                } else {
+                    ESP_LOGW(TAG, "OTA descriptor rejected: %s",
+                             ota_verify_reason_name(so.ota_reason));
                 }
             }
 #endif
