@@ -52,7 +52,7 @@ ota_install_result_t ota_install_apply(const ota_manifest_t *manifest)
         .timeout_ms = OTA_DOWNLOAD_TIMEOUT_MS,
         .buffer_size = OTA_DOWNLOAD_BUFFER_BYTES,
         .keep_alive_enable = true,
-        .disable_auto_redirect = false,
+        .disable_auto_redirect = true,
     };
     if (strncmp(manifest->image_url, "https://", 8) == 0)
         cfg.crt_bundle_attach = esp_crt_bundle_attach;

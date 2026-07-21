@@ -1,5 +1,7 @@
 # reTerminal E1004 32 MB layout. The first two data partitions deliberately
 # retain the factory firmware's offsets so USB migration does not erase NVS.
+# Before migrating each unit, run `esptool flash_id` and proceed only when it
+# reports 32 MB flash; do not use this layout on a smaller hardware revision.
 # The unallocated flash after ota_1 is reserved for future data partitions.
 #
 # Name,    Type, SubType,  Offset,    Size,      Flags
