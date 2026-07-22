@@ -81,6 +81,17 @@ void rest_config_load(void)
         nvs_close(h);
     }
 
+#ifdef TESSERAE_TEST_SERVER_URL
+    /* Bench-only override (never defined in release builds): point the cycle
+     * at a test server and drop the token IN RAM ONLY, so the full discover ->
+     * register -> frame -> status path runs against it without a settings
+     * portal round-trip. NVS is not modified by the override itself; on a
+     * normal build the device self-heals via MAC-matched discover. */
+    set_str(s_cfg.server_url, sizeof s_cfg.server_url, TESSERAE_TEST_SERVER_URL);
+    s_cfg.device_token[0] = '\0';
+    ESP_LOGW(TAG, "TEST OVERRIDE: server='%s', token cleared (RAM)", s_cfg.server_url);
+#endif
+
     strip_trailing_slash(s_cfg.server_url);
     s_loaded = true;
     ESP_LOGI(TAG, "loaded server='%s' id='%s' token=%s etag=%s sleep_s=%ld",

@@ -28,6 +28,7 @@ idf_component_register(
         "ota_manifest.c"
         "ota_install.c"
         "ota_boot.c"
+        "ota_report.c"
         "splash.c"
         "vendor/qrcodegen.c"
     INCLUDE_DIRS

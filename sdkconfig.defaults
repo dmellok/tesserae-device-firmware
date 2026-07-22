@@ -65,3 +65,11 @@ CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
 
 # --- Power: we want explicit control, not the IDF power-management hooks ---
 CONFIG_PM_ENABLE=n
+
+# --- IPv6 (issue #2): reach servers that only listen on IPv6 ---
+# CONFIG_LWIP_IPV6 itself is the IDF default; SLAAC is not. With autoconf on,
+# the device forms a routable (global/ULA) address from router advertisements.
+# wifi_manager creates the required link-local address on association; DNS AAAA
+# resolution and v6 connects then work through the stock lwIP/esp-tls path
+# whenever that is what a hostname resolves to. IPv4 behaviour is unchanged.
+CONFIG_LWIP_IPV6_AUTOCONFIG=y

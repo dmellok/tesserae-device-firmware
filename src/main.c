@@ -41,6 +41,7 @@
 #include "ota_boot.h"
 #include "ota_install.h"
 #include "ota_manifest.h"
+#include "ota_report.h"
 #include "ota_verify.h"
 #include "provisioning.h"
 #include "rest_config.h"
@@ -416,6 +417,40 @@ static void touch_queue_flush(void)
 }
 #endif
 
+#if TESSERAE_OTA_CAPABILITY_ENABLED
+/* Map a non-applied install result onto the contract's reason vocabulary
+ * (docs/ota/contract.md "Reason codes"). The apply-time battery gate is a
+ * `rejected` per the contract; transport errors fold into download_error;
+ * slot/argument problems into flash_error. */
+static void ota_report_install_failure(const ota_manifest_t *m,
+                                       ota_install_result_t r,
+                                       const char *attempt)
+{
+    switch (r) {
+    case OTA_INSTALL_LOW_BATTERY:
+        ota_report_set(OTA_REPORT_REJECTED, "battery_low", m->fw_version, attempt);
+        break;
+    case OTA_INSTALL_HTTP_INIT_FAILED:
+    case OTA_INSTALL_HTTP_FAILED:
+    case OTA_INSTALL_HTTP_STATUS:
+        ota_report_set(OTA_REPORT_FAILED, "download_error", m->fw_version, attempt);
+        break;
+    case OTA_INSTALL_SIZE_MISMATCH:
+        ota_report_set(OTA_REPORT_FAILED, "size_mismatch", m->fw_version, attempt);
+        break;
+    case OTA_INSTALL_DIGEST_MISMATCH:
+        ota_report_set(OTA_REPORT_FAILED, "digest_mismatch", m->fw_version, attempt);
+        break;
+    case OTA_INSTALL_IMAGE_INVALID:
+        ota_report_set(OTA_REPORT_FAILED, "image_invalid", m->fw_version, attempt);
+        break;
+    default:
+        ota_report_set(OTA_REPORT_FAILED, "flash_error", m->fw_version, attempt);
+        break;
+    }
+}
+#endif
+
 void app_main(void)
 {
     esp_reset_reason_t reset_reason = esp_reset_reason();
@@ -612,8 +647,11 @@ void app_main(void)
 #if TESSERAE_OTA_CAPABILITY_ENABLED
     /* Confirm a first-boot image only after the agreed local checks, including
      * WiFi association, pass. Tesserae server reachability is intentionally not
-     * part of the rollback gate. */
+     * part of the rollback gate. Then resolve a persisted pending_confirm into
+     * confirmed (we are the target version) or rolled_back (the bootloader
+     * reverted the slot), so the next heartbeat reports the terminal state. */
     ota_boot_confirm_if_pending();
+    ota_report_resolve_boot(FW_VERSION);
 #endif
 
     /* Double-tap reset: serve the always-on settings editor on the LAN instead
@@ -764,18 +802,36 @@ void app_main(void)
 #if TESSERAE_OTA_CAPABILITY_ENABLED
             if (so.ota_present) {
                 if (so.ota_reason == OTA_VERIFY_OK) {
+                    char attempt[8];
+                    snprintf(attempt, sizeof attempt, "%02x%02x%02x",
+                             so.ota_manifest.sha256[0], so.ota_manifest.sha256[1],
+                             so.ota_manifest.sha256[2]);
+                    ota_report_set(OTA_REPORT_DOWNLOADING, "",
+                                   so.ota_manifest.fw_version, attempt);
                     ota_install_result_t install =
                         ota_install_apply(&so.ota_manifest);
                     if (install == OTA_INSTALL_APPLIED) {
+                        /* Persist BEFORE the reboot: the next boot resolves
+                         * pending_confirm into confirmed or rolled_back. */
+                        ota_report_set(OTA_REPORT_PENDING_CONFIRM, "",
+                                       so.ota_manifest.fw_version, attempt);
                         if (cfg_dirty) rest_config_save();
                         free(frame);
                         frame = NULL;
                         ESP_LOGI(TAG, "rebooting into verified OTA image");
                         esp_restart();
                     }
+                    ota_report_install_failure(&so.ota_manifest, install, attempt);
                     ESP_LOGW(TAG, "OTA install failed: %s",
                              ota_install_result_name(install));
                 } else {
+                    /* Verify-time refusals are `rejected`; the verifier's
+                     * reason names are the contract vocabulary. The manifest
+                     * is only populated for post-parse refusals (kind
+                     * mismatch / already current). */
+                    ota_report_set(OTA_REPORT_REJECTED,
+                                   ota_verify_reason_name(so.ota_reason),
+                                   so.ota_manifest.fw_version, NULL);
                     ESP_LOGW(TAG, "OTA descriptor rejected: %s",
                              ota_verify_reason_name(so.ota_reason));
                 }

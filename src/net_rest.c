@@ -12,6 +12,10 @@
 #include "app_config.h"
 #include "battery.h"
 #include "button_report.h"
+#include "ota_report.h"
+#include "wifi_manager.h"
+
+#include "lwip/netdb.h"   /* getaddrinfo: IPv6-only server detection */
 #include "sht4x.h"
 #include "shtc3.h"
 
@@ -148,6 +152,49 @@ static rest_status_t map_status(int http)
     }
 }
 
+/* IPv6 (issue #2): when the server is only reachable over IPv6 -- a bracketed
+ * v6 literal in the URL, or a hostname with AAAA records but no A record --
+ * wait briefly for SLAAC to produce a routable v6 address before the wake's
+ * first request. The v4 "got ip" event the cycle gates on fires seconds before
+ * SLAAC completes, so without this the connect races the address and loses.
+ * Runs at most once per boot; v4-resolvable hosts detect that in one (lwIP-
+ * cached) lookup and skip the wait entirely, so IPv4 behaviour is unchanged. */
+#define REST_IP6_WAIT_MS 5000
+static void wait_ip6_if_needed(const char *url)
+{
+    static bool s_done;
+    if (s_done) return;
+    s_done = true;
+
+    const char *host = strstr(url, "://");
+    host = host ? host + 3 : url;
+    bool need6 = false;
+    if (host[0] == '[') {
+        need6 = true;   /* bracketed IPv6 literal */
+    } else {
+        char name[128];
+        size_t n = strcspn(host, ":/");
+        if (n == 0 || n >= sizeof name) return;
+        memcpy(name, host, n);
+        name[n] = '\0';
+        struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM };
+        struct addrinfo *res = NULL;
+        if (getaddrinfo(name, NULL, &hints, &res) != 0 || res == NULL) return;
+        bool has4 = false, has6 = false;
+        for (struct addrinfo *a = res; a != NULL; a = a->ai_next) {
+            if (a->ai_family == AF_INET)  has4 = true;
+            if (a->ai_family == AF_INET6) has6 = true;
+        }
+        freeaddrinfo(res);
+        need6 = has6 && !has4;
+    }
+    if (need6) {
+        bool up = wifi_manager_wait_ip6_routable(REST_IP6_WAIT_MS);
+        ESP_LOGI(TAG, "server is IPv6-only; routable v6 %s",
+                 up ? "ready" : "NOT up in time (request may fail this wake)");
+    }
+}
+
 /* Core request. On REST_OK/304/etc the accumulated body is at s_rx (NUL
  * terminated); *body_out points into it. Captured ETag/Retry-After are exposed
  * via the s_* statics and copied out below. */
@@ -155,6 +202,7 @@ static rest_status_t do_request(esp_http_client_method_t method, const char *url
                                 const rest_hdr_t *hdrs, int nh, const char *body,
                                 const char **body_out, uint32_t timeout_ms)
 {
+    wait_ip6_if_needed(url);
     s_rx_len = 0; s_overflow = false; s_etag[0] = '\0';
     s_retry_after = 0; s_server_date = 0;
     if (body_out) *body_out = NULL;
@@ -231,7 +279,12 @@ static int32_t json_get_int(const cJSON *o, const char *k, int32_t dflt)
 static void add_ota_capability(cJSON *o)
 {
     cJSON *ota = cJSON_AddObjectToObject(o, "ota");
-    if (ota != NULL) cJSON_AddNumberToObject(ota, "schema", OTA_SCHEMA_VERSION);
+    if (ota == NULL) return;
+    cJSON_AddNumberToObject(ota, "schema", OTA_SCHEMA_VERSION);
+    /* State report (contract "State reporting"): phase/reason/target_fw/
+     * attempt_id of the latest attempt. Adds nothing while idle; the server
+     * dedups repeated identical terminal reports. */
+    ota_report_fill(ota);
 }
 #endif
 

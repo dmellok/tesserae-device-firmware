@@ -27,6 +27,13 @@ bool wifi_creds_get_ssid(char *out, size_t out_sz);
  * false and leaves `out` empty if the STA interface has no IP yet. */
 bool wifi_manager_get_sta_ip(char *out, size_t out_sz);
 
+/* Block until the STA holds a ROUTABLE (global or unique-local) IPv6 address,
+ * or the timeout passes. Returns immediately once one exists. Used by the REST
+ * layer before the first request of a wake when the server host is only
+ * reachable over IPv6 (issue #2) -- SLAAC needs a couple of seconds after
+ * association, longer than the v4 DHCP the cycle normally gates on. */
+bool wifi_manager_wait_ip6_routable(uint32_t timeout_ms);
+
 /* Persist creds. `pass == ""` stores an empty password (open network);
  * `pass == NULL` keeps the currently-stored password unchanged. */
 esp_err_t wifi_creds_save(const char *ssid, const char *pass);

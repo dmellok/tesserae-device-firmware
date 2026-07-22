@@ -18,6 +18,7 @@ static const char *TAG = "wifi";
 static EventGroupHandle_t s_events;
 #define BIT_CONNECTED  BIT0
 #define BIT_FAIL       BIT1
+#define BIT_IP6_ROUT   BIT2   /* have a ROUTABLE (global/ULA) IPv6 address */
 
 static int s_retries = 0;
 static int s_max_retries = WIFI_CONNECT_RETRIES;   /* lowered for the fast attempt */
@@ -48,8 +49,37 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "got ip: " IPSTR, IP2STR(&e->ip_info.ip));
         s_retries = 0;
+        /* IPv6 (issue #2): a link-local address is the precondition for SLAAC
+         * (CONFIG_LWIP_IPV6_AUTOCONFIG) forming a routable v6 address from
+         * router advertisements. Created here, NOT in STA_CONNECTED: this
+         * handler was registered before the default netif's action handlers,
+         * so at STA_CONNECTED the netif is not yet up and the call fails.
+         * By got-IP the netif is guaranteed up. IPv4 behaviour is unchanged. */
+        esp_err_t ip6err = esp_netif_create_ip6_linklocal(
+            s_sta_netif ? s_sta_netif
+                        : esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"));
+        if (ip6err != ESP_OK)
+            ESP_LOGW(TAG, "ip6 linklocal: %s", esp_err_to_name(ip6err));
         xEventGroupSetBits(s_events, BIT_CONNECTED);
+    } else if (base == IP_EVENT && id == IP_EVENT_GOT_IP6) {
+        ip_event_got_ip6_t *e = (ip_event_got_ip6_t *)data;
+        esp_ip6_addr_type_t type = esp_netif_ip6_get_addr_type(&e->ip6_info.ip);
+        ESP_LOGI(TAG, "got ip6: " IPV6STR " (%s)", IPV62STR(e->ip6_info.ip),
+                 type == ESP_IP6_ADDR_IS_GLOBAL       ? "global" :
+                 type == ESP_IP6_ADDR_IS_UNIQUE_LOCAL ? "unique-local" :
+                 type == ESP_IP6_ADDR_IS_LINK_LOCAL   ? "link-local" : "other");
+        if (type == ESP_IP6_ADDR_IS_GLOBAL || type == ESP_IP6_ADDR_IS_UNIQUE_LOCAL)
+            xEventGroupSetBits(s_events, BIT_IP6_ROUT);
     }
+}
+
+bool wifi_manager_wait_ip6_routable(uint32_t timeout_ms)
+{
+    if (s_events == NULL) return false;
+    /* Do not clear on exit: once routable, later callers return immediately. */
+    EventBits_t bits = xEventGroupWaitBits(s_events, BIT_IP6_ROUT, pdFALSE,
+                                           pdFALSE, pdMS_TO_TICKS(timeout_ms));
+    return (bits & BIT_IP6_ROUT) != 0;
 }
 
 esp_err_t wifi_manager_init(void)
@@ -73,6 +103,8 @@ esp_err_t wifi_manager_init(void)
         WIFI_EVENT, ESP_EVENT_ANY_ID, &on_event, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         IP_EVENT, IP_EVENT_STA_GOT_IP, &on_event, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        IP_EVENT, IP_EVENT_GOT_IP6, &on_event, NULL, NULL));
 
     s_inited = true;
     return ESP_OK;
