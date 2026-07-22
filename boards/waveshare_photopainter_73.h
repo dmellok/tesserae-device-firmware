@@ -66,6 +66,21 @@
  * battery.c routes battery_read_mv() through pmic_battery_mv() for this flag. */
 #define BOARD_BATTERY_PMIC    1
 
+/* ------------------------------------------------------------------ */
+/* Onboard SHTC3 temperature/humidity sensor (U3, Sensirion).          */
+/* From ESP32-S3-PhotoPainter-Schematic-v2.0: U3 sits on the SAME I2C  */
+/* bus as the AXP2101 -- port 0, SDA GPIO47 / SCL GPIO48 (the ESP_I2C  */
+/* net, external 4.7k pull-ups R30/R33). The SHTC3 has a single fixed  */
+/* address (0x70) and cannot share the AXP's 0x34, so both coexist on  */
+/* one bus. The shtc3 driver REUSES the bus the PMIC already created    */
+/* (see shtc3.c) rather than making a second one on port 0.            */
+#define BOARD_HAS_SHTC3        1
+#define BOARD_SHTC3_I2C_PORT   0
+#define BOARD_SHTC3_I2C_SDA    47
+#define BOARD_SHTC3_I2C_SCL    48
+#define BOARD_SHTC3_I2C_HZ     100000   /* match the PMIC: 400 kHz errors on this trace */
+#define BOARD_SHTC3_I2C_ADDR   0x70
+
 /* Board model -> default device id "PhotoPainter_73_<mac-suffix>". */
 #define TESSERAE_DEVICE_MODEL  "PhotoPainter_73"
 

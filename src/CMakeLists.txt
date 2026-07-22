@@ -11,6 +11,7 @@ idf_component_register(
         "battery.c"
         "pmic.c"
         "sht4x.c"
+        "shtc3.c"
         "i2c_bus.c"
         "touch_coords.c"
         "touch_gt911.c"
