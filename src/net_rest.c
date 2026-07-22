@@ -13,6 +13,7 @@
 #include "battery.h"
 #include "button_report.h"
 #include "sht4x.h"
+#include "shtc3.h"
 
 #include <string.h>
 #include <strings.h>
@@ -434,6 +435,18 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         cJSON_AddStringToObject(o, "env_sensor", "sht4x");
     } else {
         ESP_LOGW(TAG, "status: SHT4x read failed: %s", esp_err_to_name(environment_err));
+    }
+#elif defined(BOARD_HAS_SHTC3)
+    shtc3_sample_t environment;
+    esp_err_t environment_err = shtc3_read(&environment);
+    if (environment_err == ESP_OK) {
+        ESP_LOGI(TAG, "status: environment=%.1f C, %.1f %%RH",
+                 environment.temperature_c, environment.humidity_pct);
+        cJSON_AddNumberToObject(o, "temperature_c", environment.temperature_c);
+        cJSON_AddNumberToObject(o, "humidity_pct", environment.humidity_pct);
+        cJSON_AddStringToObject(o, "env_sensor", "shtc3");
+    } else {
+        ESP_LOGW(TAG, "status: SHTC3 read failed: %s", esp_err_to_name(environment_err));
     }
 #endif
     if (sleep_until) cJSON_AddNumberToObject(o, "sleep_until", (double)sleep_until);
