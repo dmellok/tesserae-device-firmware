@@ -2,6 +2,8 @@
 
 #include "ota_boot.h"
 
+#include <inttypes.h>
+
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 
@@ -9,8 +11,14 @@ static const char *TAG = "ota_boot";
 
 void ota_boot_confirm_if_pending(void)
 {
-#if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+    /* Name the active slot once per boot so an A/B switch is visible on the
+     * serial console (ota_0 <-> ota_1) when bench-verifying an update. */
     const esp_partition_t *running = esp_ota_get_running_partition();
+    if (running) {
+        ESP_LOGI(TAG, "running from partition '%s' @ 0x%06" PRIx32,
+                 running->label, running->address);
+    }
+#if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
     esp_ota_img_states_t state;
     if (running == NULL ||
         esp_ota_get_state_partition(running, &state) != ESP_OK ||
