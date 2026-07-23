@@ -149,8 +149,17 @@ The device talks to `<server_url>/api/v1/device/`:
 The `/status` heartbeat JSON includes **`fw_version`**, the build's semantic
 version with no leading `v` (for example `1.2.0`; untagged builds report
 `0.0.<build>` or `0.0.0-dev`). The server compares it against the latest
-available build to flag when an update can be flashed. Reporting is passive: the
-firmware does no OTA.
+available build to decide whether an update can be offered.
+
+**Wi-Fi OTA**: every board env builds with `TESSERAE_OTA_CAPABILITY_ENABLED`
+on an A/B slot layout (`partitions_ota.csv`; the E1004 has its own identical
+table). The heartbeat advertises `{"ota": {"schema": 1}}`; the server may
+answer with a signed descriptor, which the firmware verifies against its
+baked-in Ed25519 public key before streaming the image into the inactive slot,
+rebooting, and self-confirming (ESP-IDF rollback reverts a bad image). Devices
+flashed before their board's OTA-enabled release need a one-time USB or
+webflasher migration to the A/B layout; NVS (credentials + registration)
+survives when flashing via the catalog's offset-addressed `parts`.
 
 Seeed reTerminal E1001-E1004 boards also report the onboard SHT4x reading as
 **`temperature_c`** (degrees Celsius) and **`humidity_pct`** (relative humidity

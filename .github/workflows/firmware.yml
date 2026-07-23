@@ -48,12 +48,6 @@ jobs:
           PIO_BIN: pio
         run: sh tools/test_ota_verify.sh
 
-      # Compile the OTA path explicitly as a guard even though the E1004 release
-      # environment now enables it. Other board environments remain disabled.
-      - name: Build E1004 OTA path
-        env:
-          PLATFORMIO_BUILD_FLAGS: '-DTESSERAE_OTA_CAPABILITY_ENABLED=1'
-        run: pio run -e seeed-reterminal-e1004
 
   build:
     name: build ${{ matrix.env }}

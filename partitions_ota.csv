@@ -1,0 +1,15 @@
+# Generic A/B OTA layout for every OTA-capable board except the E1004 (which
+# keeps the byte-identical partitions_e1004_ota.csv with its migration notes).
+# Two 4 MiB app slots; the table ends at 0x820000, fitting any flash >= 16 MB
+# (reTerminals carry 32 MB, the XIAO Plus / WROOM boards 16 MB).
+#
+# The first two data partitions retain the factory firmware's offsets so a
+# one-time USB/webflasher migration that skips the NVS region (the catalog
+# `parts` path) preserves WiFi credentials and device registration.
+#
+# Name,    Type, SubType,  Offset,    Size,      Flags
+nvs,       data, nvs,      0x9000,    0x6000,
+phy_init,  data, phy,      0xf000,    0x1000,
+otadata,   data, ota,      0x10000,   0x2000,
+ota_0,     app,  ota_0,    0x20000,   0x400000,
+ota_1,     app,  ota_1,    0x420000,  0x400000,
