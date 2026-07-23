@@ -47,6 +47,8 @@ jobs:
           - { env: seeed-reterminal-e1004,    kind: seeed_reterminal_e1004 }
           - { env: seeed-ee02,                kind: seeed_ee02 }
           - { env: xiao-epaper-75,            kind: xiao_epaper_75 }
+          - { env: seeed-ee04-75,             kind: seeed_ee04_75 }
+          - { env: seeed-ee04-73e6,           kind: seeed_ee04_73e6 }
     steps:
       - uses: actions/checkout@v4
 

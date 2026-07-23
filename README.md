@@ -26,12 +26,17 @@ one board (and thus one driver) per PlatformIO environment.
 | [Seeed reTerminal **E1004**](https://www.seeedstudio.com/reTerminal-E1004-p-6692.html) | Spectra-6, dual-chip | T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `seeed-reterminal-e1004` |
 | [Seeed **XIAO ePaper Kit — EE02**](https://www.seeedstudio.com/XIAO-ePaper-DIY-Kit-EE02-for-13-3-Spectratm-6-E-Ink.html) | Spectra-6, dual-chip | T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `seeed-ee02` |
 | [**TRMNL 7.5" OG DIY Kit**](https://www.seeedstudio.com/TRMNL-7-5-Inch-OG-DIY-Kit-p-6481.html) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `xiao-epaper-75` |
+| [Seeed **XIAO ePaper Display Board — EE04**](https://www.seeedstudio.com/XIAO-ePaper-Display-Board-EE04-p-6560.html) + 7.5" mono (24-pin) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `seeed-ee04-75` |
+| [Seeed **XIAO ePaper Display Board — EE04**](https://www.seeedstudio.com/XIAO-ePaper-Display-Board-EE04-p-6560.html) + 7.3" Spectra-6 (50-pin) | Spectra-6, single | UC81xx | 800×480, 4bpp | `spectra6_spi_single` | `seeed-ee04-73e6` |
 | [Waveshare **ESP32-S3-ePaper-13.3E6**](https://www.waveshare.com/esp32-s3-epaper-13.3e6.htm) | Spectra-6, dual-controller | UC81xx ×2 | 1200×1600, 4bpp | `spectra6_spi_dual` | `waveshare-133e6` |
 | [Waveshare **PhotoPainter 7.3"**](https://www.waveshare.com/esp32-s3-photopainter.htm) | Spectra-6, single | ED2208-GCA | 800×480, 4bpp | `spectra6_spi_single` | `waveshare-photopainter-73` |
 
 The four reTerminals, the PhotoPainter, the EE02, and the TRMNL 7.5" kit have been
 verified end-to-end on real hardware; the Waveshare 13.3E6 is the seed target and
-builds green. Each board also has a `…-selftest` env that paints a driver-only
+builds green. The EE04 pair builds green but is **not yet hardware-verified**
+(pin map taken from Seeed_GFX; the EE04 takes one panel on either its 24-pin or
+50-pin FPC — flash the env matching the attached panel and set the jumper caps
+accordingly). Each board also has a `…-selftest` env that paints a driver-only
 test pattern (colour bars / gray ramp / mono stripes) with no networking — flash
 that first when bringing up a new unit.
 
@@ -159,8 +164,8 @@ format the firmware expects for that kind:
 | Kind | Frame format | Size |
 | --- | --- | --- |
 | `waveshare_133e6`, `seeed_reterminal_e1004`, `seeed_ee02` | 4bpp packed Spectra-6 | 960000 B |
-| `seeed_reterminal_e1002`, `waveshare_photopainter_73` | 4bpp packed Spectra-6 | 192000 B |
-| `seeed_reterminal_e1001`, `xiao_epaper_75` | 1bpp packed mono (bit 1 = white) | 48000 B |
+| `seeed_reterminal_e1002`, `waveshare_photopainter_73`, `seeed_ee04_73e6` | 4bpp packed Spectra-6 | 192000 B |
+| `seeed_reterminal_e1001`, `xiao_epaper_75`, `seeed_ee04_75` | 1bpp packed mono (bit 1 = white) | 48000 B |
 | `seeed_reterminal_e1003` | 4bpp packed grayscale (0=black…0xF=white) | 1314144 B |
 
 The PhotoPainter reuses the E1002's 800×480 4bpp format exactly (render normally

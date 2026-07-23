@@ -21,6 +21,8 @@
  *     send (the PhotoPainter mounts the panel 180 degrees in its case).
  *   - BOARD_HAS_PMIC: panel power is an AXP2101 LDO rail, so port_init/init
  *     bring the rails up via pmic_*() instead of relying on a GPIO gate.
+ *   - EPD_PIN_PWR: boards with a GPIO panel-power gate (EE04) define it; the
+ *     driver raises it before init and cuts it on sleep, like the dual driver.
  */
 #include "app_config.h"          /* board.h -> PANEL_DRIVER_* selection */
 
@@ -174,6 +176,9 @@ static esp_err_t s6s_port_init(void)
 
     gpio_config_t out = {0};
     out.pin_bit_mask = (1ULL << EPD_PIN_RST) | (1ULL << EPD_PIN_DC) | (1ULL << EPD_PIN_CS);
+#ifdef EPD_PIN_PWR
+    out.pin_bit_mask |= (1ULL << EPD_PIN_PWR);
+#endif
     out.mode = GPIO_MODE_OUTPUT;
     out.pull_up_en = GPIO_PULLUP_ENABLE;
     ESP_ERROR_CHECK(gpio_config(&out));
@@ -186,6 +191,9 @@ static esp_err_t s6s_port_init(void)
 
     gpio_set_level(EPD_PIN_CS, 1);
     gpio_set_level(EPD_PIN_DC, 0);
+#ifdef EPD_PIN_PWR
+    gpio_set_level(EPD_PIN_PWR, 0);
+#endif
 
     spi_bus_config_t bus = {0};
     bus.mosi_io_num = EPD_PIN_MOSI;
@@ -237,6 +245,10 @@ static const uint8_t PWS[]   = {0x2f};
 
 static bool run_init_sequence(void)
 {
+#ifdef EPD_PIN_PWR
+    gpio_set_level(EPD_PIN_PWR, 1);   /* EN: enable panel power */
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
     reset_panel();
     if (!wait_busy("reset")) return false;
 
@@ -347,6 +359,9 @@ static void s6s_sleep(void)
 {
     static const uint8_t DS_V[] = {0xa5};
     cmd_data(0x07, DS_V, sizeof DS_V);             /* deep sleep */
+#ifdef EPD_PIN_PWR
+    gpio_set_level(EPD_PIN_PWR, 0);                /* EN low: cut panel power */
+#endif
 }
 
 /* ---------- exported vtable ---------- */

@@ -116,7 +116,11 @@ static esp_err_t mono_port_init(void)
     gpio_config_t out = {
         .intr_type = GPIO_INTR_DISABLE,
         .mode = GPIO_MODE_OUTPUT,
-        .pin_bit_mask = (1ULL << EPD_PIN_RST) | (1ULL << EPD_PIN_DC) | (1ULL << EPD_PIN_CS),
+        .pin_bit_mask = (1ULL << EPD_PIN_RST) | (1ULL << EPD_PIN_DC) | (1ULL << EPD_PIN_CS)
+#ifdef EPD_PIN_PWR
+                      | (1ULL << EPD_PIN_PWR)
+#endif
+        ,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
     };
@@ -134,6 +138,9 @@ static esp_err_t mono_port_init(void)
     gpio_set_level(EPD_PIN_CS, 1);
     gpio_set_level(EPD_PIN_DC, 0);
     gpio_set_level(EPD_PIN_RST, 1);
+#ifdef EPD_PIN_PWR
+    gpio_set_level(EPD_PIN_PWR, 0);
+#endif
 
     spi_bus_config_t bus = {
         .miso_io_num = -1,
@@ -166,6 +173,10 @@ static const uint8_t TCON_V[] = {0x22};
 
 static void mono_init(void)
 {
+#ifdef EPD_PIN_PWR
+    gpio_set_level(EPD_PIN_PWR, 1);   /* EN: enable panel power */
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
     hw_reset();
 
     cmd_data(PWR, PWR_V, sizeof PWR_V);
@@ -248,6 +259,9 @@ static void mono_sleep(void)
 {
     uint8_t magic = 0xA5;
     cmd_data(DSLP, &magic, 1);            /* deep sleep */
+#ifdef EPD_PIN_PWR
+    gpio_set_level(EPD_PIN_PWR, 0);       /* EN low: cut panel power */
+#endif
 }
 
 /* ---------- exported vtable ---------- */

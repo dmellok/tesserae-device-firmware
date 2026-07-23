@@ -70,6 +70,8 @@ jobs:
           - waveshare-photopainter-73
           - seeed-ee02
           - xiao-epaper-75
+          - seeed-ee04-75
+          - seeed-ee04-73e6
     steps:
       - uses: actions/checkout@v4
 
