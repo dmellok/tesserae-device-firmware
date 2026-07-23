@@ -17,6 +17,7 @@
 #include <stdint.h>
 
 #include "app_config.h"   /* BOARD_HAS_TOUCH gates the touch fields below */
+#include "deck.h"         /* DECK_VERSION_CAP (deck resync signal) */
 #if TESSERAE_OTA_CAPABILITY_ENABLED
 #include "ota_manifest.h"
 #endif
@@ -74,6 +75,8 @@ typedef struct {
     ota_verify_reason_t ota_reason;
     ota_manifest_t ota_manifest; /* populated only when ota_reason == OK */
 #endif
+    bool     deck_present;      /* response carried "deck": {"version"} */
+    char     deck_version[DECK_VERSION_CAP];
 } rest_status_out_t;
 
 /* POST /api/v1/device/discover (unauthenticated). Zero-touch onboarding: the
@@ -121,3 +124,28 @@ rest_status_t rest_post_status(int rssi, const char *ip,
                                int32_t next_sleep_s, uint32_t sleep_until,
                                const char *fw_version,
                                rest_status_out_t *out, uint32_t timeout_ms);
+
+/* ---- deck cache (SD card; see deck.h / deck_cache.h) ---- */
+
+/* Advertise the deck_cache capability with the next register/status bodies.
+ * capacity_bytes is the card's free space (0 = no card mounted -> the
+ * capability object is omitted and the wire bodies are byte-identical to a
+ * cacheless build). Set once per wake, after sdcard_mount(). */
+void rest_set_deck_capability(uint64_t capacity_bytes);
+
+/* Report that the displayed frame came from the SD cache: adds deck_page_id +
+ * deck_version to the next /status body and to a same-wake /frame query.
+ * NULL/"" clears. Sticky for the wake. */
+void rest_set_deck_painted(const char *page_id, const char *version);
+
+/* GET /api/v1/device/<id>/deck (Bearer). REST_OK: the manifest JSON is copied
+ * into buf (NUL-terminated, *out_len set) for deck_manifest_parse().
+ * REST_NO_CONTENT: no deck bound. */
+rest_status_t rest_get_deck_manifest(char *buf, size_t cap, size_t *out_len,
+                                     uint32_t timeout_ms);
+
+/* Compose the authorised deck frame URL for image_fetch_auth(). */
+void rest_deck_frame_url(const char *digest, char *out, size_t cap);
+
+/* The raw bearer token (for image_fetch_auth on deck frame downloads). */
+const char *rest_bearer_token(void);

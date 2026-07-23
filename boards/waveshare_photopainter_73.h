@@ -88,6 +88,16 @@
  * bytes) as the E1002, so the server maps this to the existing renderer. */
 #define TESSERAE_DEVICE_KIND   "waveshare_photopainter_73"
 
+/* microSD (deck cache): dedicated SDMMC pins (no bus sharing), mounted
+ * 1-bit. From waveshareteam/ESP32-S3-PhotoPainter bsp (clk=39, cmd=41,
+ * d0=40; d1/d2/d3 = 1/2/38 unused in 1-bit mode). The slot rail rides the
+ * AXP2101 ALDO group, so pmic_rails_set(false) at sleep powers it down. */
+#define TESSERAE_SD_SLOT   1
+#define SD_USE_SDMMC       1
+#define SD_MMC_PIN_CLK     39
+#define SD_MMC_PIN_CMD     41
+#define SD_MMC_PIN_D0      40
+
 /* MCU tier: ESP32-S3 + octal PSRAM. */
 #define MCU_TIER_S3_OCTAL_PSRAM 1
 

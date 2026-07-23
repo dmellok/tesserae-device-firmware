@@ -246,7 +246,13 @@ static esp_err_t t133_port_init(void)
         .spics_io_num = -1,            /* we drive CS by hand */
         .queue_size = 1,
     };
-    ESP_ERROR_CHECK(spi_bus_initialize(EPD_SPI_HOST, &bus, SPI_DMA_CH_AUTO));
+    /* The SD card may share this bus (reTerminal boards) and have initialised
+     * it already (with a compatible pin set and a larger transfer cap), so
+     * tolerate INVALID_STATE like spectra6_spi_single does. */
+    esp_err_t bus_err = spi_bus_initialize(EPD_SPI_HOST, &bus, SPI_DMA_CH_AUTO);
+    if (bus_err != ESP_OK && bus_err != ESP_ERR_INVALID_STATE) {
+        ESP_ERROR_CHECK(bus_err);
+    }
     ESP_ERROR_CHECK(spi_bus_add_device(EPD_SPI_HOST, &dev, &s_spi));
 
     s_port_inited = true;

@@ -54,6 +54,13 @@ static inline void px(int x, int y, uint8_t c)
         uint8_t bit = (uint8_t)(0x80 >> (x & 7));
         if (c == COL_WHT) s_fb[i] |= bit;
         else              s_fb[i] &= (uint8_t)~bit;
+    } else if (s_bpp == 2) {
+        /* Packed 2bpp (E1001 4-gray), 4 px/byte, MSB-first: bits 7-6 are the
+         * leftmost pixel; 0b00 = black .. 0b11 = white. */
+        size_t i = (size_t)y * (s_W / 4) + (size_t)(x >> 2);
+        int shift = (3 - (x & 3)) * 2;
+        s_fb[i] = (uint8_t)((s_fb[i] & (uint8_t)~(0x3 << shift)) |
+                            (uint8_t)((c & 0x3) << shift));
     } else {
         /* Packed 4bpp, 2 px/byte, high nibble = even column. */
         size_t i = (size_t)y * (s_W / 2) + (size_t)(x >> 1);
@@ -76,6 +83,7 @@ static void fill_rect(int x, int y, int w, int h, uint8_t c)
 static uint8_t logo_color(uint8_t v)
 {
     if (s_bpp == 1)      return (v == EPD_COL_WHITE) ? COL_WHT : COL_BLK;
+    if (s_bpp == 2)      return (v == 0x1) ? COL_WHT : 0x1;   /* 4-gray: dark-gray mark */
     if (COL_WHT == 0x1)  return v;                      /* Spectra: raw (green mark) */
     return (v == 0x1) ? COL_WHT : 0x3;                  /* grayscale: white / dark-gray mark */
 }
@@ -173,8 +181,9 @@ static esp_err_t render_and_paint(void (*draw)(void), const char *label)
         ESP_LOGE(TAG, "OOM allocating %u-byte splash buffer", (unsigned)EPD_BUF_BYTES);
         return ESP_ERR_NO_MEM;
     }
-    /* White background: 1bpp -> all bits set (0xFF); 4bpp -> packed white nibbles. */
-    memset(s_fb, (s_bpp == 1) ? 0xFF : ((COL_WHT << 4) | COL_WHT), EPD_BUF_BYTES);
+    /* White background: 1bpp -> all bits set; 2bpp -> 0b11 x4 (also 0xFF);
+     * 4bpp -> packed white nibbles. */
+    memset(s_fb, (s_bpp <= 2) ? 0xFF : ((COL_WHT << 4) | COL_WHT), EPD_BUF_BYTES);
 
     draw();
 

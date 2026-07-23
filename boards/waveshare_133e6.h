@@ -52,6 +52,15 @@
 #define BOARD_BATTERY_ADC_CHANNEL  ADC_CHANNEL_7
 #define BOARD_BATTERY_DIVIDER      3
 
+/* microSD (deck cache): dedicated SDMMC pins (no bus sharing), mounted
+ * 1-bit. From waveshareteam/ESP32-S3-ePaper-13.3E6 04_SD_Test (clk=6,
+ * cmd=7, d0=5; d1/d2/d3 = 4/16/15 unused in 1-bit mode). */
+#define TESSERAE_SD_SLOT   1
+#define SD_USE_SDMMC       1
+#define SD_MMC_PIN_CLK     6
+#define SD_MMC_PIN_CMD     7
+#define SD_MMC_PIN_D0      5
+
 /* ------------------------------------------------------------------ */
 /* MCU tier                                                            */
 /* ESP32-S3 + octal PSRAM. Framebuffers live in SPIRAM.               */

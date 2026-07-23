@@ -25,3 +25,9 @@ typedef struct {
 /* On success, fills `out` (caller frees out->data). On failure leaves
  * out->data == NULL. */
 esp_err_t image_fetch(const char *url, fetched_image_t *out);
+
+/* As image_fetch(), adding an Authorization: Bearer header when bearer_token
+ * is non-empty (deck frame endpoint). Returns ESP_ERR_NOT_FOUND on a 404 --
+ * the deck contract's "stale manifest, re-fetch it" signal. */
+esp_err_t image_fetch_auth(const char *url, const char *bearer_token,
+                           fetched_image_t *out);

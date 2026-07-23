@@ -32,7 +32,9 @@
 
 static const char *TAG = "rest";
 
-#define REST_RX_MAX 4096
+/* Sized for the largest JSON body we accept: a deck manifest (GET /deck) with
+ * DECK_MAX_PAGES fully-linked pages runs to ~10 KB. Everything else is <4 KB. */
+#define REST_RX_MAX 16384
 
 typedef struct { const char *name, *value; } rest_hdr_t;
 
@@ -51,6 +53,44 @@ static button_report_t s_button;
 void rest_set_button(const char *name, uint32_t event_id)
 {
     button_report_set(&s_button, name, event_id);
+}
+
+/* Deck cache capability + SD-paint report (sticky for this wake; see deck.h).
+ * s_deck_capacity == 0 means no card mounted -> the capability object is
+ * omitted entirely and a deck-unaware server sees exactly the old bodies. */
+static uint64_t s_deck_capacity;
+static char     s_deck_page[DECK_ID_CAP];
+static char     s_deck_ver[DECK_VERSION_CAP];
+
+void rest_set_deck_capability(uint64_t capacity_bytes)
+{
+    s_deck_capacity = capacity_bytes;
+}
+
+void rest_set_deck_painted(const char *page_id, const char *version)
+{
+    if (!page_id || !page_id[0] || !version || !version[0]) {
+        s_deck_page[0] = '\0';
+        s_deck_ver[0]  = '\0';
+        return;
+    }
+    snprintf(s_deck_page, sizeof s_deck_page, "%s", page_id);
+    snprintf(s_deck_ver,  sizeof s_deck_ver,  "%s", version);
+}
+
+/* Contract: capacity is capped at 64 MB so a huge card doesn't invite the
+ * server to schedule an unbounded sync. */
+#define DECK_CAPACITY_CAP (64ULL * 1024 * 1024)
+
+static void add_deck_capability(cJSON *o)
+{
+    if (!s_deck_capacity) return;
+    cJSON *dc = cJSON_AddObjectToObject(o, "deck_cache");
+    if (!dc) return;
+    cJSON_AddNumberToObject(dc, "schema", 1);
+    uint64_t cap = s_deck_capacity < DECK_CAPACITY_CAP ? s_deck_capacity
+                                                       : DECK_CAPACITY_CAP;
+    cJSON_AddNumberToObject(dc, "capacity_bytes", (double)cap);
 }
 
 #if BOARD_HAS_TOUCH
@@ -306,6 +346,8 @@ static char *identity_body(uint16_t panel_w, uint16_t panel_h,
 #else
     (void)advertise_ota;
 #endif
+    /* Register advertises capabilities; discover stays identity-only. */
+    if (advertise_ota) add_deck_capability(o);
     char *body = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     return body;
@@ -407,6 +449,15 @@ rest_status_t rest_get_frame(rest_frame_out_t *out, uint32_t timeout_ms)
                  (unsigned)s_touch_ms, s_touch_digest, (unsigned)s_touch_event);
     }
 #endif
+    /* SD-paint report rides the same-wake frame GET too (contract). */
+    if (s_deck_page[0]) {
+        size_t cur = strlen(url);
+        if (cur < sizeof url) {
+            snprintf(url + cur, sizeof url - cur,
+                     "%cdeck_page_id=%s&deck_version=%s",
+                     strchr(url, '?') ? '&' : '?', s_deck_page, s_deck_ver);
+        }
+    }
 
     char auth[300], inm[128];
     snprintf(auth, sizeof auth, "Bearer %s", c->device_token);
@@ -441,6 +492,40 @@ rest_status_t rest_get_frame(rest_frame_out_t *out, uint32_t timeout_ms)
     out->button_wake_s = json_get_int(r, "button_wake_s", -1);
     cJSON_Delete(r);
     return out->url[0] ? REST_OK : REST_HTTP_ERR;
+}
+
+rest_status_t rest_get_deck_manifest(char *buf, size_t cap, size_t *out_len,
+                                     uint32_t timeout_ms)
+{
+    if (out_len) *out_len = 0;
+    const rest_config_t *c = rest_config_get();
+    char url[256];
+    snprintf(url, sizeof url, "%s/api/v1/device/%s/deck",
+             c->server_url, rest_config_device_id());
+
+    char auth[300];
+    snprintf(auth, sizeof auth, "Bearer %s", c->device_token);
+    rest_hdr_t hdrs[] = { { "Authorization", auth } };
+
+    const char *rbody = NULL;
+    rest_status_t st = do_request(HTTP_METHOD_GET, url, hdrs, 1, NULL, &rbody, timeout_ms);
+    if (st != REST_OK) return st;   /* 204 = no deck bound (caller handles) */
+    if (s_overflow || s_rx_len == 0 || s_rx_len >= cap) return REST_HTTP_ERR;
+    memcpy(buf, rbody, s_rx_len);
+    buf[s_rx_len] = '\0';
+    if (out_len) *out_len = s_rx_len;
+    return REST_OK;
+}
+
+void rest_deck_frame_url(const char *digest, char *out, size_t cap)
+{
+    snprintf(out, cap, "%s/api/v1/device/%s/deck/frame/%s",
+             rest_config_get()->server_url, rest_config_device_id(), digest);
+}
+
+const char *rest_bearer_token(void)
+{
+    return rest_config_get()->device_token;
 }
 
 rest_status_t rest_post_status(int rssi, const char *ip,
@@ -507,6 +592,14 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         cJSON_AddStringToObject(o, "button", s_button.name);
         cJSON_AddNumberToObject(o, "button_event_id", s_button.event_id);
     }
+    add_deck_capability(o);
+    if (s_deck_page[0]) {
+        /* The displayed frame came from the SD cache: these two fields are
+         * the only signal the server needs to keep its nav state truthful
+         * (locally-served events are deliberately NOT reported as actions). */
+        cJSON_AddStringToObject(o, "deck_page_id", s_deck_page);
+        cJSON_AddStringToObject(o, "deck_version", s_deck_ver);
+    }
     char *body = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     if (!body) return REST_NET_ERR;
@@ -535,6 +628,13 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         else if (cJSON_IsNumber(te)) out->touch_enabled = te->valueint ? 1 : 0;
         out->touch_linger_s = json_get_int(cfg, "touch_linger_s", -1);
 #endif
+    }
+    /* Deck resync signal: "deck": {"version": str}. Absent on servers that
+     * don't speak decks yet; the sync tail then never runs. */
+    cJSON *deck = cJSON_GetObjectItemCaseSensitive(r, "deck");
+    if (cJSON_IsObject(deck)) {
+        out->deck_present = true;
+        json_get_str(deck, "version", out->deck_version, sizeof out->deck_version);
     }
 #if TESSERAE_OTA_CAPABILITY_ENABLED
     cJSON *ota = cJSON_GetObjectItemCaseSensitive(r, "ota");

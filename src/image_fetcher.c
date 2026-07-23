@@ -64,7 +64,8 @@ static esp_err_t on_http(esp_http_client_event_t *e)
     return ESP_OK;
 }
 
-esp_err_t image_fetch(const char *url, fetched_image_t *out)
+esp_err_t image_fetch_auth(const char *url, const char *bearer_token,
+                           fetched_image_t *out)
 {
     if (!url || !out) return ESP_ERR_INVALID_ARG;
     memset(out, 0, sizeof(*out));
@@ -82,6 +83,12 @@ esp_err_t image_fetch(const char *url, fetched_image_t *out)
     };
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
     if (!cli) return ESP_FAIL;
+
+    if (bearer_token && bearer_token[0]) {
+        char auth[300];
+        snprintf(auth, sizeof auth, "Bearer %s", bearer_token);
+        esp_http_client_set_header(cli, "Authorization", auth);
+    }
 
     esp_err_t err = esp_http_client_perform(cli);
     int status = esp_http_client_get_status_code(cli);
@@ -102,10 +109,17 @@ esp_err_t image_fetch(const char *url, fetched_image_t *out)
         ESP_LOGE(TAG, "http status %d", status);
         if (out->data) free(out->data);
         memset(out, 0, sizeof(*out));
-        return ESP_FAIL;
+        /* 404 is a contract signal on deck frame URLs (stale manifest ->
+         * caller re-fetches the manifest), so keep it distinguishable. */
+        return (status == 404) ? ESP_ERR_NOT_FOUND : ESP_FAIL;
     }
 
     ESP_LOGI(TAG, "downloaded %u bytes (type=%s)",
              (unsigned)out->len, out->content_type[0] ? out->content_type : "?");
     return ESP_OK;
+}
+
+esp_err_t image_fetch(const char *url, fetched_image_t *out)
+{
+    return image_fetch_auth(url, NULL, out);
 }

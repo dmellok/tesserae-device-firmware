@@ -156,7 +156,13 @@ static esp_err_t mono_port_init(void)
         .spics_io_num = -1,            /* we drive CS by hand */
         .queue_size = 1,
     };
-    ESP_ERROR_CHECK(spi_bus_initialize(EPD_SPI_HOST, &bus, SPI_DMA_CH_AUTO));
+    /* The SD card may share this bus (reTerminal boards) and have initialised
+     * it already -- with a MISO line and a full-frame transfer cap, so
+     * inheriting it is safe. Tolerate INVALID_STATE like spectra6_spi_single. */
+    esp_err_t bus_err = spi_bus_initialize(EPD_SPI_HOST, &bus, SPI_DMA_CH_AUTO);
+    if (bus_err != ESP_OK && bus_err != ESP_ERR_INVALID_STATE) {
+        ESP_ERROR_CHECK(bus_err);
+    }
     ESP_ERROR_CHECK(spi_bus_add_device(EPD_SPI_HOST, &dev, &s_spi));
 
     s_port_inited = true;
@@ -171,6 +177,112 @@ static const uint8_t DSPI_V[] = {0x00};                     /* cmd 0x15: dual-SP
 static const uint8_t CDI_V[]  = {0x21, 0x07};
 static const uint8_t TCON_V[] = {0x22};
 
+#ifdef EPD_GRAY4
+/* ------------------------------------------------------------------ */
+/* 4-level grayscale (EPD_GRAY4 builds; kind seeed_reterminal_e1001_gray)
+ *
+ * The stock OTP waveform only knows black/white, so 4-gray drives the panel
+ * from REGISTER LUTs (PSR 0xBF selects them) and sends BOTH image planes --
+ * DTM1 (0x10, "old") and DTM2 (0x13, "new") -- so each pixel carries 2 bits
+ * that land on four optical states in one refresh:
+ *
+ *        white  light-gray  dark-gray  black          (g = 3    2    1    0)
+ *   0x10:  1        1           0        0            (bit = (g >> 1) & 1)
+ *   0x13:  1        0           1        0            (bit =  g       & 1)
+ *
+ * Wire format in: 2bpp packed, 4 px/byte, MSB-first (bits 7-6 = leftmost),
+ * 0b00 = black .. 0b11 = white, 96000 bytes. LUTs + init values are the
+ * GoodDisplay official GDEY075T7 4-gray demo (42 bytes each), corroborated
+ * byte-for-byte by GxEPD2_4G (GxEPD2_750_T7) -- the panel class of the OG
+ * TRMNL and the reTerminal E1001. Register LUTs are NOT temperature
+ * compensated: expect a bench tuning pass (and see bb_epaper's variants if
+ * this batch renders too light/dark). 4-gray is always a full refresh. */
+static const uint8_t LUT_VCOM_4G[42] = {
+    0x00, 0x0A, 0x00, 0x00, 0x00, 0x01,
+    0x60, 0x14, 0x14, 0x00, 0x00, 0x01,
+    0x00, 0x14, 0x00, 0x00, 0x00, 0x01,
+    0x00, 0x13, 0x0A, 0x01, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+static const uint8_t LUT_WW_4G[42] = {   /* R21, also the border LUT (R25) */
+    0x40, 0x0A, 0x00, 0x00, 0x00, 0x01,
+    0x90, 0x14, 0x14, 0x00, 0x00, 0x01,
+    0x10, 0x14, 0x0A, 0x00, 0x00, 0x01,
+    0xA0, 0x13, 0x01, 0x00, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+static const uint8_t LUT_BW_4G[42] = {   /* R22 */
+    0x40, 0x0A, 0x00, 0x00, 0x00, 0x01,
+    0x90, 0x14, 0x14, 0x00, 0x00, 0x01,
+    0x00, 0x14, 0x0A, 0x00, 0x00, 0x01,
+    0x99, 0x0C, 0x01, 0x03, 0x04, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+static const uint8_t LUT_WB_4G[42] = {   /* R23 */
+    0x40, 0x0A, 0x00, 0x00, 0x00, 0x01,
+    0x90, 0x14, 0x14, 0x00, 0x00, 0x01,
+    0x00, 0x14, 0x0A, 0x00, 0x00, 0x01,
+    0x99, 0x0B, 0x04, 0x04, 0x01, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+static const uint8_t LUT_BB_4G[42] = {   /* R24 */
+    0x80, 0x0A, 0x00, 0x00, 0x00, 0x01,
+    0x90, 0x14, 0x14, 0x00, 0x00, 0x01,
+    0x20, 0x14, 0x0A, 0x00, 0x00, 0x01,
+    0x50, 0x13, 0x01, 0x00, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+static const uint8_t BTST_4G[] = {0x17, 0x17, 0x28, 0x17};
+static const uint8_t PSR_4G[]  = {0xbf};        /* KW mode, LUTs from register */
+static const uint8_t PLL_4G[]  = {0x06};        /* 50 Hz */
+static const uint8_t VDCS_4G[] = {0x12};
+static const uint8_t CDI_4G[]  = {0x10, 0x07};
+
+/* Stream one 1bpp plane derived from the 2bpp frame: plane bit =
+ * (g >> shift) & 1, 8 px/byte MSB-first, row by row. */
+static void gray_send_plane(uint8_t dtm_cmd, const uint8_t *image, int shift)
+{
+    uint8_t row[EPD_WIDTH / 8];
+    const uint8_t *in = image;
+
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(dtm_cmd);
+    for (int y = 0; y < EPD_HEIGHT; y++) {
+        for (int b = 0; b < EPD_WIDTH / 8; b++) {
+            uint8_t o = 0;
+            for (int k = 0; k < 2; k++) {           /* 2 input bytes -> 8 px */
+                uint8_t v = *in++;
+                for (int p = 0; p < 4; p++) {
+                    uint8_t g = (uint8_t)((v >> (6 - 2 * p)) & 0x3);
+                    o = (uint8_t)((o << 1) | ((g >> shift) & 1));
+                }
+            }
+            row[b] = o;
+        }
+        send_data(row, sizeof row);
+    }
+    gpio_set_level(EPD_PIN_CS, 1);
+}
+
+/* Emit `rows` solid plane rows (caller has sent the DTM command, CS low). */
+static void gray_send_solid_rows(uint8_t fill, int rows)
+{
+    uint8_t row[EPD_WIDTH / 8];
+    memset(row, fill, sizeof row);
+    for (int y = 0; y < rows; y++) send_data(row, sizeof row);
+}
+#endif /* EPD_GRAY4 */
+
 static void mono_init(void)
 {
 #ifdef EPD_PIN_PWR
@@ -179,6 +291,26 @@ static void mono_init(void)
 #endif
     hw_reset();
 
+#ifdef EPD_GRAY4
+    cmd_data(0x06, BTST_4G, sizeof BTST_4G);   /* booster soft start */
+    cmd_data(PWR,  PWR_V,   sizeof PWR_V);
+    cmd_data(PON,  NULL, 0);
+    wait_idle();
+    cmd_data(PSR,  PSR_4G,  sizeof PSR_4G);
+    cmd_data(0x30, PLL_4G,  sizeof PLL_4G);
+    cmd_data(TRES, TRES_V,  sizeof TRES_V);
+    cmd_data(0x15, DSPI_V,  sizeof DSPI_V);
+    cmd_data(TCON, TCON_V,  sizeof TCON_V);
+    cmd_data(0x82, VDCS_4G, sizeof VDCS_4G);
+    cmd_data(CDI,  CDI_4G,  sizeof CDI_4G);
+    cmd_data(0x20, LUT_VCOM_4G, sizeof LUT_VCOM_4G);
+    cmd_data(0x21, LUT_WW_4G,   sizeof LUT_WW_4G);
+    cmd_data(0x22, LUT_BW_4G,   sizeof LUT_BW_4G);
+    cmd_data(0x23, LUT_WB_4G,   sizeof LUT_WB_4G);
+    cmd_data(0x24, LUT_BB_4G,   sizeof LUT_BB_4G);
+    cmd_data(0x25, LUT_WW_4G,   sizeof LUT_WW_4G);   /* border */
+    ESP_LOGI(TAG, "init complete (4-gray register LUTs)");
+#else
     cmd_data(PWR, PWR_V, sizeof PWR_V);
     cmd_data(PON, NULL, 0);            /* power on */
     wait_idle();
@@ -189,6 +321,7 @@ static void mono_init(void)
     cmd_data(TCON, TCON_V, sizeof TCON_V);
 
     ESP_LOGI(TAG, "init complete");
+#endif
 }
 
 /* Refresh an already-loaded frame, then power off. */
@@ -203,15 +336,37 @@ static void trigger_refresh(void)
 
 static void mono_display(const uint8_t *image)
 {
+#ifdef EPD_GRAY4
+    /* Both planes, derived on the fly from the 2bpp buffer (see table). */
+    gray_send_plane(0x10, image, 1);   /* DTM1: bit = (g >> 1) & 1 */
+    gray_send_plane(DTM2, image, 0);   /* DTM2: bit =  g       & 1 */
+    trigger_refresh();
+#else
     gpio_set_level(EPD_PIN_CS, 0);
     send_cmd(DTM2);
     send_data(image, EPD_BUF_BYTES);
     gpio_set_level(EPD_PIN_CS, 1);
     trigger_refresh();
+#endif
 }
 
 static void mono_clear(uint8_t color)
 {
+#ifdef EPD_GRAY4
+    /* Solid gray level: both planes carry that level's bit pattern. */
+    uint8_t g  = (uint8_t)(color & 0x3);
+    uint8_t p1 = ((g >> 1) & 1) ? 0xFF : 0x00;
+    uint8_t p2 = (g & 1)        ? 0xFF : 0x00;
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(0x10);
+    gray_send_solid_rows(p1, EPD_HEIGHT);
+    gpio_set_level(EPD_PIN_CS, 1);
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(DTM2);
+    gray_send_solid_rows(p2, EPD_HEIGHT);
+    gpio_set_level(EPD_PIN_CS, 1);
+    trigger_refresh();
+#else
     /* color: EPD_COL_WHITE -> all-white (0xFF), else all-black (0x00). */
     uint8_t fill = (color == EPD_COL_WHITE) ? 0xFF : 0x00;
     uint8_t row[EPD_WIDTH / 8];
@@ -222,8 +377,32 @@ static void mono_clear(uint8_t color)
     for (int y = 0; y < EPD_HEIGHT; y++) send_data(row, sizeof row);
     gpio_set_level(EPD_PIN_CS, 1);
     trigger_refresh();
+#endif
 }
 
+#ifdef EPD_GRAY4
+/* Gray-ramp selftest: 4 horizontal bands, black -> dark gray -> light gray ->
+ * white, top to bottom. Even spacing between the two grays is the bench
+ * tuning target (LUT variants exist if a batch renders too light/dark). */
+static void mono_show_color_bars(void)
+{
+    const int BAND_H = EPD_HEIGHT / 4;   /* 120 rows/band */
+
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(0x10);
+    for (int g = 0; g < 4; g++)
+        gray_send_solid_rows(((g >> 1) & 1) ? 0xFF : 0x00, BAND_H);
+    gpio_set_level(EPD_PIN_CS, 1);
+
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(DTM2);
+    for (int g = 0; g < 4; g++)
+        gray_send_solid_rows((g & 1) ? 0xFF : 0x00, BAND_H);
+    gpio_set_level(EPD_PIN_CS, 1);
+
+    trigger_refresh();
+}
+#else
 /* Diagnostic: 8 alternating black/white horizontal bands. On a healthy panel
  * this shows crisp stripes; smearing or a blank screen points at the init or
  * the data transport. */
@@ -241,13 +420,22 @@ static void mono_show_color_bars(void)
     gpio_set_level(EPD_PIN_CS, 1);
     trigger_refresh();
 }
+#endif /* EPD_GRAY4 */
 
-/* Diagnostic: vertical stripe pattern (0xAA) -- a finer transport check. */
+/* Diagnostic: vertical stripe pattern -- a finer transport check. In 4-gray
+ * mode both planes get the pattern (alternating black/white pixels); sending
+ * a single plane would pair fresh data with a stale second plane. */
 static void mono_show_palette_sweep(void)
 {
     uint8_t row[EPD_WIDTH / 8];
     memset(row, 0xAA, sizeof row);       /* alternating pixels */
 
+#ifdef EPD_GRAY4
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(0x10);
+    for (int y = 0; y < EPD_HEIGHT; y++) send_data(row, sizeof row);
+    gpio_set_level(EPD_PIN_CS, 1);
+#endif
     gpio_set_level(EPD_PIN_CS, 0);
     send_cmd(DTM2);
     for (int y = 0; y < EPD_HEIGHT; y++) send_data(row, sizeof row);
@@ -268,10 +456,15 @@ static void mono_sleep(void)
 
 const epd_driver_t mono_spi_driver = {
     .info = {
+#ifdef EPD_GRAY4
+        .name      = "Mono 7.5\" (800x480, 4-gray 2bpp)",
+        .bpp       = 2,
+#else
         .name      = "Mono 7.5\" (800x480, 1bpp)",
+        .bpp       = 1,
+#endif
         .width     = EPD_WIDTH,
         .height    = EPD_HEIGHT,
-        .bpp       = 1,
         .buf_bytes = EPD_BUF_BYTES,
     },
     .port_init          = mono_port_init,

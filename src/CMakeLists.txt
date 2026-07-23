@@ -29,6 +29,11 @@ idf_component_register(
         "ota_install.c"
         "ota_boot.c"
         "ota_report.c"
+        "deck.c"
+        "deck_digest.c"
+        "deck_cache.c"
+        "deck_run.c"
+        "sdcard.c"
         "splash.c"
         "vendor/qrcodegen.c"
     INCLUDE_DIRS
@@ -49,6 +54,7 @@ idf_component_register(
         esp_timer
         esp_wifi
         esp-tls
+        fatfs
         json
         nvs_flash
         mbedtls

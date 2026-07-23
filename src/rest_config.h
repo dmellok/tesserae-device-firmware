@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include "esp_err.h"
 #include "app_config.h"   /* BOARD_HAS_TOUCH gates the touch config below */
+#include "deck.h"         /* DECK_ID_CAP / DECK_VERSION_CAP for nav state */
 
 typedef struct {
     char    server_url[160];      /* e.g. http://tesserae.local:8765 (no trailing slash) */
@@ -31,6 +32,13 @@ typedef struct {
     bool    touch_enabled;        /* server config: arm GT911 touch wake (default false) */
     int32_t touch_linger_s;       /* server config: stay awake N s after a touch (0-60) */
 #endif
+    /* Deck cache nav state (SD-card decks; deck.h). The RTC copy in main.c is
+     * authoritative across deep sleeps; this NVS mirror survives RESET. */
+    char    deck_id[DECK_ID_CAP];
+    char    deck_page[DECK_ID_CAP];            /* current page id */
+    char    deck_synced_ver[DECK_VERSION_CAP]; /* manifest version fully on card */
+    char    deck_srv_ver[DECK_VERSION_CAP];    /* last server-announced version */
+    bool    deck_sd_painted;      /* displayed frame came from the SD cache */
 } rest_config_t;
 
 /* Load config from NVS into the RAM cache. Never fails; missing keys default
@@ -75,6 +83,13 @@ void rest_config_set_button_wake_s(int32_t s);
  * sleep_interval_s). linger is clamped to 0-60 s. Persist with rest_config_save. */
 void rest_config_set_touch(bool enabled, int32_t linger_s);
 #endif
+
+/* Deck nav state mutators (NULL leaves a field unchanged; "" clears). RAM
+ * cache updates like every other mutator -- persist with rest_config_save(). */
+void rest_config_set_deck_nav(const char *deck_id, const char *page_id);
+void rest_config_set_deck_synced_ver(const char *version);
+void rest_config_set_deck_srv_ver(const char *version);
+void rest_config_set_deck_sd_painted(bool painted);
 
 /* Persisted onboarding-splash state (0 = none/fresh, board-defined otherwise),
  * used to repaint connect-status splashes only when the state changes. */

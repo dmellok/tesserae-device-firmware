@@ -42,6 +42,7 @@ jobs:
           - { env: waveshare-133e6,           kind: waveshare_133e6 }
           - { env: waveshare-photopainter-73, kind: waveshare_photopainter_73 }
           - { env: seeed-reterminal-e1001,    kind: seeed_reterminal_e1001 }
+          - { env: seeed-reterminal-e1001-gray, kind: seeed_reterminal_e1001_gray }
           - { env: seeed-reterminal-e1002,    kind: seeed_reterminal_e1002 }
           - { env: seeed-reterminal-e1003,    kind: seeed_reterminal_e1003 }
           - { env: seeed-reterminal-e1004,    kind: seeed_reterminal_e1004 }

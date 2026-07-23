@@ -19,6 +19,11 @@ static const char *TAG = "rest_cfg";
 #define NVS_KEY_SLEEP_S    "sleep_s"
 #define NVS_KEY_BTN_WAKE   "btn_wake"
 #define NVS_KEY_UI_STATE   "ui_state"
+#define NVS_KEY_DECK_ID    "deck_id"
+#define NVS_KEY_DECK_PG    "deck_pg"
+#define NVS_KEY_DECK_SV    "deck_sv"    /* synced manifest version */
+#define NVS_KEY_DECK_RV    "deck_rv"    /* last server-announced version */
+#define NVS_KEY_DECK_SD    "deck_sd"    /* displayed frame came from SD */
 #if BOARD_HAS_TOUCH
 #define NVS_KEY_TOUCH_EN   "touch_en"
 #define NVS_KEY_TOUCH_LIN  "touch_lin"
@@ -78,6 +83,12 @@ void rest_config_load(void)
         int32_t tl = 0;
         if (nvs_get_i32(h, NVS_KEY_TOUCH_LIN, &tl) == ESP_OK && tl >= 0) s_cfg.touch_linger_s = tl;
 #endif
+        load_str(h, NVS_KEY_DECK_ID, s_cfg.deck_id,         sizeof s_cfg.deck_id);
+        load_str(h, NVS_KEY_DECK_PG, s_cfg.deck_page,       sizeof s_cfg.deck_page);
+        load_str(h, NVS_KEY_DECK_SV, s_cfg.deck_synced_ver, sizeof s_cfg.deck_synced_ver);
+        load_str(h, NVS_KEY_DECK_RV, s_cfg.deck_srv_ver,    sizeof s_cfg.deck_srv_ver);
+        uint8_t dsd = 0;
+        if (nvs_get_u8(h, NVS_KEY_DECK_SD, &dsd) == ESP_OK) s_cfg.deck_sd_painted = (dsd != 0);
         nvs_close(h);
     }
 
@@ -125,6 +136,11 @@ esp_err_t rest_config_save(void)
     if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_TOUCH_EN, s_cfg.touch_enabled ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_i32(h, NVS_KEY_TOUCH_LIN, s_cfg.touch_linger_s);
 #endif
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DECK_ID, s_cfg.deck_id);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DECK_PG, s_cfg.deck_page);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DECK_SV, s_cfg.deck_synced_ver);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DECK_RV, s_cfg.deck_srv_ver);
+    if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_DECK_SD, s_cfg.deck_sd_painted ? 1 : 0);
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err;
@@ -186,6 +202,24 @@ void rest_config_set_touch(bool enabled, int32_t linger_s)
     s_cfg.touch_linger_s = linger_s;
 }
 #endif
+
+void rest_config_set_deck_nav(const char *deck_id, const char *page_id)
+{
+    set_str(s_cfg.deck_id,   sizeof s_cfg.deck_id,   deck_id);
+    set_str(s_cfg.deck_page, sizeof s_cfg.deck_page, page_id);
+}
+void rest_config_set_deck_synced_ver(const char *version)
+{
+    set_str(s_cfg.deck_synced_ver, sizeof s_cfg.deck_synced_ver, version);
+}
+void rest_config_set_deck_srv_ver(const char *version)
+{
+    set_str(s_cfg.deck_srv_ver, sizeof s_cfg.deck_srv_ver, version);
+}
+void rest_config_set_deck_sd_painted(bool painted)
+{
+    s_cfg.deck_sd_painted = painted;
+}
 
 /* Persisted onboarding-splash state (a small standalone NVS u8, not part of the
  * main blob) so the panel is repainted only when the state actually changes --

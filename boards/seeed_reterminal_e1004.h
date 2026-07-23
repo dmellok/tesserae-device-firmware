@@ -84,6 +84,17 @@
 #define BOARD_BTN_RIGHT_PIN    3
 #define BOARD_BTN_LEFT_PIN     4
 
+/* microSD (deck cache): shares the panel SPI bus (SCLK 7 / MOSI 9) with its
+ * own CS; MISO is SD-only (the panel is write-only). DET low = card present,
+ * SD_EN high powers the slot (this model ships with a 16 GB card fitted).
+ * From the Seeed reTerminal E10xx Arduino peripherals cookbook. */
+#define TESSERAE_SD_SLOT   1
+#define SD_SPI_SHARED_BUS  1
+#define SD_PIN_MISO   8
+#define SD_PIN_CS     14
+#define SD_PIN_DET    15
+#define SD_PIN_EN     16
+
 /* ------------------------------------------------------------------ */
 /* MCU tier: ESP32-S3 + PSRAM (assumed octal, verify on hardware).     */
 /* ------------------------------------------------------------------ */

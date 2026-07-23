@@ -48,6 +48,9 @@ jobs:
           PIO_BIN: pio
         run: sh tools/test_ota_verify.sh
 
+      - name: Deck cache logic tests
+        run: sh tools/test_deck.sh
+
 
   build:
     name: build ${{ matrix.env }}
@@ -58,6 +61,7 @@ jobs:
         env:
           - waveshare-133e6
           - seeed-reterminal-e1001
+          - seeed-reterminal-e1001-gray
           - seeed-reterminal-e1002
           - seeed-reterminal-e1003
           - seeed-reterminal-e1004

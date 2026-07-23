@@ -21,6 +21,7 @@ one board (and thus one driver) per PlatformIO environment.
 | Device | Panel family | Controller | Resolution / depth | Driver | Env |
 | --- | --- | --- | --- | --- | --- |
 | [Seeed reTerminal **E1001**](https://www.seeedstudio.com/reTerminal-E1001-p-6534.html) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `seeed-reterminal-e1001` |
+| Seeed reTerminal **E1001** (4-gray build) | 4-level grayscale | UC8179 (register LUTs) | 800×480, 2bpp | `mono_spi` (`EPD_GRAY4`) | `seeed-reterminal-e1001-gray` |
 | [Seeed reTerminal **E1002**](https://www.seeedstudio.com/reTerminal-E1002-p-6533.html) | Spectra-6, single | UC81xx | 800×480, 4bpp | `spectra6_spi_single` | `seeed-reterminal-e1002` |
 | [Seeed reTerminal **E1003**](https://www.seeedstudio.com/reTerminal-E1003-p-6731.html) | Grayscale (10.3") | IT8951 | 1872×1404, 4bpp gray | `it8951_gray` | `seeed-reterminal-e1003` |
 | [Seeed reTerminal **E1004**](https://www.seeedstudio.com/reTerminal-E1004-p-6692.html) | Spectra-6, dual-chip | T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `seeed-reterminal-e1004` |
@@ -175,10 +176,30 @@ format the firmware expects for that kind:
 | `waveshare_133e6`, `seeed_reterminal_e1004`, `seeed_ee02` | 4bpp packed Spectra-6 | 960000 B |
 | `seeed_reterminal_e1002`, `waveshare_photopainter_73`, `seeed_ee04_73e6` | 4bpp packed Spectra-6 | 192000 B |
 | `seeed_reterminal_e1001`, `xiao_epaper_75`, `seeed_ee04_75` | 1bpp packed mono (bit 1 = white) | 48000 B |
+| `seeed_reterminal_e1001_gray` | 2bpp packed 4-gray (4 px/byte, MSB-first, 0b00=black..0b11=white) | 96000 B |
 | `seeed_reterminal_e1003` | 4bpp packed grayscale (0=black…0xF=white) | 1314144 B |
 
 The PhotoPainter reuses the E1002's 800×480 4bpp format exactly (render normally
 — the **180° rotation is done on-device**, so do not pre-rotate on the server).
+
+### Deck frame cache (SD card)
+
+Boards with a microSD slot (both Waveshares and all four reTerminals) cache
+pre-rendered "deck" pages on the card so a button/touch navigation becomes
+wake → SD read → paint (1–2 s, radio off) instead of wake → Wi-Fi → fetch
+(4–8 s). Entirely runtime-gated: card present and mountable → the device
+advertises `"deck_cache": {"schema": 1, "capacity_bytes": …}` in register and
+status bodies; no card → wire bodies and behaviour are identical to before.
+The server binds a deck via `GET /api/v1/device/<id>/deck` (manifest of pages,
+16-hex sha256 digests, byte sizes, TTLs, and button/zone links) and announces
+version changes in the status response's `"deck": {"version"}`; the device
+syncs at the tail of a scheduled wake (fetch missing digests, delete orphans)
+and reports SD-served pages via `deck_page_id`/`deck_version`. Locally served
+presses are **not** sent as button/touch actions. Every cached frame is
+verified (exact length + digest, mbedTLS SHA-256) before painting; any
+mount/read/parse failure falls back to the network path. Card layout:
+`/tesserae/decks/<deck_id>/manifest.json` + `<digest>.bin`. Bring-up: the
+`…-sdtest` env runs a mount + write/read/verify round trip over serial.
 
 ## Build
 

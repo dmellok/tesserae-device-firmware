@@ -31,6 +31,10 @@
 #include "app_config.h"
 #include "nvs_flash.h"      /* factory-reset erase (20 s refresh-button hold) */
 #include "buttons.h"        /* front-button wake/report (header-only; no-op if none) */
+#include "deck_run.h"       /* SD deck cache: local nav + sync (no-op w/o card) */
+#include "deck_cache.h"     /* + sdcard.h/deck.h: DECK_SD_SELFTEST round trip */
+#include "sdcard.h"
+#include "esp_heap_caps.h"
 #include "touch_gt911.h"    /* GT911 touch wake (guarded by BOARD_HAS_TOUCH) */
 #include "touch_queue.h"    /* RTC replay queue for unsent touches (guarded) */
 #include "touch_wakestub.h" /* RTC wake-stub early touch capture (guarded) */
@@ -143,6 +147,10 @@ static int effective_sleep_s(void)
 
 static void sleep_forever_or_until_timer(void)
 {
+    /* Card off before every deep sleep (and before a dev-loop restart);
+     * no-op when nothing is mounted. */
+    deck_pre_sleep();
+
     /* Decide between deep sleep (battery) and short-delay restart loop (dev):
      *   DEV_DISABLE_SLEEP defined -> always loop (dev override)
      *   DEV_FORCE_SLEEP   defined -> always deep-sleep, even on USB host
@@ -608,6 +616,47 @@ void app_main(void)
     while (1) vTaskDelay(pdMS_TO_TICKS(1000));
 #endif
 
+#ifdef DECK_SD_SELFTEST
+    /* Deck-cache bring-up: mount the card, run one frame-sized write ->
+     * read-back -> digest-verify round trip through the REAL cache path
+     * (tmp+rename, sha256 gate), report free space, halt. No networking, no
+     * panel refresh. Enable with -DDECK_SD_SELFTEST (see the -sdtest env). */
+    ESP_LOGW(TAG, "DECK_SD_SELFTEST: mount + write/read/verify (no networking)");
+    if (!sdcard_mount()) {
+        ESP_LOGE(TAG, "DECK_SD_SELFTEST: mount FAILED (no card / bad card / wiring)");
+    } else {
+        ESP_LOGW(TAG, "DECK_SD_SELFTEST: mounted, %llu MB free",
+                 (unsigned long long)(sdcard_free_bytes() >> 20));
+        size_t n = EPD_BUF_BYTES;
+        uint8_t *buf = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!buf) buf = malloc(n);
+        if (!buf) {
+            ESP_LOGE(TAG, "DECK_SD_SELFTEST: OOM for %u-byte test frame", (unsigned)n);
+        } else {
+            for (size_t i = 0; i < n; i++) buf[i] = (uint8_t)(i * 31 + (i >> 8));
+            uint8_t sha[32];
+            char digest[DECK_DIGEST_HEX + 1];
+            deck_sha256(buf, n, sha);
+            deck_digest_hex16(sha, digest);
+            bool w = deck_cache_write_frame("sdtest", digest, buf, n, (uint32_t)n);
+            ESP_LOGW(TAG, "DECK_SD_SELFTEST: write+verify %s (%u bytes, digest %s)",
+                     w ? "OK" : "FAILED", (unsigned)n, digest);
+            uint8_t *back = NULL;
+            bool r = w && deck_cache_read_frame("sdtest", digest, (uint32_t)n, &back);
+            bool same = r && memcmp(buf, back, n) == 0;
+            ESP_LOGW(TAG, "DECK_SD_SELFTEST: read-back %s, contents %s",
+                     r ? "OK" : "FAILED", same ? "MATCH" : "MISMATCH");
+            free(back);
+            free(buf);
+            deck_cache_delete("sdtest", digest);
+            ESP_LOGW(TAG, "DECK_SD_SELFTEST: %s. Press RESET to repeat.",
+                     (w && r && same) ? "ALL CHECKS PASSED" : "FAILED");
+        }
+        sdcard_unmount();
+    }
+    while (1) vTaskDelay(pdMS_TO_TICKS(1000));
+#endif
+
     /* Battery-empty gate first (a flat cell should not pay for radio bring-up
      * or a portal), then the factory-reset hold -- both before any NVS/WiFi
      * init so the erase path is race-free. */
@@ -621,6 +670,28 @@ void app_main(void)
      * the panel, so drop the cached ETag -- the server must send a full frame
      * (a 304 would leave the goodbye up). */
     if (s_battery_recovered) rest_config_set_frame_etag("");
+
+    /* Deck cache boot: probe the SD card, advertise the capability, restore
+     * nav state. Everything degrades to a no-op without a card. */
+    deck_boot();
+
+    /* Local deck nav: a button wake whose press matches a cached link on the
+     * current page paints from SD (1-2 s) and never brings the radio up. Any
+     * miss keeps today's exact network behaviour -- the press's report is
+     * still pending from above. */
+    if (woke_by_button) {
+        bool nav_fallthrough = false;
+        if (deck_try_button(button_name(woke_btn), &s_button_event_seq,
+                            &nav_fallthrough)) {
+            if (!nav_fallthrough) {
+                ESP_LOGI(TAG, "served locally from deck cache; back to sleep");
+                sleep_forever_or_until_timer();
+                return;   /* not reached */
+            }
+            /* A press during the local window had no cached link: its report
+             * is armed; run the normal network cycle for it. */
+        }
+    }
 
     /* Stay awake after the paint for further interaction? Set at the radio-down
      * decision: a touch wake with touch_linger_s, or a button wake with
@@ -674,6 +745,15 @@ void app_main(void)
                 ESP_LOGI(TAG, "touch (%d,%d)->(%d,%d) %ums (event %u)",
                          touch_st.x0, touch_st.y0, touch_st.x1, touch_st.y1,
                          (unsigned)touch_st.ms, (unsigned)touch_ev);
+                /* Local deck nav: a tap landing in a cached link zone on the
+                 * current page paints from SD and never reaches the server
+                 * (the release point decides the hit). Misses fall through to
+                 * today's dispatch below. */
+                if (deck_try_touch(touch_st.x1, touch_st.y1)) {
+                    ESP_LOGI(TAG, "touch served locally from deck cache; back to sleep");
+                    sleep_forever_or_until_timer();
+                    return;   /* not reached */
+                }
                 rest_set_touch(touch_st.x0, touch_st.y0, touch_st.x1, touch_st.y1,
                                touch_st.ms, rest_config_get()->last_frame_etag, touch_ev);
             } else {
@@ -788,6 +868,8 @@ void app_main(void)
     bool just_onboarded = false;
     uint8_t *frame  = NULL;
     char new_etag[80] = {0};
+    bool deck_sync_needed = false;   /* status asked for a deck cache resync */
+    char deck_srv_ver[DECK_VERSION_CAP] = {0};
 
     /* 1. Bootstrap a device token (discover/claim, or register with a code). */
     if (c->device_token[0] == '\0') {
@@ -902,6 +984,12 @@ void app_main(void)
                 }
             }
 #endif
+            /* Deck resync signal: decided here, executed at the tail of the
+             * wake (after painting + reporting, radio still up). */
+            if (so.deck_present) {
+                snprintf(deck_srv_ver, sizeof deck_srv_ver, "%s", so.deck_version);
+                deck_sync_needed = deck_sync_pending(true, deck_srv_ver);
+            }
 #if TESSERAE_OTA_CAPABILITY_ENABLED
             if (so.ota_present) {
                 if (so.ota_reason == OTA_VERIFY_OK) {
@@ -968,7 +1056,9 @@ void app_main(void)
     will_linger = will_linger ||
                   (woke_by_button && rest_config_get()->button_wake_s > 0);
 #endif
-    if (!will_linger) wifi_sta_stop();
+    /* A pending deck sync keeps the radio up through the paint so the sync
+     * tail can run afterwards (contract: sync after painting + reporting). */
+    if (!will_linger && !deck_sync_needed) wifi_sta_stop();
 
     if (frame != NULL) {
         ESP_LOGI(TAG, "painting downloaded frame (~30 s)...");
@@ -979,6 +1069,7 @@ void app_main(void)
         free(frame);
         if (new_etag[0]) { rest_config_set_frame_etag(new_etag); cfg_dirty = true; }
         rest_config_set_ui_state(UI_CONNECTED);   /* a real frame is up now */
+        deck_network_painted();   /* SD-paint report no longer describes the display */
     } else if (just_onboarded) {
         /* Onboarding completed but the server has no frame ready yet -- confirm
          * the successful connect once, on the transition, so setup has clear
@@ -994,6 +1085,14 @@ void app_main(void)
         ESP_LOGI(TAG, "no frame this cycle; keeping last image");
     } else {
         ESP_LOGI(TAG, "no frame yet; leaving panel as-is");
+    }
+
+    /* Deck cache sync tail (contract: AFTER painting and reporting): the
+     * radio was kept up for this; fetch the manifest, diff, fetch missing
+     * frames, delete orphans. Then finish the deferred radio-down. */
+    if (deck_sync_needed) {
+        deck_sync_tail(true, deck_srv_ver);
+        if (!will_linger) wifi_sta_stop();
     }
 
 #if BOARD_HAS_TOUCH

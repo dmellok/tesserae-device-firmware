@@ -106,6 +106,17 @@
 #define BOARD_BTN_RIGHT_PIN    4
 #define BOARD_BTN_LEFT_PIN     5
 
+/* microSD (deck cache): shares the panel SPI bus with the IT8951 (SCLK 7 /
+ * MOSI 9 / MISO 8 -- the same MISO the controller already reads back on)
+ * with its own CS. DET low = card present. NOTE: this model's slot power
+ * gate is GPIO39, not 16 like the other reTerminals (Seeed cookbook table). */
+#define TESSERAE_SD_SLOT   1
+#define SD_SPI_SHARED_BUS  1
+#define SD_PIN_MISO   8
+#define SD_PIN_CS     14
+#define SD_PIN_DET    15
+#define SD_PIN_EN     39
+
 /* Board model -> default device id "reTerminal_E1003_<mac-suffix>". */
 #define TESSERAE_DEVICE_MODEL  "reTerminal_E1003"
 

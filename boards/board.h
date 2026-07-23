@@ -18,6 +18,8 @@
 #  include "seeed_reterminal_e1002.h"
 #elif defined(TESSERAE_BOARD_SEEED_E1001)
 #  include "seeed_reterminal_e1001.h"
+#elif defined(TESSERAE_BOARD_SEEED_E1001_GRAY)
+#  include "seeed_reterminal_e1001_gray.h"
 #elif defined(TESSERAE_BOARD_SEEED_E1003)
 #  include "seeed_reterminal_e1003.h"
 #elif defined(TESSERAE_BOARD_WAVESHARE_PHOTOPAINTER_73)
