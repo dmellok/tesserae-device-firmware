@@ -83,7 +83,12 @@ static void fill_rect(int x, int y, int w, int h, uint8_t c)
 static uint8_t logo_color(uint8_t v)
 {
     if (s_bpp == 1)      return (v == EPD_COL_WHITE) ? COL_WHT : COL_BLK;
-    if (s_bpp == 2)      return (v == 0x1) ? COL_WHT : 0x1;   /* 4-gray: dark-gray mark */
+    if (s_bpp == 2) {
+        /* 2bpp panels: COL_WHT tells them apart -- 0x3 = 4-gray (dark-gray
+         * mark), 0x1 = BWR (red mark, value 0x2). */
+        if (v == 0x1) return COL_WHT;
+        return (COL_WHT == 0x3) ? 0x1 : 0x2;
+    }
     if (COL_WHT == 0x1)  return v;                      /* Spectra: raw (green mark) */
     return (v == 0x1) ? COL_WHT : 0x3;                  /* grayscale: white / dark-gray mark */
 }
@@ -181,9 +186,11 @@ static esp_err_t render_and_paint(void (*draw)(void), const char *label)
         ESP_LOGE(TAG, "OOM allocating %u-byte splash buffer", (unsigned)EPD_BUF_BYTES);
         return ESP_ERR_NO_MEM;
     }
-    /* White background: 1bpp -> all bits set; 2bpp -> 0b11 x4 (also 0xFF);
-     * 4bpp -> packed white nibbles. */
-    memset(s_fb, (s_bpp <= 2) ? 0xFF : ((COL_WHT << 4) | COL_WHT), EPD_BUF_BYTES);
+    /* White background: 1bpp -> all bits set; 2bpp -> COL_WHT in all four
+     * 2-bit slots (0xFF on 4-gray, 0x55 on BWR); 4bpp -> packed nibbles. */
+    memset(s_fb, (s_bpp == 1) ? 0xFF
+                : (s_bpp == 2) ? (uint8_t)(COL_WHT * 0x55)
+                : (uint8_t)((COL_WHT << 4) | COL_WHT), EPD_BUF_BYTES);
 
     draw();
 

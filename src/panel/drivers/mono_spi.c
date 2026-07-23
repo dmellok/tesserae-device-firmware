@@ -298,6 +298,60 @@ static void gray_send_solid_rows(uint8_t fill, int rows)
 }
 #endif /* EPD_GRAY4 */
 
+#ifdef EPD_BWR
+/* ------------------------------------------------------------------ */
+/* Black/white/RED tri-color (EPD_BWR builds; kind xiao_epaper_75_bwr;
+ * DKE DEPG0750RW / GoodDisplay GDEW075Z08-class glass on the UC8179).
+ *
+ * PSR 0x0F selects the built-in BWR OTP waveform (no register LUTs). Two
+ * planes per frame: DTM1 (0x10) = B/W, bit 1 = white; DTM2 (0x13) = red,
+ * bit 1 = red ink, red overrides B/W. Corroborated by GxEPD2 750c_Z08, the
+ * GoodDisplay GDEY075Z08 demo, bb_epaper EP75R and a DEPG0750RW driver.
+ * Full refresh is ~17 s of visible flashing -- normal for this glass.
+ *
+ * Wire format in: 2bpp packed, 4 px/byte MSB-first, 0b00 = black,
+ * 0b01 = white, 0b10 = red, 0b11 reserved (rendered white). The per-plane
+ * output bit for value g is (map >> g) & 1: */
+#define BWR_KW_MAP   0x0E   /* black->0, white->1, red->1 (white under red), 3->1 */
+#define BWR_RED_MAP  0x04   /* red->1, everything else -> 0 */
+static const uint8_t PSR_BWR[] = {0x0f};        /* KWR mode, OTP LUTs */
+static const uint8_t CDI_BWR[] = {0x11, 0x07};
+static const uint8_t BTST_BWR[] = {0x17, 0x17, 0x28, 0x17};
+
+/* Stream one 1bpp plane from the 2bpp frame via the value->bit map. */
+static void bwr_send_plane(uint8_t dtm_cmd, const uint8_t *image, uint8_t map)
+{
+    uint8_t row[EPD_WIDTH / 8];
+    const uint8_t *in = image;
+
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(dtm_cmd);
+    for (int y = 0; y < EPD_HEIGHT; y++) {
+        for (int b = 0; b < EPD_WIDTH / 8; b++) {
+            uint8_t o = 0;
+            for (int k = 0; k < 2; k++) {           /* 2 input bytes -> 8 px */
+                uint8_t v = *in++;
+                for (int p = 0; p < 4; p++) {
+                    uint8_t g = (uint8_t)((v >> (6 - 2 * p)) & 0x3);
+                    o = (uint8_t)((o << 1) | ((map >> g) & 1));
+                }
+            }
+            row[b] = o;
+        }
+        send_data(row, sizeof row);
+    }
+    gpio_set_level(EPD_PIN_CS, 1);
+}
+
+/* Emit `rows` solid plane rows (caller has sent the DTM command, CS low). */
+static void bwr_send_solid_rows(uint8_t fill, int rows)
+{
+    uint8_t row[EPD_WIDTH / 8];
+    memset(row, fill, sizeof row);
+    for (int y = 0; y < rows; y++) send_data(row, sizeof row);
+}
+#endif /* EPD_BWR */
+
 static void mono_init(void)
 {
 #ifdef EPD_PIN_PWR
@@ -306,7 +360,19 @@ static void mono_init(void)
 #endif
     hw_reset();
 
-#if defined(EPD_GRAY4) && !defined(EPD_GRAY4_REG_LUTS)
+#if defined(EPD_BWR)
+    wait_idle();                               /* BUSY high before first cmd */
+    cmd_data(PWR,  PWR_V,    sizeof PWR_V);
+    cmd_data(0x06, BTST_BWR, sizeof BTST_BWR); /* booster ("enhanced drive") */
+    cmd_data(PON,  NULL, 0);
+    wait_idle();
+    cmd_data(PSR,  PSR_BWR,  sizeof PSR_BWR);
+    cmd_data(TRES, TRES_V,   sizeof TRES_V);
+    cmd_data(0x15, DSPI_V,   sizeof DSPI_V);
+    cmd_data(CDI,  CDI_BWR,  sizeof CDI_BWR);
+    cmd_data(TCON, TCON_V,   sizeof TCON_V);
+    ESP_LOGI(TAG, "init complete (BWR OTP waveform; full refresh ~17 s)");
+#elif defined(EPD_GRAY4) && !defined(EPD_GRAY4_REG_LUTS)
     /* GEN2 path (bb_epaper epd75_gray_init; TRMNL "a" profile): newer batches
      * of this glass carry a BUILT-IN OTP 4-gray waveform, selected by fixing
      * the temperature-sensor reading (CCSET TSFIX + TSSET 0x5F). No register
@@ -373,6 +439,9 @@ static void trigger_refresh(void)
     vTaskDelay(pdMS_TO_TICKS(1));   /* >=200 us before polling BUSY */
 #else
     cmd_data(DRF, NULL, 0);
+#ifdef EPD_BWR
+    vTaskDelay(pdMS_TO_TICKS(1));   /* >=200 us before polling BUSY (GD demo) */
+#endif
 #endif
     wait_idle();
     cmd_data(POF, NULL, 0);
@@ -382,7 +451,11 @@ static void trigger_refresh(void)
 
 static void mono_display(const uint8_t *image)
 {
-#ifdef EPD_GRAY4
+#if defined(EPD_BWR)
+    bwr_send_plane(0x10, image, BWR_KW_MAP);    /* DTM1: B/W, 1 = white */
+    bwr_send_plane(DTM2, image, BWR_RED_MAP);   /* DTM2: red, 1 = red   */
+    trigger_refresh();
+#elif defined(EPD_GRAY4)
     /* Both planes, derived on the fly from the 2bpp buffer (see table). */
     gray_send_plane(0x10, image, 0);   /* DTM1: bit = (g & 1) ^ 1  */
     gray_send_plane(DTM2, image, 1);   /* DTM2: bit = (g >> 1) ^ 1 */
@@ -398,7 +471,20 @@ static void mono_display(const uint8_t *image)
 
 static void mono_clear(uint8_t color)
 {
-#ifdef EPD_GRAY4
+#if defined(EPD_BWR)
+    uint8_t g     = (uint8_t)(color & 0x3);
+    uint8_t p_kw  = ((BWR_KW_MAP  >> g) & 1) ? 0xFF : 0x00;
+    uint8_t p_red = ((BWR_RED_MAP >> g) & 1) ? 0xFF : 0x00;
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(0x10);
+    bwr_send_solid_rows(p_kw, EPD_HEIGHT);
+    gpio_set_level(EPD_PIN_CS, 1);
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(DTM2);
+    bwr_send_solid_rows(p_red, EPD_HEIGHT);
+    gpio_set_level(EPD_PIN_CS, 1);
+    trigger_refresh();
+#elif defined(EPD_GRAY4)
     /* Solid gray level: both planes carry that level's bit pattern. */
     uint8_t g  = (uint8_t)(color & 0x3);
     uint8_t p1 = GRAY_P1_BIT(g) ? 0xFF : 0x00;
@@ -426,7 +512,30 @@ static void mono_clear(uint8_t color)
 #endif
 }
 
-#ifdef EPD_GRAY4
+#if defined(EPD_BWR)
+/* BWR selftest: 4 horizontal bands, black / white / RED / white, top to
+ * bottom. The band order on glass confirms the plane maps empirically (the
+ * gray bring-up taught us reference tables can lie about this family). */
+static void mono_show_color_bars(void)
+{
+    const int BAND_H = EPD_HEIGHT / 4;
+    static const uint8_t bands[4] = {0x0, 0x1, 0x2, 0x1};   /* blk wht RED wht */
+
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(0x10);
+    for (int b = 0; b < 4; b++)
+        bwr_send_solid_rows(((BWR_KW_MAP >> bands[b]) & 1) ? 0xFF : 0x00, BAND_H);
+    gpio_set_level(EPD_PIN_CS, 1);
+
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(DTM2);
+    for (int b = 0; b < 4; b++)
+        bwr_send_solid_rows(((BWR_RED_MAP >> bands[b]) & 1) ? 0xFF : 0x00, BAND_H);
+    gpio_set_level(EPD_PIN_CS, 1);
+
+    trigger_refresh();
+}
+#elif defined(EPD_GRAY4)
 /* Gray-ramp selftest: 4 horizontal bands, black -> dark gray -> light gray ->
  * white, top to bottom. Even spacing between the two grays is the bench
  * tuning target (LUT variants exist if a batch renders too light/dark). */
@@ -476,7 +585,7 @@ static void mono_show_palette_sweep(void)
     uint8_t row[EPD_WIDTH / 8];
     memset(row, 0xAA, sizeof row);       /* alternating pixels */
 
-#ifdef EPD_GRAY4
+#if defined(EPD_GRAY4) || defined(EPD_BWR)
     gpio_set_level(EPD_PIN_CS, 0);
     send_cmd(0x10);
     for (int y = 0; y < EPD_HEIGHT; y++) send_data(row, sizeof row);
@@ -491,6 +600,11 @@ static void mono_show_palette_sweep(void)
 
 static void mono_sleep(void)
 {
+#ifdef EPD_BWR
+    /* Float the border before sleeping (GD/GxEPD2 BWR deep-sleep sequence). */
+    static const uint8_t CDI_FLOAT[] = {0xf7};
+    cmd_data(CDI, CDI_FLOAT, sizeof CDI_FLOAT);
+#endif
     uint8_t magic = 0xA5;
     cmd_data(DSLP, &magic, 1);            /* deep sleep */
 #ifdef EPD_PIN_PWR
@@ -502,7 +616,10 @@ static void mono_sleep(void)
 
 const epd_driver_t mono_spi_driver = {
     .info = {
-#ifdef EPD_GRAY4
+#if defined(EPD_BWR)
+        .name      = "BWR 7.5\" (800x480, 2bpp, red)",
+        .bpp       = 2,
+#elif defined(EPD_GRAY4)
         .name      = "Mono 7.5\" (800x480, 4-gray 2bpp)",
         .bpp       = 2,
 #else

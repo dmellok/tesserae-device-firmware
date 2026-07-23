@@ -28,6 +28,8 @@
 #  include "seeed_ee02.h"
 #elif defined(TESSERAE_BOARD_XIAO_EPAPER_75)
 #  include "seeed_xiao_epaper_75.h"
+#elif defined(TESSERAE_BOARD_XIAO_EPAPER_75_BWR)
+#  include "seeed_xiao_epaper_75_bwr.h"
 #elif defined(TESSERAE_BOARD_SEEED_EE04_75)
 #  include "seeed_ee04_75.h"
 #elif defined(TESSERAE_BOARD_SEEED_EE04_73E6)
