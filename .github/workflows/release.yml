@@ -86,9 +86,15 @@ jobs:
           PLATFORMIO_BUILD_FLAGS: '-DFW_VERSION=\"${{ steps.ver.outputs.fw_version }}\"'
         run: pio run -e ${{ matrix.env }}
 
-      # Merge the three images (bootloader 0x0, partitions 0x8000, app 0x10000)
-      # into one factory image flashed at offset 0. `keep` leaves the flash
-      # mode/freq/size exactly as the build set them in the bootloader header.
+      # Merge the built images into one factory image flashed at offset 0, and
+      # stage the same images as individual parts (offset-addressed) so the
+      # flasher can write them without touching the NVS region at 0x9000 --
+      # that's what preserves Wi-Fi creds + registration on a re-flash/migration.
+      # Factory-layout boards put the app at 0x10000; OTA-layout boards (E1004
+      # A/B, detected via ota_data_initial.bin) put otadata at 0x10000 and the
+      # app at 0x20000. Merging the app at 0x10000 on an OTA layout produces an
+      # UNBOOTABLE image (the v1.6.0/v1.6.1 E1004 factory bins had this bug).
+      # `keep` leaves the flash mode/freq/size as the build set them.
       - name: Merge + hash
         run: |
           set -euo pipefail
@@ -97,14 +103,36 @@ jobs:
           b=".pio/build/$e"
           mkdir -p dist
           bin="dist/$e-$v.factory.bin"
-          python -m esptool --chip esp32s3 merge_bin -o "$bin" \
-            --flash_mode keep --flash_freq keep --flash_size keep \
-            0x0 "$b/bootloader.bin" \
-            0x8000 "$b/partitions.bin" \
-            0x10000 "$b/firmware.bin"
+          if [ -f "$b/ota_data_initial.bin" ]; then
+            python -m esptool --chip esp32s3 merge_bin -o "$bin" \
+              --flash_mode keep --flash_freq keep --flash_size keep \
+              0x0 "$b/bootloader.bin" \
+              0x8000 "$b/partitions.bin" \
+              0x10000 "$b/ota_data_initial.bin" \
+              0x20000 "$b/firmware.bin"
+            parts='bootloader.bin:0x0 partitions.bin:0x8000 ota_data_initial.bin:0x10000 firmware.bin:0x20000'
+          else
+            python -m esptool --chip esp32s3 merge_bin -o "$bin" \
+              --flash_mode keep --flash_freq keep --flash_size keep \
+              0x0 "$b/bootloader.bin" \
+              0x8000 "$b/partitions.bin" \
+              0x10000 "$b/firmware.bin"
+            parts='bootloader.bin:0x0 partitions.bin:0x8000 firmware.bin:0x10000'
+          fi
           sha=$(shasum -a 256 "$bin" | awk '{print $1}')
+          parts_json='['
+          sep=''
+          for p in $parts; do
+            f="${p%%:*}"; off="${p##*:}"
+            name="${f%.bin}"
+            cp "$b/$f" "dist/$e-$v.part-$name.bin"
+            psha=$(shasum -a 256 "$b/$f" | awk '{print $1}')
+            parts_json="$parts_json$sep{\"name\":\"$name\",\"offset\":\"$off\",\"path\":\"$e/$v/$name.bin\",\"sha256\":\"$psha\"}"
+            sep=','
+          done
+          parts_json="$parts_json]"
           cat > "dist/$e.meta.json" <<JSON
-          {"env":"$e","chipFamily":"ESP32-S3","offset":0,"webSerial":true,"version":"$v","path":"$e/$v.factory.bin","sha256":"$sha"}
+          {"env":"$e","chipFamily":"ESP32-S3","offset":0,"webSerial":true,"version":"$v","path":"$e/$v.factory.bin","sha256":"$sha","parts":$parts_json}
           JSON
 
       # The app-only OTA image (what a device streams into its inactive slot),

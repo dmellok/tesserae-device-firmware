@@ -15,11 +15,25 @@ Catalog shape:
         "chipFamily": "ESP32-S3",
         "offset": 0,
         "webSerial": true,
-        "versions": [ {"version": "v1.0.0", "path": "<env>/v1.0.0.factory.bin", "sha256": "..."}, ... ]
+        "versions": [
+          {
+            "version": "v1.0.0",
+            "path": "<env>/v1.0.0.factory.bin",   # merged blob @ offset 0 (legacy)
+            "sha256": "...",
+            "parts": [                             # offset-addressed images; flashing
+              {"name": "bootloader", "offset": "0x0", "path": "...", "sha256": "..."},
+              ...                                  # these (not the blob) skips the NVS
+            ]                                      # region -> creds/registration survive
+          },
+          ...
+        ]
       }
     }
   }
 
+`parts` lives on the VERSION (not the target) because partition layouts can move
+between versions (the E1004 app moved 0x10000 -> 0x20000 in v1.6.x). Older
+catalog entries predate `parts`; flashers must fall back to the merged blob.
 Newest version is kept first; history is capped so the dropdown stays sane.
 """
 import glob
@@ -60,11 +74,18 @@ def main() -> int:
         t["offset"] = m["offset"]
         t["webSerial"] = m["webSerial"]
         versions = [v for v in t.get("versions", []) if v.get("version") != m["version"]]
-        versions.insert(0, {"version": m["version"], "path": m["path"], "sha256": m["sha256"]})
+        entry = {"version": m["version"], "path": m["path"], "sha256": m["sha256"]}
+        if m.get("parts"):
+            entry["parts"] = m["parts"]
+        versions.insert(0, entry)
         t["versions"] = versions[:MAX_VERSIONS]
 
         local_bin = os.path.join(art_dir, f'{env}-{m["version"]}.factory.bin')
         uploads.append((local_bin, m["path"]))
+        for part in m.get("parts", []):
+            local_part = os.path.join(
+                art_dir, f'{env}-{m["version"]}.part-{part["name"]}.bin')
+            uploads.append((local_part, part["path"]))
 
     catalog["updated"] = tag
     with open(out_path, "w") as f:
