@@ -11,6 +11,7 @@
  */
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
 #include "esp_err.h"
@@ -43,6 +44,15 @@ typedef struct epd_driver {
     void (*show_palette_sweep)(void);
     /* Deep-sleep the panel and drop its power rail. */
     void (*sleep)(void);
+
+    /* OPTIONAL (NULL = unsupported): repaint only the rect x,y,w,h from the
+     * full framebuffer `image` (info.buf_bytes, panel-native layout; frame
+     * coordinates -- the driver owns any panel-side mirror). fast = a quick
+     * low-fidelity waveform (DU on IT8951) for overlay echo; !fast = full
+     * quality (GC16) for hygiene passes. The overlay feature (overlay.h)
+     * advertises itself only on boards whose driver provides this. */
+    void (*display_partial)(const uint8_t *image, int x, int y, int w, int h,
+                            bool fast);
 } epd_driver_t;
 
 /* The single driver selected for this board at build time. Never NULL --

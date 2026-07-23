@@ -128,5 +128,11 @@
 /* MCU tier: ESP32-S3 + PSRAM (assumed octal; verify on hardware). */
 #define MCU_TIER_S3_OCTAL_PSRAM 1
 
+/* Local overlay render mode (overlay.h): the IT8951 has usable partial
+ * refresh (DU waveform for echo rects, GC16 for hygiene), so this board
+ * advertises "overlay": {"schema": 1} and runs tap echo / value slots
+ * locally. Spectra boards never define this (no useful partial refresh). */
+#define BOARD_OVERLAY_PARTIAL 1
+
 /* Selected panel driver: Family D, IT8951 grayscale over SPI. */
 #define PANEL_DRIVER_IT8951_GRAY 1

@@ -30,6 +30,7 @@ typedef enum {
     REST_UNAUTH,          /* 401 (token invalid/revoked) */
     REST_FORBIDDEN,       /* 403 (pairing code / device mismatch) */
     REST_RATELIMIT,       /* 429 (retry_after_s populated) */
+    REST_NOT_FOUND,       /* 404 (overlay contract: feature off / stale digest) */
     REST_HTTP_ERR,        /* other 4xx/5xx */
     REST_NET_ERR,         /* DNS / TCP / timeout */
 } rest_status_t;
@@ -77,6 +78,11 @@ typedef struct {
 #endif
     bool     deck_present;      /* response carried "deck": {"version"} */
     char     deck_version[DECK_VERSION_CAP];
+#if BOARD_OVERLAY_PARTIAL
+    /* Raw "overlay_values" object from the response, "" when absent. Same
+     * semantics as the polled values document (overlay.h); newest seq wins. */
+    char     overlay_values[512];
+#endif
 } rest_status_out_t;
 
 /* POST /api/v1/device/discover (unauthenticated). Zero-touch onboarding: the
@@ -149,3 +155,15 @@ void rest_deck_frame_url(const char *digest, char *out, size_t cap);
 
 /* The raw bearer token (for image_fetch_auth on deck frame downloads). */
 const char *rest_bearer_token(void);
+
+/* ---- overlay render mode (overlay.h; boards with partial refresh) ---- */
+
+/* GET /api/v1/device/<id>/frame/overlay/<digest>. REST_OK copies the spec
+ * JSON into buf (NUL-terminated). REST_NOT_FOUND = no overlay for this
+ * frame / server predates the feature (dormant). */
+rest_status_t rest_get_overlay_spec(const char *digest, char *buf, size_t cap,
+                                    size_t *out_len, uint32_t timeout_ms);
+
+/* GET /api/v1/device/<id>/frame/data?digest=<digest> (values document). */
+rest_status_t rest_get_frame_data(const char *digest, char *buf, size_t cap,
+                                  size_t *out_len, uint32_t timeout_ms);

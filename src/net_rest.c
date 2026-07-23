@@ -185,6 +185,7 @@ static rest_status_t map_status(int http)
         case 200: case 201: return REST_OK;
         case 204:           return REST_NO_CONTENT;
         case 304:           return REST_NOT_MODIFIED;
+        case 404:           return REST_NOT_FOUND;
         case 401:           return REST_UNAUTH;
         case 403:           return REST_FORBIDDEN;
         case 429:           return REST_RATELIMIT;
@@ -328,6 +329,16 @@ static void add_ota_capability(cJSON *o)
 }
 #endif
 
+#if BOARD_OVERLAY_PARTIAL
+/* Local-overlay capability: this board has a partial-refresh panel driver.
+ * Compile-time gated; boards without usable partial refresh never emit it. */
+static void add_overlay_capability(cJSON *o)
+{
+    cJSON *ov = cJSON_AddObjectToObject(o, "overlay");
+    if (ov) cJSON_AddNumberToObject(ov, "schema", 1);
+}
+#endif
+
 /* Identity body shared by /discover and /register. Caller frees. */
 static char *identity_body(uint16_t panel_w, uint16_t panel_h,
                            const char *mac, const char *fw_version,
@@ -348,6 +359,9 @@ static char *identity_body(uint16_t panel_w, uint16_t panel_h,
 #endif
     /* Register advertises capabilities; discover stays identity-only. */
     if (advertise_ota) add_deck_capability(o);
+#if BOARD_OVERLAY_PARTIAL
+    if (advertise_ota) add_overlay_capability(o);
+#endif
     char *body = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     return body;
@@ -528,6 +542,42 @@ const char *rest_bearer_token(void)
     return rest_config_get()->device_token;
 }
 
+/* Small authorised GET into a caller buffer (overlay spec / values doc). */
+static rest_status_t small_get(const char *url, char *buf, size_t cap,
+                               size_t *out_len, uint32_t timeout_ms)
+{
+    if (out_len) *out_len = 0;
+    char auth[300];
+    snprintf(auth, sizeof auth, "Bearer %s", rest_config_get()->device_token);
+    rest_hdr_t hdrs[] = { { "Authorization", auth } };
+    const char *rbody = NULL;
+    rest_status_t st = do_request(HTTP_METHOD_GET, url, hdrs, 1, NULL, &rbody, timeout_ms);
+    if (st != REST_OK) return st;
+    if (s_overflow || s_rx_len == 0 || s_rx_len >= cap) return REST_HTTP_ERR;
+    memcpy(buf, rbody, s_rx_len);
+    buf[s_rx_len] = '\0';
+    if (out_len) *out_len = s_rx_len;
+    return REST_OK;
+}
+
+rest_status_t rest_get_overlay_spec(const char *digest, char *buf, size_t cap,
+                                    size_t *out_len, uint32_t timeout_ms)
+{
+    char url[300];
+    snprintf(url, sizeof url, "%s/api/v1/device/%s/frame/overlay/%s",
+             rest_config_get()->server_url, rest_config_device_id(), digest);
+    return small_get(url, buf, cap, out_len, timeout_ms);
+}
+
+rest_status_t rest_get_frame_data(const char *digest, char *buf, size_t cap,
+                                  size_t *out_len, uint32_t timeout_ms)
+{
+    char url[300];
+    snprintf(url, sizeof url, "%s/api/v1/device/%s/frame/data?digest=%s",
+             rest_config_get()->server_url, rest_config_device_id(), digest);
+    return small_get(url, buf, cap, out_len, timeout_ms);
+}
+
 rest_status_t rest_post_status(int rssi, const char *ip,
                                uint16_t panel_w, uint16_t panel_h,
                                int32_t next_sleep_s, uint32_t sleep_until,
@@ -593,6 +643,9 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         cJSON_AddNumberToObject(o, "button_event_id", s_button.event_id);
     }
     add_deck_capability(o);
+#if BOARD_OVERLAY_PARTIAL
+    add_overlay_capability(o);
+#endif
     if (s_deck_page[0]) {
         /* The displayed frame came from the SD cache: these two fields are
          * the only signal the server needs to keep its nav state truthful
@@ -629,6 +682,18 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         out->touch_linger_s = json_get_int(cfg, "touch_linger_s", -1);
 #endif
     }
+#if BOARD_OVERLAY_PARTIAL
+    /* overlay_values rides the status response; hand the raw object to the
+     * overlay engine (same semantics as the polled values document). */
+    cJSON *ov = cJSON_GetObjectItemCaseSensitive(r, "overlay_values");
+    if (cJSON_IsObject(ov)) {
+        char *raw = cJSON_PrintUnformatted(ov);
+        if (raw) {
+            snprintf(out->overlay_values, sizeof out->overlay_values, "%s", raw);
+            free(raw);
+        }
+    }
+#endif
     /* Deck resync signal: "deck": {"version": str}. Absent on servers that
      * don't speak decks yet; the sync tail then never runs. */
     cJSON *deck = cJSON_GetObjectItemCaseSensitive(r, "deck");

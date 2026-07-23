@@ -203,6 +203,25 @@ mount/read/parse failure falls back to the network path. Card layout:
 `/tesserae/decks/<deck_id>/manifest.json` + `<digest>.bin`. Bring-up: the
 `…-sdtest` env runs a mount + write/read/verify round trip over serial.
 
+### Local overlay rendering (hybrid render mode)
+
+Touch boards with a partial-refresh panel (currently the E1003 / IT8951)
+advertise `"overlay": {"schema": 1}` and can echo taps and update small value
+slots locally in under a second, without a server round trip per interaction.
+The server's full frame stays the base layer and source of truth: after each
+full paint the firmware fetches `GET /frame/overlay/<digest>` (targets =
+tap-echo rects, slots = value text fields, atlases = pre-rendered glyph
+strips) and `GET /frame/data?digest=…` for pre-formatted value strings
+(polled only inside the touch-linger awake window; `overlay_values` on
+/status is treated identically, newest `seq` wins). Tap echoes invert their
+rect with a fast DU partial refresh and never delay the normal stroke
+dispatch; text is blit-only from the atlas. After 8 partial refreshes (or on
+any new full frame) a GC16 full-quality pass clears ghosting. Specs, atlases
+and rect patches are cached on SD keyed by frame digest so a tap that wakes
+the device echoes offline. A server without overlay support (404) leaves the
+feature fully dormant. Bring-up: the `…-overlaytest` env runs a synthetic
+spec (invert target + digits atlas) with timings on serial.
+
 ## Build
 
 Requires [PlatformIO Core](https://platformio.org/install). Build one target:

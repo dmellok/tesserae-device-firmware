@@ -56,6 +56,7 @@ static const char *TAG = "epd_it8951";
 #define PIXFMT_4BPP   2
 #define ENDIAN_L      0
 #define ENDIAN_B      1
+#define MODE_DU       1        /* fast 2-level "direct update" waveform */
 #define MODE_GC16     2        /* 16-level grayscale waveform */
 
 static spi_device_handle_t s_spi;
@@ -253,7 +254,7 @@ static void it8951_init(void)
              info[0], info[1], (unsigned)s_img_buf_addr);
 }
 
-static void load_img_area_start(void)
+static void load_img_area_start_rect(int cx, int cy, int cw, int ch)
 {
     /* target address (LISAR) */
     write_reg(REG_LISAR + 2, (uint16_t)((s_img_buf_addr >> 16) & 0xFFFF));
@@ -262,12 +263,18 @@ static void load_img_area_start(void)
     /* ensure 1bpp mode is off (we use 4bpp) */
     write_reg(REG_UP1SR + 2, (uint16_t)(read_reg(REG_UP1SR + 2) & ~(1 << 2)));
 
-    /* info word: MIRROR_X -> big-endian; 4bpp; rotate 0. Then x,y,w,h. */
+    /* info word: MIRROR_X -> big-endian; 4bpp; rotate 0. Then x,y,w,h in
+     * CONTROLLER coordinates (post software mirror). */
     uint16_t args[5] = {
         (uint16_t)((ENDIAN_B << 8) | (PIXFMT_4BPP << 4) | 0),
-        0, 0, EPD_WIDTH, EPD_HEIGHT,
+        (uint16_t)cx, (uint16_t)cy, (uint16_t)cw, (uint16_t)ch,
     };
     send_cmd_args(LD_IMG_AREA, args, 5);
+}
+
+static void load_img_area_start(void)
+{
+    load_img_area_start_rect(0, 0, EPD_WIDTH, EPD_HEIGHT);
 }
 
 /* Stream one 4bpp row (936 bytes) with the ED103TC2 MIRROR_X transform: reverse
@@ -320,6 +327,62 @@ static void write_and_refresh(const uint8_t *fb)
 static void it8951_display(const uint8_t *image)
 {
     write_and_refresh(image);
+}
+
+/* Partial refresh (overlay feature): reload only the rect from the frame and
+ * refresh it with DU (fast, ~300 ms, mono-ish) or GC16 (hygiene). The rect
+ * arrives in FRAME coordinates; the ED103TC2's software MIRROR_X maps it to
+ * controller x' = W - x - w, and within the window the bytes stream reversed
+ * + nibble-swapped exactly like the full-frame path. x/w are widened to a
+ * multiple of 4 px (whole bytes at 4bpp, and the IT8951 prefers 4-px
+ * alignment for area operations). */
+static void it8951_display_partial(const uint8_t *fb, int x, int y, int w,
+                                   int h, bool fast)
+{
+    /* Clamp to the panel, then widen to 4-px x-alignment. */
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > EPD_WIDTH)  w = EPD_WIDTH - x;
+    if (y + h > EPD_HEIGHT) h = EPD_HEIGHT - y;
+    if (w <= 0 || h <= 0) return;
+    int x0 = x & ~3;
+    int x1 = (x + w + 3) & ~3;
+    if (x1 > EPD_WIDTH) x1 = EPD_WIDTH;
+    int aw = x1 - x0;
+    int cx = EPD_WIDTH - x1;             /* mirrored window left edge */
+
+    const int seg = aw / 2;              /* bytes per window row */
+    uint8_t *scratch = heap_caps_malloc(seg, MALLOC_CAP_DMA);
+    if (!scratch) { ESP_LOGE(TAG, "OOM partial scratch"); return; }
+
+    write_cmd(SYS_RUN);
+    wait_display_done();
+    load_img_area_start_rect(cx, y, aw, h);
+
+    cs(0);
+    wait_ready(); word_tx(0x0000);       /* data preamble */
+    wait_ready();
+    const int iPitch = EPD_WIDTH / 2;
+    for (int yy = y; yy < y + h; yy++) {
+        const uint8_t *row = fb + (size_t)yy * iPitch + x0 / 2;
+        for (int i = 0; i < seg; i++) {
+            uint8_t b = row[seg - 1 - i];
+            scratch[i] = (uint8_t)((b >> 4) | (b << 4));
+        }
+        spi_transaction_t t = {0};
+        t.length = seg * 8; t.tx_buffer = scratch;
+        spi_device_polling_transmit(s_spi, &t);
+    }
+    cs(1);
+    write_cmd(LD_IMG_END);
+
+    uint16_t dargs[5] = { (uint16_t)cx, (uint16_t)y, (uint16_t)aw, (uint16_t)h,
+                          fast ? MODE_DU : MODE_GC16 };
+    send_cmd_args(DPY_AREA, dargs, 5);
+    wait_display_done();
+    write_cmd(STANDBY);
+    free(scratch);
+    ESP_LOGI(TAG, "partial %s (%d,%d %dx%d)", fast ? "DU" : "GC16", x0, y, aw, h);
 }
 
 /* Fill the whole panel with one gray level (nibble). */
@@ -409,6 +472,7 @@ const epd_driver_t it8951_gray_driver = {
     .show_color_bars    = it8951_show_color_bars,
     .show_palette_sweep = it8951_show_palette_sweep,
     .sleep              = it8951_sleep,
+    .display_partial    = it8951_display_partial,
 };
 
 #endif /* PANEL_DRIVER_IT8951_GRAY */

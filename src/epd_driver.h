@@ -47,3 +47,12 @@ void epd_show_palette_sweep(void);
 /* Send DEEP_SLEEP command and drop the panel power rail. After this,
  * epd_init() must be called again before the next refresh. */
 void epd_sleep(void);
+
+/* Partial refresh (overlay feature): repaint only x,y,w,h from a full
+ * framebuffer, with a fast low-fidelity waveform (fast=true) or full
+ * quality. No-op on drivers without support -- check epd_supports_partial().
+ */
+#include <stdbool.h>
+bool epd_supports_partial(void);
+void epd_display_partial(const uint8_t *image, int x, int y, int w, int h,
+                         bool fast);

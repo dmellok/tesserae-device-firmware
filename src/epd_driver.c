@@ -17,3 +17,17 @@ void epd_display(const uint8_t *image) { epd_active_driver()->display(image); }
 void epd_show_color_bars(void)         { epd_active_driver()->show_color_bars(); }
 void epd_show_palette_sweep(void)      { epd_active_driver()->show_palette_sweep(); }
 void epd_sleep(void)                   { epd_active_driver()->sleep(); }
+
+/* Partial refresh (overlay feature). Supported only where the active driver
+ * provides display_partial; callers must check epd_supports_partial(). */
+bool epd_supports_partial(void)
+{
+    return epd_active_driver()->display_partial != NULL;
+}
+
+void epd_display_partial(const uint8_t *image, int x, int y, int w, int h,
+                         bool fast)
+{
+    const epd_driver_t *d = epd_active_driver();
+    if (d->display_partial) d->display_partial(image, x, y, w, h, fast);
+}

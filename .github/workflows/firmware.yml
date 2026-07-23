@@ -51,6 +51,9 @@ jobs:
       - name: Deck cache logic tests
         run: sh tools/test_deck.sh
 
+      - name: Overlay logic tests
+        run: sh tools/test_overlay.sh
+
 
   build:
     name: build ${{ matrix.env }}

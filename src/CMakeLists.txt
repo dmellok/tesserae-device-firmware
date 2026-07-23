@@ -29,6 +29,8 @@ idf_component_register(
         "ota_install.c"
         "ota_boot.c"
         "ota_report.c"
+        "overlay.c"
+        "overlay_run.c"
         "deck.c"
         "deck_digest.c"
         "deck_cache.c"

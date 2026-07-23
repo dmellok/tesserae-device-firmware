@@ -32,6 +32,8 @@
 #include "nvs_flash.h"      /* factory-reset erase (20 s refresh-button hold) */
 #include "buttons.h"        /* front-button wake/report (header-only; no-op if none) */
 #include "deck_run.h"       /* SD deck cache: local nav + sync (no-op w/o card) */
+#include "overlay_run.h"    /* local overlay render mode (no-op w/o partial panel) */
+#include "overlay.h"        /* pure overlay engine (used by OVERLAY_SELFTEST) */
 #include "deck_cache.h"     /* + sdcard.h/deck.h: DECK_SD_SELFTEST round trip */
 #include "sdcard.h"
 #include "esp_heap_caps.h"
@@ -621,6 +623,102 @@ void app_main(void)
     while (1) vTaskDelay(pdMS_TO_TICKS(1000));
 #endif
 
+#ifdef OVERLAY_SELFTEST
+    /* Overlay bring-up (partial-refresh boards): paint a gray-band base, then
+     * run a synthetic overlay spec offline -- one invert target and one slot
+     * fed by a code-drawn digits atlas -- cycling values 0-9 with DU partial
+     * refreshes and per-op timings on serial. No networking. */
+    ESP_LOGW(TAG, "OVERLAY_SELFTEST: partial-refresh cycle (no networking)");
+    {
+        static const char SPEC_JSON[] =
+            "{\"schema\":1,\"frame_digest\":\"0000000000000000\","
+            "\"targets\":[{\"id\":\"t1\",\"x\":120,\"y\":640,\"w\":300,\"h\":90,"
+            "\"echo\":\"invert\"}],"
+            "\"slots\":[{\"id\":\"s1\",\"x\":140,\"y\":800,\"w\":200,\"h\":32,"
+            "\"key\":\"v\",\"align\":\"right\",\"atlas\":\"a1\"}],"
+            "\"atlases\":[{\"id\":\"a1\",\"digest\":\"0000000000000000\","
+            "\"height\":32,\"url\":\"-\",\"format\":\"4bpp-gray\",\"glyphs\":{"
+            "\"0\":{\"x\":0,\"w\":20},\"1\":{\"x\":20,\"w\":20},"
+            "\"2\":{\"x\":40,\"w\":20},\"3\":{\"x\":60,\"w\":20},"
+            "\"4\":{\"x\":80,\"w\":20},\"5\":{\"x\":100,\"w\":20},"
+            "\"6\":{\"x\":120,\"w\":20},\"7\":{\"x\":140,\"w\":20},"
+            "\"8\":{\"x\":160,\"w\":20},\"9\":{\"x\":180,\"w\":20}}}]}";
+        overlay_spec_t *sp = malloc(sizeof *sp);
+        uint8_t *base = heap_caps_malloc(EPD_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        enum { AW = 200, AH = 32, GW = 20 };
+        uint8_t *atlas = heap_caps_malloc(AW / 2 * AH, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!sp || !base || !atlas ||
+            !overlay_spec_parse(SPEC_JSON, sizeof SPEC_JSON - 1,
+                                EPD_WIDTH, EPD_HEIGHT, sp)) {
+            ESP_LOGE(TAG, "OVERLAY_SELFTEST: setup failed");
+        } else {
+            /* Digits atlas: 200x32 4bpp seven-segment, black on white. */
+            memset(atlas, 0xFF, AW / 2 * AH);
+            static const uint8_t SEG[10] = {0x3F,0x06,0x5B,0x4F,0x66,0x6D,0x7D,0x07,0x7F,0x6F};
+            for (int d = 0; d < 10; d++) {
+                for (int yy = 0; yy < AH; yy++) {
+                    for (int xx = 2; xx < GW - 2; xx++) {
+                        uint8_t sgs = SEG[d];
+                        bool topH = yy < 4, midH = yy >= 14 && yy < 18, botH = yy >= AH - 4;
+                        bool lftV = xx < 6, rgtV = xx >= GW - 8;
+                        bool on = (topH && (sgs & 0x01)) || (botH && (sgs & 0x08)) ||
+                                  (midH && (sgs & 0x40)) ||
+                                  (lftV && ((yy < 16 && (sgs & 0x20)) || (yy >= 16 && (sgs & 0x10)))) ||
+                                  (rgtV && ((yy < 16 && (sgs & 0x02)) || (yy >= 16 && (sgs & 0x04))));
+                        if (on) {
+                            int ax = d * GW + xx;
+                            uint8_t *b = &atlas[(size_t)yy * (AW / 2) + ax / 2];
+                            *b = (ax & 1) ? (uint8_t)(*b & 0xF0) : (uint8_t)(*b & 0x0F);
+                        }
+                    }
+                }
+            }
+            sp->atlases[0].bits = atlas;
+
+            const int pitch = EPD_BUF_BYTES / EPD_HEIGHT;
+            for (int yy = 0; yy < EPD_HEIGHT; yy++) {
+                uint8_t g = (uint8_t)((yy * 16) / EPD_HEIGHT);
+                memset(base + (size_t)yy * pitch, (uint8_t)((g << 4) | g), pitch);
+            }
+            ESP_ERROR_CHECK(epd_port_init());
+            epd_init();
+            ESP_LOGW(TAG, "OVERLAY_SELFTEST: painting base (GC16 full)...");
+            epd_display(base);
+
+            overlay_hygiene_t hy; overlay_hygiene_reset(&hy);
+            const overlay_target_t *t = overlay_hit_target(sp, 130, 650);
+            int64_t t0 = esp_timer_get_time();
+            overlay_invert_rect(base, EPD_WIDTH, EPD_HEIGHT, 4, t->x, t->y, t->w, t->h);
+            epd_display_partial(base, t->x, t->y, t->w, t->h, true);
+            ESP_LOGW(TAG, "OVERLAY_SELFTEST: invert echo in %lld ms",
+                     (esp_timer_get_time() - t0) / 1000);
+
+            uint8_t *pristine = heap_caps_malloc(EPD_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (pristine) memcpy(pristine, base, EPD_BUF_BYTES);
+            int32_t seq = -1;
+            for (int d = 0; d <= 9 && pristine; d++) {
+                char doc[64];
+                snprintf(doc, sizeof doc, "{\"seq\":%d,\"values\":{\"v\":\"%d\"}}", d + 1, d);
+                if (!overlay_values_apply(sp, doc, strlen(doc), &seq)) continue;
+                overlay_slot_t *sl = &sp->slots[0];
+                t0 = esp_timer_get_time();
+                overlay_draw_slot(base, pristine, EPD_WIDTH, EPD_HEIGHT, 4, sl,
+                                  &sp->atlases[0]);
+                bool full = overlay_hygiene_tick(&hy);
+                if (full) { epd_display(base); overlay_hygiene_reset(&hy); }
+                else epd_display_partial(base, sl->x, sl->y, sl->w, sl->h, true);
+                ESP_LOGW(TAG, "OVERLAY_SELFTEST: slot=\"%s\" in %lld ms%s",
+                         sl->value, (esp_timer_get_time() - t0) / 1000,
+                         full ? " (hygiene GC16 full)" : "");
+                vTaskDelay(pdMS_TO_TICKS(800));
+            }
+            epd_sleep();
+            ESP_LOGW(TAG, "OVERLAY_SELFTEST: done; halting. Press RESET to repeat.");
+        }
+    }
+    while (1) vTaskDelay(pdMS_TO_TICKS(1000));
+#endif
+
 #ifdef DECK_SD_SELFTEST
     /* Deck-cache bring-up: mount the card, run one frame-sized write ->
      * read-back -> digest-verify round trip through the REAL cache path
@@ -679,6 +777,10 @@ void app_main(void)
     /* Deck cache boot: probe the SD card, advertise the capability, restore
      * nav state. Everything degrades to a no-op without a card. */
     deck_boot();
+
+    /* Overlay boot: restore the SD-cached overlay spec for the displayed
+     * frame so a wake tap can echo before any network round trip. */
+    overlay_boot();
 
     /* Local deck nav: a button wake whose press matches a cached link on the
      * current page paints from SD (1-2 s) and never brings the radio up. Any
@@ -750,6 +852,10 @@ void app_main(void)
                 ESP_LOGI(TAG, "touch (%d,%d)->(%d,%d) %ums (event %u)",
                          touch_st.x0, touch_st.y0, touch_st.x1, touch_st.y1,
                          (unsigned)touch_st.ms, (unsigned)touch_ev);
+                /* Overlay echo FIRST (sub-second feedback): if the tap hits a
+                 * server-declared target rect, invert + partial-refresh it
+                 * immediately. Never delays or replaces the dispatch below. */
+                overlay_try_echo(touch_st.x1, touch_st.y1);
                 /* Local deck nav: a tap landing in a cached link zone on the
                  * current page paints from SD and never reaches the server
                  * (the release point decides the hit). Misses fall through to
@@ -932,6 +1038,9 @@ void app_main(void)
         if (image_fetch(fullurl, &img) == ESP_OK) {
             if (image_decode_to_frame(&img, fullurl, &frame) != ESP_OK) frame = NULL;
             free(img.data);
+            /* Radio is up and the new frame's digest is known: fetch the
+             * overlay spec + atlases for it (404 = dormant, no-op). */
+            if (frame != NULL) overlay_frame_downloaded(new_etag);
         } else {
             ESP_LOGE(TAG, "frame fetch failed for %s", fullurl);
         }
@@ -988,6 +1097,11 @@ void app_main(void)
                     ESP_LOGI(TAG, "touch config: enabled=%d linger=%lds", en, (long)lin);
                 }
             }
+#endif
+#if BOARD_OVERLAY_PARTIAL
+            /* overlay_values may ride the status response. */
+            if (so.overlay_values[0])
+                overlay_ingest_values(so.overlay_values, strlen(so.overlay_values));
 #endif
             /* Deck resync signal: decided here, executed at the tail of the
              * wake (after painting + reporting, radio still up). */
@@ -1074,6 +1188,7 @@ void app_main(void)
         free(frame);
         if (new_etag[0]) { rest_config_set_frame_etag(new_etag); cfg_dirty = true; }
         rest_config_set_ui_state(UI_CONNECTED);   /* a real frame is up now */
+        overlay_after_paint(frame, new_etag);      /* keep base copy + SD patches */
         deck_network_painted();   /* SD-paint report no longer describes the display */
     } else if (just_onboarded) {
         /* Onboarding completed but the server has no frame ready yet -- confirm
@@ -1110,10 +1225,18 @@ void app_main(void)
         ESP_LOGI(TAG, "touch linger: up to %d s awake for further touches", linger_s);
         int64_t deadline = esp_timer_get_time() + (int64_t)linger_s * 1000000;
         while (esp_timer_get_time() < deadline) {
-            if (!touch_int_asserted()) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
+            if (!touch_int_asserted()) {
+                /* Values slots (overlay): poll every 1-2 s ONLY while awake
+                 * in this window; changed slots partial-refresh in place. */
+                overlay_linger_poll();
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
             touch_stroke_t st;
             touch_capture_stroke(&st, TOUCH_FIRST_POINT_MS, TOUCH_CAP_MS);
             if (!st.valid) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
+            /* Overlay echo first, then dispatch exactly as before. */
+            overlay_try_echo(st.x1, st.y1);
             uint32_t ev = ++s_button_event_seq;
             ESP_LOGI(TAG, "linger touch (%d,%d)->(%d,%d) %ums (event %u)",
                      st.x0, st.y0, st.x1, st.y1, (unsigned)st.ms, (unsigned)ev);
