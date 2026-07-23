@@ -20,7 +20,9 @@
 #if defined(BOARD_OVERLAY_PARTIAL)
 
 /* Boot hook (after rest_config_load + sdcard mount): restore the SD-cached
- * spec for the currently displayed frame so a wake tap can echo offline. */
+ * spec for the currently displayed frame. Cold wakes carry slot patches
+ * only -- values arriving on /status can redraw offline; target echo needs
+ * a full in-RAM frame copy and is skipped on such wakes (see overlay_run.c). */
 void overlay_boot(void);
 
 /* Tap echo: if (x, y) hits a declared target, apply its echo (invert) and

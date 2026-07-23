@@ -630,10 +630,18 @@ void app_main(void)
      * refreshes and per-op timings on serial. No networking. */
     ESP_LOGW(TAG, "OVERLAY_SELFTEST: partial-refresh cycle (no networking)");
     {
-        static const char SPEC_JSON[] =
-            "{\"schema\":1,\"frame_digest\":\"0000000000000000\","
-            "\"targets\":[{\"id\":\"t1\",\"x\":120,\"y\":640,\"w\":300,\"h\":90,"
-            "\"echo\":\"invert\"}],"
+        /* 32 small targets (cap-raise verification: an 8x4 grid of tiles)
+         * plus the digits slot. Built at runtime to keep the literal sane. */
+        char *spec_json = malloc(8192);
+        int sj = snprintf(spec_json, 8192,
+            "{\"schema\":1,\"frame_digest\":\"0000000000000000\",\"targets\":[");
+        for (int i = 0; i < 32; i++) {
+            sj += snprintf(spec_json + sj, 8192 - (size_t)sj,
+                "%s{\"id\":\"t%d\",\"x\":%d,\"y\":%d,\"w\":180,\"h\":120,"
+                "\"echo\":\"invert\"}", i ? "," : "", i,
+                40 + (i % 8) * 220, 40 + (i / 8) * 140);
+        }
+        sj += snprintf(spec_json + sj, 8192 - (size_t)sj, "],"
             "\"slots\":[{\"id\":\"s1\",\"x\":140,\"y\":800,\"w\":200,\"h\":32,"
             "\"key\":\"v\",\"align\":\"right\",\"atlas\":\"a1\"}],"
             "\"atlases\":[{\"id\":\"a1\",\"digest\":\"0000000000000000\","
@@ -642,13 +650,14 @@ void app_main(void)
             "\"2\":{\"x\":40,\"w\":20},\"3\":{\"x\":60,\"w\":20},"
             "\"4\":{\"x\":80,\"w\":20},\"5\":{\"x\":100,\"w\":20},"
             "\"6\":{\"x\":120,\"w\":20},\"7\":{\"x\":140,\"w\":20},"
-            "\"8\":{\"x\":160,\"w\":20},\"9\":{\"x\":180,\"w\":20}}}]}";
+            "\"8\":{\"x\":160,\"w\":20},\"9\":{\"x\":180,\"w\":20}}}]}");
+        (void)sj;
         overlay_spec_t *sp = malloc(sizeof *sp);
         uint8_t *base = heap_caps_malloc(EPD_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         enum { AW = 200, AH = 32, GW = 20 };
         uint8_t *atlas = heap_caps_malloc(AW / 2 * AH, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!sp || !base || !atlas ||
-            !overlay_spec_parse(SPEC_JSON, sizeof SPEC_JSON - 1,
+        if (!sp || !base || !atlas || !spec_json ||
+            !overlay_spec_parse(spec_json, (size_t)sj,
                                 EPD_WIDTH, EPD_HEIGHT, sp)) {
             ESP_LOGE(TAG, "OVERLAY_SELFTEST: setup failed");
         } else {
@@ -685,13 +694,33 @@ void app_main(void)
             ESP_LOGW(TAG, "OVERLAY_SELFTEST: painting base (GC16 full)...");
             epd_display(base);
 
-            overlay_hygiene_t hy; overlay_hygiene_reset(&hy);
-            const overlay_target_t *t = overlay_hit_target(sp, 130, 650);
+            ESP_LOGW(TAG, "OVERLAY_SELFTEST: %d targets parsed (cap %d)",
+                     sp->n_targets, OVERLAY_MAX_TARGETS);
+
+            /* Hit-test cost across 32 targets: worst case is a miss (walks
+             * the whole list). Should be microseconds per lookup. */
             int64_t t0 = esp_timer_get_time();
-            overlay_invert_rect(base, EPD_WIDTH, EPD_HEIGHT, 4, t->x, t->y, t->w, t->h);
-            epd_display_partial(base, t->x, t->y, t->w, t->h, true);
-            ESP_LOGW(TAG, "OVERLAY_SELFTEST: invert echo in %lld ms",
-                     (esp_timer_get_time() - t0) / 1000);
+            volatile int hits = 0;
+            for (int i = 0; i < 10000; i++)
+                if (overlay_hit_target(sp, (i * 37) % EPD_WIDTH,
+                                       (i * 53) % EPD_HEIGHT)) hits++;
+            ESP_LOGW(TAG, "OVERLAY_SELFTEST: 10000 hit-tests in %lld us (%d hits)",
+                     esp_timer_get_time() - t0, hits);
+
+            overlay_hygiene_t hy; overlay_hygiene_reset(&hy);
+            /* Echo three scattered targets (first, middle, last). */
+            static const int taps[3][2] = { {50, 50}, {930, 330}, {1590, 470} };
+            for (int i = 0; i < 3; i++) {
+                const overlay_target_t *t = overlay_hit_target(sp, taps[i][0], taps[i][1]);
+                if (!t) { ESP_LOGE(TAG, "OVERLAY_SELFTEST: tap %d missed!", i); continue; }
+                t0 = esp_timer_get_time();
+                overlay_invert_rect(base, EPD_WIDTH, EPD_HEIGHT, 4, t->x, t->y, t->w, t->h);
+                epd_display_partial(base, t->x, t->y, t->w, t->h, true);
+                overlay_hygiene_tick(&hy);
+                ESP_LOGW(TAG, "OVERLAY_SELFTEST: echo '%s' in %lld ms",
+                         t->id, (esp_timer_get_time() - t0) / 1000);
+                vTaskDelay(pdMS_TO_TICKS(400));
+            }
 
             uint8_t *pristine = heap_caps_malloc(EPD_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             if (pristine) memcpy(pristine, base, EPD_BUF_BYTES);

@@ -13,6 +13,7 @@
 #include "battery.h"
 #include "button_report.h"
 #include "ota_report.h"
+#include "overlay.h"      /* OVERLAY_MAX_TARGETS (advertised capability cap) */
 #include "wifi_manager.h"
 
 #include "lwip/netdb.h"   /* getaddrinfo: IPv6-only server detection */
@@ -335,7 +336,11 @@ static void add_ota_capability(cJSON *o)
 static void add_overlay_capability(cJSON *o)
 {
     cJSON *ov = cJSON_AddObjectToObject(o, "overlay");
-    if (ov) cJSON_AddNumberToObject(ov, "schema", 1);
+    if (!ov) return;
+    cJSON_AddNumberToObject(ov, "schema", 1);
+    /* Additive: lets the server trim target lists per device instead of
+     * assuming a fixed cap (servers that ignore it keep sending <= 8). */
+    cJSON_AddNumberToObject(ov, "max_targets", OVERLAY_MAX_TARGETS);
 }
 #endif
 

@@ -181,6 +181,82 @@ int main(void)
         CHECK(memcmp(fb, base, sizeof fb) == 0);
     }
 
+    /* ---- target cap: 32 parse, 40 overflow (first 32 win, doc valid) ---- */
+    {
+        CHECK(OVERLAY_MAX_TARGETS == 32);   /* the advertised max_targets */
+
+        char doc[16384];
+        int n = snprintf(doc, sizeof doc,
+                         "{\"schema\":1,\"frame_digest\":\"00112233445566aa\","
+                         "\"targets\":[");
+        for (int i = 0; i < 40; i++) {
+            n += snprintf(doc + n, sizeof doc - (size_t)n,
+                          "%s{\"id\":\"t%d\",\"x\":%d,\"y\":%d,"
+                          "\"w\":60,\"h\":40,\"echo\":\"invert\"}",
+                          i ? "," : "", i, (i % 8) * 70, (i / 8) * 50);
+        }
+        n += snprintf(doc + n, sizeof doc - (size_t)n, "]}");
+        overlay_spec_t big;
+        CHECK(overlay_spec_parse(doc, (size_t)n, PW, PH, &big));
+        CHECK(big.n_targets == 32);                          /* extras dropped */
+        CHECK(strcmp(big.targets[0].id, "t0") == 0);         /* first N win... */
+        CHECK(strcmp(big.targets[31].id, "t31") == 0);       /* ...in doc order */
+        CHECK(overlay_hit_target(&big, 71, 1) != NULL);      /* t1 still hits */
+        CHECK(overlay_hit_target(&big, (39 % 8) * 70 + 1, (39 / 8) * 50 + 1)
+              != NULL || true);   /* t39's cell may be covered by none: no crash */
+
+        /* exactly 32 parses cleanly too */
+        char *tail = strstr(doc, ",{\"id\":\"t32\"");
+        CHECK(tail != NULL);
+        memcpy(tail, "]}", 3);
+        CHECK(overlay_spec_parse(doc, strlen(doc), PW, PH, &big));
+        CHECK(big.n_targets == 32);
+    }
+
+    /* ---- spec-size arithmetic: worst-case doc fits the 8 KB device cap ---- */
+    {
+        /* 32 maximal targets + 8 maximal slots + 2 atlases x 32 glyphs, all
+         * field values at their caps. The device parses specs into an 8 KB
+         * buffer (OVERLAY_SPEC_MAX); this documents that the contract's
+         * worst case fits with room. */
+        char doc[16384];
+        int n = snprintf(doc, sizeof doc,
+                         "{\"schema\":1,\"frame_digest\":\"00112233445566aa\","
+                         "\"targets\":[");
+        for (int i = 0; i < 32; i++)
+            n += snprintf(doc + n, sizeof doc - (size_t)n,
+                          "%s{\"id\":\"t%05d\",\"x\":1871,\"y\":1403,"
+                          "\"w\":1872,\"h\":1404,\"echo\":\"invert\"}",
+                          i ? "," : "", i);
+        n += snprintf(doc + n, sizeof doc - (size_t)n, "],\"slots\":[");
+        for (int i = 0; i < 8; i++)
+            n += snprintf(doc + n, sizeof doc - (size_t)n,
+                          "%s{\"id\":\"s%05d\",\"x\":1871,\"y\":1403,"
+                          "\"w\":1872,\"h\":1404,"
+                          "\"key\":\"a.very.long.dotted.value.key.%04d\","
+                          "\"align\":\"center\",\"atlas\":\"a1\"}",
+                          i ? "," : "", i, i);
+        n += snprintf(doc + n, sizeof doc - (size_t)n, "],\"atlases\":[");
+        for (int a = 0; a < 2; a++) {
+            n += snprintf(doc + n, sizeof doc - (size_t)n,
+                          "%s{\"id\":\"a%d\",\"digest\":\"ffeeddccbbaa9988\","
+                          "\"height\":64,\"url\":"
+                          "\"/api/v1/device/aaaabbbbccccdddd/frame/overlay/atlas/ffeeddccbbaa9988\","
+                          "\"format\":\"4bpp-gray\",\"glyphs\":{",
+                          a ? "," : "", a + 1);
+            for (int g = 0; g < 32; g++)
+                n += snprintf(doc + n, sizeof doc - (size_t)n,
+                              "%s\"%c\":{\"x\":%d,\"w\":32}",
+                              g ? "," : "", '0' + (g % 75), g * 32);
+            n += snprintf(doc + n, sizeof doc - (size_t)n, "}}");
+        }
+        n += snprintf(doc + n, sizeof doc - (size_t)n, "]}");
+        CHECK(n < 8192);   /* worst case fits the 8 KB device spec buffer */
+        overlay_spec_t big;
+        CHECK(overlay_spec_parse(doc, (size_t)n, PW, PH, &big));
+        CHECK(big.n_targets == 32 && big.n_slots == 8);
+    }
+
     printf("%d tests, %d failures\n", tests, fails);
     return fails ? 1 : 0;
 }

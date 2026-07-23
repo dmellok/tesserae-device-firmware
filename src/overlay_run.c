@@ -181,11 +181,20 @@ static bool load_atlases(void)
     return true;
 }
 
-/* ---------- rect patches (offline wake echo) ----------
- * <frame_digest>.pat: for each target then slot rect, the byte-aligned
- * window rows (x widened to 4 px) copied straight from the framebuffer, in
- * spec order. Restores enough of the frame to invert/redraw declared rects
- * without the full image. */
+/* ---------- rect patches (offline slot redraw) ----------
+ * <frame_digest>.pat: for each SLOT rect only, the byte-aligned window rows
+ * (x widened to 4 px) copied straight from the framebuffer, in spec order.
+ *
+ * Targets are deliberately NOT patched (cap-raise task, 2026-07-24): a dense
+ * grid of 32 whole-cell targets would make the patch file approach the full
+ * frame size (megabytes on the E1003, seconds of SD write per paint).
+ * Invert needs no stored pixels while a frame copy exists in RAM -- it is
+ * self-inverse and the next full paint restores it anyway. The trade-off,
+ * FLAGGED in the task report: after a deep-sleep wake there is no pixel
+ * source for target rects on this hardware (the glass is not readable and
+ * the IT8951's DRAM loses power in sleep), so cold-wake taps skip the local
+ * echo and fall through to today's server round trip. Slots stay patched
+ * (max 8, small rects) so status-borne values can still redraw offline. */
 
 #define EPD_BPP_NUM (epd_active_driver()->info.bpp)
 
@@ -200,16 +209,11 @@ static void rect_window(int x, int w, int *bx0, int *bx1)
 static size_t patch_size(void)
 {
     size_t total = 0;
-    for (int i = 0; i < s_spec.n_targets + s_spec.n_slots; i++) {
-        const overlay_target_t *t = (i < s_spec.n_targets)
-            ? &s_spec.targets[i] : NULL;
-        const overlay_slot_t *sl = t ? NULL : &s_spec.slots[i - s_spec.n_targets];
-        int x = t ? t->x : sl->x, y = t ? t->y : sl->y;
-        int w = t ? t->w : sl->w, h = t ? t->h : sl->h;
-        (void)y;
+    for (int i = 0; i < s_spec.n_slots; i++) {
+        const overlay_slot_t *sl = &s_spec.slots[i];
         int b0, b1;
-        rect_window(x, w, &b0, &b1);
-        total += (size_t)(b1 - b0) * h;
+        rect_window(sl->x, sl->w, &b0, &b1);
+        total += (size_t)(b1 - b0) * sl->h;
     }
     return total;
 }
@@ -218,15 +222,11 @@ static void patch_copy(uint8_t *dst_file, const uint8_t *fb, bool to_file)
 {
     const int pitch = EPD_BUF_BYTES / EPD_HEIGHT;
     size_t off = 0;
-    for (int i = 0; i < s_spec.n_targets + s_spec.n_slots; i++) {
-        const overlay_target_t *t = (i < s_spec.n_targets)
-            ? &s_spec.targets[i] : NULL;
-        const overlay_slot_t *sl = t ? NULL : &s_spec.slots[i - s_spec.n_targets];
-        int x = t ? t->x : sl->x, y = t ? t->y : sl->y;
-        int w = t ? t->w : sl->w, h = t ? t->h : sl->h;
+    for (int i = 0; i < s_spec.n_slots; i++) {
+        const overlay_slot_t *sl = &s_spec.slots[i];
         int b0, b1;
-        rect_window(x, w, &b0, &b1);
-        for (int yy = y; yy < y + h; yy++) {
+        rect_window(sl->x, sl->w, &b0, &b1);
+        for (int yy = sl->y; yy < sl->y + sl->h; yy++) {
             uint8_t *fbp = (uint8_t *)fb + (size_t)yy * pitch + b0;
             if (to_file) memcpy(dst_file + off, fbp, b1 - b0);
             else         memcpy(fbp, dst_file + off, b1 - b0);
@@ -336,7 +336,7 @@ void overlay_boot(void)
     }
     s_sparse = true;
     s_have_spec = true;
-    ESP_LOGI(TAG, "overlay restored from SD for %s (offline echo ready)", digest);
+    ESP_LOGI(TAG, "overlay restored from SD for %s (slot patches only)", digest);
 }
 
 /* ---------- echo + slots ---------- */
@@ -363,6 +363,10 @@ bool overlay_try_echo(int x, int y)
     if (!s_have_spec || !s_work) return false;
     if (!overlay_spec_matches(&s_spec, rest_config_get()->last_frame_etag))
         return false;   /* staleness rule */
+    /* Sparse (cold-wake) buffers only carry slot patches: target rects have
+     * no pixel source, so a true invert is impossible -- skip the echo and
+     * let the normal dispatch provide the feedback. See the patch comment. */
+    if (s_sparse) return false;
 
     const overlay_target_t *t = overlay_hit_target(&s_spec, x, y);
     if (!t) return false;
