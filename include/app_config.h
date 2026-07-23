@@ -64,6 +64,25 @@
 #define TESSERAE_OTA_MIN_BATTERY_MV 3600
 #endif
 
+/* Front-button factory reset: hold the refresh button (Key1) this long to
+ * erase NVS -- WiFi creds, server config, token, ETag -- and reboot into the
+ * setup portal. The press that starts the hold doubles as a normal wake, so
+ * an early release is just a refresh. Registration is not lost server-side:
+ * the next onboarding self-heals via the MAC-matched discover. */
+#define FACTORY_RESET_HOLD_S 20
+
+/* Low-battery goodbye: below GOODBYE mV the device paints a "battery empty"
+ * message once and hibernates (hourly recheck; buttons still wake). It
+ * resumes above RESUME mV -- the gap is hysteresis so a recovering cell
+ * doesn't flap -- and forces a fresh frame to replace the goodbye. Readings
+ * under PRESENT_MIN mean no/unknown cell (mains boards report 0) and never
+ * trigger. GOODBYE sits below the OTA floor above: a cell too flat to flash
+ * is not necessarily too flat to keep painting frames for weeks. */
+#define BATTERY_GOODBYE_MV        3300
+#define BATTERY_RESUME_MV         3450
+#define BATTERY_PRESENT_MIN_MV    2500
+#define BATTERY_GOODBYE_RECHECK_S 3600
+
 /* Human-readable board model, used to build the default device id
  * "<model>_<mac-suffix>" (e.g. reTerminal_E1004_859878). Each board header
  * sets its own; this is just a fallback so the file compiles standalone. */

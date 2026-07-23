@@ -29,6 +29,7 @@
 #include "freertos/task.h"
 
 #include "app_config.h"
+#include "nvs_flash.h"      /* factory-reset erase (20 s refresh-button hold) */
 #include "buttons.h"        /* front-button wake/report (header-only; no-op if none) */
 #include "touch_gt911.h"    /* GT911 touch wake (guarded by BOARD_HAS_TOUCH) */
 #include "touch_queue.h"    /* RTC replay queue for unsent touches (guarded) */
@@ -451,6 +452,97 @@ static void ota_report_install_failure(const ota_manifest_t *m,
 }
 #endif
 
+/* ---------- low-battery goodbye ---------- */
+
+/* Goodbye-on-screen flag lives in RTC RAM so it survives the hibernate sleeps;
+ * a power loss or RESET repaints the goodbye once if the cell is still flat. */
+RTC_DATA_ATTR static uint8_t s_goodbye_on_screen;
+
+/* Set when a wake finds the battery recovered while the goodbye is still on
+ * the panel: the cycle must drop the cached ETag so the server sends a full
+ * frame (a 304 would leave the goodbye up forever). */
+static bool s_battery_recovered;
+
+/* Battery-empty gate, run before any radio work. Returns only when the cell is
+ * healthy, absent, or unknown. On a flat cell: paint the goodbye once, then
+ * hibernate on an hourly recheck (front buttons still wake early, so plugging
+ * in a charger and pressing a key resumes without waiting out the hour). */
+static void battery_goodbye_check(bool settings_mode)
+{
+    if (settings_mode) return;   /* never lock the operator out of settings */
+
+    int mv = battery_read_mv();
+    if (mv < BATTERY_PRESENT_MIN_MV) return;   /* no/unknown cell (0 on mains) */
+
+    if (mv >= (s_goodbye_on_screen ? BATTERY_RESUME_MV : BATTERY_GOODBYE_MV)) {
+        if (s_goodbye_on_screen) {
+            ESP_LOGW(TAG, "battery recovered (%d mV); resuming with a fresh frame", mv);
+            s_goodbye_on_screen = 0;
+            s_battery_recovered = true;
+        }
+        return;
+    }
+
+    if (!s_goodbye_on_screen) {
+        ESP_LOGW(TAG, "battery empty (%d mV); painting goodbye and hibernating", mv);
+        splash_show_message("Battery empty", "Recharge me to wake this display");
+        s_goodbye_on_screen = 1;
+    } else {
+        ESP_LOGW(TAG, "battery still empty (%d mV); back to hibernation", mv);
+    }
+    buttons_arm_ext1();
+    esp_sleep_enable_timer_wakeup((uint64_t)BATTERY_GOODBYE_RECHECK_S * 1000000ULL);
+    esp_deep_sleep_start();
+    /* not reached */
+}
+
+/* ---------- front-button factory reset ---------- */
+
+/* Hold the refresh button (Key1) for FACTORY_RESET_HOLD_S to erase NVS and
+ * reboot into the setup portal. The initiating press is an ordinary ext1 wake
+ * (or the button can be held through a RESET/power-on), so this runs on every
+ * boot but costs one GPIO read when the button is already up. It must run
+ * BEFORE wifi_manager_init() so the erase cannot race the connect path's own
+ * NVS writes (fast-connect hints, creds). Held through the reboot, the check
+ * simply re-arms: NVS is already blank, and the portal opens on release. */
+#if defined(BOARD_HAS_BUTTONS) && defined(BOARD_BTN_REFRESH_PIN)
+static void maybe_factory_reset_hold(button_id_t woke_btn, bool first_boot)
+{
+    if (woke_btn != BTN_REFRESH && !first_boot) return;
+
+    buttons_poll_init();
+    vTaskDelay(pdMS_TO_TICKS(10));   /* pull-up settle before the first read */
+
+    int held_ms = 0;
+    while (gpio_get_level((gpio_num_t)BOARD_BTN_REFRESH_PIN) == 0) {
+        if (held_ms == 0) {
+            ESP_LOGW(TAG, "refresh button held: factory reset in %d s (release to cancel)",
+                     FACTORY_RESET_HOLD_S);
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+        held_ms += 100;
+        if (held_ms % 5000 == 0 && held_ms < FACTORY_RESET_HOLD_S * 1000) {
+            ESP_LOGW(TAG, "still holding: factory reset in %d s",
+                     FACTORY_RESET_HOLD_S - held_ms / 1000);
+        }
+        if (held_ms >= FACTORY_RESET_HOLD_S * 1000) {
+            ESP_LOGW(TAG, "factory reset: erasing NVS (creds + config) and rebooting into setup");
+            nvs_flash_erase();   /* NVS not yet initialised here, so this is legal */
+            esp_restart();
+            /* not reached */
+        }
+    }
+    if (held_ms) {
+        ESP_LOGI(TAG, "released after %d ms; continuing as a normal press", held_ms);
+    }
+}
+#else
+static void maybe_factory_reset_hold(button_id_t woke_btn, bool first_boot)
+{
+    (void)woke_btn; (void)first_boot;
+}
+#endif
+
 void app_main(void)
 {
     esp_reset_reason_t reset_reason = esp_reset_reason();
@@ -516,8 +608,19 @@ void app_main(void)
     while (1) vTaskDelay(pdMS_TO_TICKS(1000));
 #endif
 
+    /* Battery-empty gate first (a flat cell should not pay for radio bring-up
+     * or a portal), then the factory-reset hold -- both before any NVS/WiFi
+     * init so the erase path is race-free. */
+    battery_goodbye_check(settings_mode);
+    maybe_factory_reset_hold(woke_btn, first_boot);
+
     ESP_ERROR_CHECK(wifi_manager_init());
     rest_config_load();
+
+    /* Recovered from the battery goodbye this wake: the goodbye is still on
+     * the panel, so drop the cached ETag -- the server must send a full frame
+     * (a 304 would leave the goodbye up). */
+    if (s_battery_recovered) rest_config_set_frame_etag("");
 
     /* Stay awake after the paint for further interaction? Set at the radio-down
      * decision: a touch wake with touch_linger_s, or a button wake with
