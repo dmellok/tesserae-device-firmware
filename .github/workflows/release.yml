@@ -200,12 +200,27 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
+          # Retry each object put: the Cloudflare API occasionally 502s a
+          # single request (killed the v1.6.5 publish), and with parts the
+          # job now uploads ~45 objects -- any one flake must not fail the
+          # run. Re-puts are idempotent (fixed per-version keys). The catalog
+          # goes LAST, only after every object it references is in place.
+          put() {
+            for attempt in 1 2 3 4 5; do
+              if wrangler r2 object put "$R2_BUCKET/$2" --file "$1" --remote ${3:+--content-type "$3"}; then
+                return 0
+              fi
+              echo "::warning::put $2 failed (attempt $attempt); backing off"
+              sleep $(( attempt * 15 ))
+            done
+            echo "::error::put $2 failed after 5 attempts"
+            return 1
+          }
           while IFS=$'\t' read -r local key; do
             echo "put $key"
-            wrangler r2 object put "$R2_BUCKET/$key" --file "$local" --remote
+            put "$local" "$key"
           done < upload_manifest.tsv
-          wrangler r2 object put "$R2_BUCKET/catalog.json" \
-            --file catalog.json --remote --content-type application/json
+          put catalog.json catalog.json application/json
 
   # Detached OTA signing via the Tesserae OTA signing Worker. Per device kind:
   # POST the app-only .bin to the Worker, which signs it with the active
