@@ -33,3 +33,7 @@ secrets.h.*
 
 # Release artifacts staged by tools/release.sh; final copies live in GitHub Releases
 /release/
+
+# macOS Finder duplicate artifacts ("name 2.ext") -- never track these
+* 2.*
+* 2
