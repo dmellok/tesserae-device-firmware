@@ -73,3 +73,7 @@ CONFIG_PM_ENABLE=n
 # resolution and v6 connects then work through the stock lwIP/esp-tls path
 # whenever that is what a hostname resolves to. IPv4 behaviour is unchanged.
 CONFIG_LWIP_IPV6_AUTOCONFIG=y
+
+# --- FATFS: long filenames on heap (the SD deck cache stores frames as
+# <16-hex-digest>.bin, which exceeds 8.3; without LFN the rename fails) ---
+CONFIG_FATFS_LFN_HEAP=y

@@ -243,13 +243,28 @@ static const uint8_t LUT_BB_4G[42] = {   /* R24 */
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 static const uint8_t BTST_4G[] = {0x17, 0x17, 0x28, 0x17};
-static const uint8_t PSR_4G[]  = {0xbf};        /* KW mode, LUTs from register */
+/* 0x3F = the proven mono 0x1F plus the REG bit (LUTs from registers). The GD
+ * demo's 0xBF also sets PSR bit7 -- a RES[1:0] resolution-select bit on this
+ * controller -- and produced NO refresh on the E1001 bench panel (2026-07-23);
+ * bb_epaper and GxEPD2_4G both drive this glass with 0x3F. */
+static const uint8_t PSR_4G[]  = {0x3f};
 static const uint8_t PLL_4G[]  = {0x06};        /* 50 Hz */
 static const uint8_t VDCS_4G[] = {0x12};
 static const uint8_t CDI_4G[]  = {0x10, 0x07};
 
+/* Plane encoding for the GEN2 built-in OTP 4-gray waveform, mapped
+ * EMPIRICALLY on a production E1001 (bench 2026-07-23; the GD register-LUT
+ * table does NOT apply to the OTP waveform -- ends were swapped):
+ *
+ *        white  light-gray  dark-gray  black         (g = 3    2    1    0)
+ *   0x10:  0        1           0        1           (bit = (g & 1) ^ 1)
+ *   0x13:  0        0           1        1           (bit = (g >> 1) ^ 1)
+ */
+#define GRAY_P1_BIT(g) (((g) & 1) ^ 1)          /* DTM1 (0x10) */
+#define GRAY_P2_BIT(g) ((((g) >> 1) & 1) ^ 1)   /* DTM2 (0x13) */
+
 /* Stream one 1bpp plane derived from the 2bpp frame: plane bit =
- * (g >> shift) & 1, 8 px/byte MSB-first, row by row. */
+ * ((g >> shift) & 1) ^ 1, 8 px/byte MSB-first, row by row. */
 static void gray_send_plane(uint8_t dtm_cmd, const uint8_t *image, int shift)
 {
     uint8_t row[EPD_WIDTH / 8];
@@ -264,7 +279,7 @@ static void gray_send_plane(uint8_t dtm_cmd, const uint8_t *image, int shift)
                 uint8_t v = *in++;
                 for (int p = 0; p < 4; p++) {
                     uint8_t g = (uint8_t)((v >> (6 - 2 * p)) & 0x3);
-                    o = (uint8_t)((o << 1) | ((g >> shift) & 1));
+                    o = (uint8_t)((o << 1) | (((g >> shift) & 1) ^ 1));
                 }
             }
             row[b] = o;
@@ -291,7 +306,31 @@ static void mono_init(void)
 #endif
     hw_reset();
 
-#ifdef EPD_GRAY4
+#if defined(EPD_GRAY4) && !defined(EPD_GRAY4_REG_LUTS)
+    /* GEN2 path (bb_epaper epd75_gray_init; TRMNL "a" profile): newer batches
+     * of this glass carry a BUILT-IN OTP 4-gray waveform, selected by fixing
+     * the temperature-sensor reading (CCSET TSFIX + TSSET 0x5F). No register
+     * LUTs at all -- PSR stays 0x1F exactly like the proven mono init. The
+     * register-LUT path (older glass) remains under -DEPD_GRAY4_REG_LUTS.
+     * Bench note 2026-07-23: the register-LUT path (PSR 0xBF and 0x3F) never
+     * started a refresh on a production E1001; this path is the one to trust
+     * on this hardware until a batch says otherwise. */
+    static const uint8_t CDI_G2[]  = {0x90, 0x07};
+    static const uint8_t BTST_G2[] = {0x27, 0x27, 0x18, 0x17};
+    static const uint8_t CCSET_V[] = {0x02};   /* TSFIX: use TSSET value */
+    static const uint8_t TSSET_V[] = {0x5f};   /* selects the OTP 4-gray waveform */
+
+    cmd_data(PSR,  PSR_V,  sizeof PSR_V);      /* 0x1F: KW, OTP LUTs */
+    cmd_data(CDI,  CDI_G2, sizeof CDI_G2);
+    cmd_data(PON,  NULL, 0);
+    wait_idle();
+    cmd_data(0x06, BTST_G2, sizeof BTST_G2);
+    cmd_data(0xe0, CCSET_V, sizeof CCSET_V);
+    cmd_data(0xe5, TSSET_V, sizeof TSSET_V);
+    cmd_data(TRES, TRES_V,  sizeof TRES_V);    /* proven on this glass (mono) */
+    cmd_data(0x15, DSPI_V,  sizeof DSPI_V);
+    ESP_LOGI(TAG, "init complete (4-gray GEN2 built-in waveform)");
+#elif defined(EPD_GRAY4)
     cmd_data(0x06, BTST_4G, sizeof BTST_4G);   /* booster soft start */
     cmd_data(PWR,  PWR_V,   sizeof PWR_V);
     cmd_data(PON,  NULL, 0);
@@ -327,7 +366,14 @@ static void mono_init(void)
 /* Refresh an already-loaded frame, then power off. */
 static void trigger_refresh(void)
 {
+#ifdef EPD_GRAY4
+    /* bb_epaper sends DRF with one 0x00 parameter byte in 4-gray mode. */
+    static const uint8_t DRF_V[] = {0x00};
+    cmd_data(DRF, DRF_V, sizeof DRF_V);
+    vTaskDelay(pdMS_TO_TICKS(1));   /* >=200 us before polling BUSY */
+#else
     cmd_data(DRF, NULL, 0);
+#endif
     wait_idle();
     cmd_data(POF, NULL, 0);
     wait_idle();
@@ -338,8 +384,8 @@ static void mono_display(const uint8_t *image)
 {
 #ifdef EPD_GRAY4
     /* Both planes, derived on the fly from the 2bpp buffer (see table). */
-    gray_send_plane(0x10, image, 1);   /* DTM1: bit = (g >> 1) & 1 */
-    gray_send_plane(DTM2, image, 0);   /* DTM2: bit =  g       & 1 */
+    gray_send_plane(0x10, image, 0);   /* DTM1: bit = (g & 1) ^ 1  */
+    gray_send_plane(DTM2, image, 1);   /* DTM2: bit = (g >> 1) ^ 1 */
     trigger_refresh();
 #else
     gpio_set_level(EPD_PIN_CS, 0);
@@ -355,8 +401,8 @@ static void mono_clear(uint8_t color)
 #ifdef EPD_GRAY4
     /* Solid gray level: both planes carry that level's bit pattern. */
     uint8_t g  = (uint8_t)(color & 0x3);
-    uint8_t p1 = ((g >> 1) & 1) ? 0xFF : 0x00;
-    uint8_t p2 = (g & 1)        ? 0xFF : 0x00;
+    uint8_t p1 = GRAY_P1_BIT(g) ? 0xFF : 0x00;
+    uint8_t p2 = GRAY_P2_BIT(g) ? 0xFF : 0x00;
     gpio_set_level(EPD_PIN_CS, 0);
     send_cmd(0x10);
     gray_send_solid_rows(p1, EPD_HEIGHT);
@@ -391,13 +437,13 @@ static void mono_show_color_bars(void)
     gpio_set_level(EPD_PIN_CS, 0);
     send_cmd(0x10);
     for (int g = 0; g < 4; g++)
-        gray_send_solid_rows(((g >> 1) & 1) ? 0xFF : 0x00, BAND_H);
+        gray_send_solid_rows(GRAY_P1_BIT(g) ? 0xFF : 0x00, BAND_H);
     gpio_set_level(EPD_PIN_CS, 1);
 
     gpio_set_level(EPD_PIN_CS, 0);
     send_cmd(DTM2);
     for (int g = 0; g < 4; g++)
-        gray_send_solid_rows((g & 1) ? 0xFF : 0x00, BAND_H);
+        gray_send_solid_rows(GRAY_P2_BIT(g) ? 0xFF : 0x00, BAND_H);
     gpio_set_level(EPD_PIN_CS, 1);
 
     trigger_refresh();

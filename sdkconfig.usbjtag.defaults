@@ -60,3 +60,7 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # --- Power ---
 CONFIG_PM_ENABLE=n
+
+# --- FATFS: long filenames on heap (the SD deck cache stores frames as
+# <16-hex-digest>.bin, which exceeds 8.3; without LFN the rename fails) ---
+CONFIG_FATFS_LFN_HEAP=y

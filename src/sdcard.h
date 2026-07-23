@@ -41,6 +41,13 @@
 
 #if defined(TESSERAE_SD_SLOT)
 
+/* Park the SD lines FIRST THING at boot, before anything touches the shared
+ * SPI bus: CS driven high (deselected) and the slot rail off. With a card
+ * inserted and CS left floating, the card sits half-selected on the panel's
+ * bus -- bench E1001 (2026-07-23): panel refreshes ran 2.5x slow and moved no
+ * ink until the card was pulled. Harmless no-op on dedicated-pin boards. */
+void sdcard_quiesce(void);
+
 /* Probe + mount the card (idempotent). False when no card is present, the
  * mount fails, or FATFS is unreadable -- callers just skip the cache. */
 bool sdcard_mount(void);
@@ -57,6 +64,7 @@ uint64_t sdcard_free_bytes(void);
 
 #else /* no slot wired: compile the feature out cold */
 
+static inline void     sdcard_quiesce(void)    { }
 static inline bool     sdcard_mount(void)      { return false; }
 static inline bool     sdcard_mounted(void)    { return false; }
 static inline void     sdcard_unmount(void)    { }

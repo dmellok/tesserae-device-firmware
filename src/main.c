@@ -553,6 +553,11 @@ static void maybe_factory_reset_hold(button_id_t woke_btn, bool first_boot)
 
 void app_main(void)
 {
+    /* Park the SD card's chip-select before ANY code touches the shared SPI
+     * bus (selftests included) -- a floating CS with a card fitted disturbs
+     * panel refreshes. No-op on boards without a slot. See sdcard.h. */
+    sdcard_quiesce();
+
     esp_reset_reason_t reset_reason = esp_reset_reason();
     bool settings_mode = detect_settings_mode(reset_reason);
     /* A "first boot" (power-on, RESET button, or the reboot right after a portal

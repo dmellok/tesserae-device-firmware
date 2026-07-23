@@ -9,6 +9,7 @@
 #include "esp_vfs_fat.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "pmic.h"    /* PhotoPainter: the TF slot rides the AXP2101 rails */
 #include "sdmmc_cmd.h"
 
 #if defined(SD_USE_SDMMC)
@@ -24,9 +25,41 @@ static sdmmc_card_t *s_card;
 
 bool sdcard_mounted(void) { return s_card != NULL; }
 
+void sdcard_quiesce(void)
+{
+#if !defined(SD_USE_SDMMC)
+    /* Shared bus: deselect the card (CS high) and cut the slot rail so a
+     * fitted card can never sit half-selected on the panel's SPI lines. The
+     * sdspi driver re-owns CS on mount; mount re-raises the rail. */
+    gpio_config_t out = {
+        .pin_bit_mask = (1ULL << SD_PIN_CS)
+#ifdef SD_PIN_EN
+                      | (1ULL << SD_PIN_EN)
+#endif
+        ,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    gpio_config(&out);
+    gpio_set_level((gpio_num_t)SD_PIN_CS, 1);
+#ifdef SD_PIN_EN
+    gpio_set_level((gpio_num_t)SD_PIN_EN, 0);
+#endif
+#endif /* !SD_USE_SDMMC */
+}
+
 bool sdcard_mount(void)
 {
     if (s_card) return true;
+
+#ifdef BOARD_HAS_PMIC
+    /* PhotoPainter: the TF slot is on the AXP2101's ALDO rail group, which
+     * may still be down this early in the wake (the panel driver raises it
+     * much later). Idempotent + cheap on repeat calls; no-op on non-PMIC. */
+    pmic_init();
+    pmic_rails_set(true);
+    vTaskDelay(pdMS_TO_TICKS(10));   /* rail settle before the probe */
+#endif
 
 #ifdef SD_PIN_DET
     /* Card-detect is active low. No card -> skip the whole probe (fast path
