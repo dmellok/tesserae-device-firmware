@@ -85,6 +85,18 @@ void deck_boot(void)
     s_have_deck = true;
     ESP_LOGI(TAG, "deck '%s' v%s ready (%d pages), page '%s'",
              c->deck_id, s_manifest->version, s_manifest->n_pages, c->deck_page);
+    /* Nav-graph visibility: which inputs actually do anything locally. */
+    for (int i = 0; i < s_manifest->n_pages; i++) {
+        const deck_page_t *p = &s_manifest->pages[i];
+        for (int j = 0; j < p->n_links; j++) {
+            const deck_link_t *l = &p->links[j];
+            ESP_LOGI(TAG, "  page '%s' link %d: %s%s -> '%s'", p->page_id, j,
+                     l->button[0] ? l->button : "zone",
+                     l->has_zone ? " (zone)" : "", l->target_page_id);
+        }
+        if (p->n_links == 0)
+            ESP_LOGI(TAG, "  page '%s': NO links (dead end)", p->page_id);
+    }
 }
 
 /* Serve `target` from the cache if it is cached, verified, sized for THIS

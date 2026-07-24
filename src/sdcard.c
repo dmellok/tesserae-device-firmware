@@ -105,6 +105,60 @@ bool sdcard_mount(void)
     slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
     err = esp_vfs_fat_sdmmc_mount(SDCARD_MOUNT_POINT, &host, &slot, &mnt, &s_card);
 #else
+    /* Fellow SPI devices must stay quiet while the card talks: park every
+     * panel chip-select deselected. On the E1003 the IT8951 also shares the
+     * READ line (MISO 8), and SD access requires it POWERED AND BOOTED --
+     * every other state corrupts the bus (bench 2026-07-24: unpowered = ESD
+     * clamp kills even card init; RST floating = jabber; RST held low =
+     * line drag, ~123 ms/block). Boot it cleanly here with CS parked high;
+     * the panel driver then SOFT-ATTACHES to the already-booted chip rather
+     * than power-cycling it (power-cycling a live controller wedges it; a
+     * GPIO "off" never truly discharges it -- see it8951_gray.c). */
+    {
+        uint64_t park_mask = 0;
+#ifdef EPD_PIN_CS
+        park_mask |= 1ULL << EPD_PIN_CS;
+#endif
+#ifdef EPD_PIN_CS_M
+        park_mask |= 1ULL << EPD_PIN_CS_M;
+#endif
+#ifdef EPD_PIN_CS_S
+        park_mask |= 1ULL << EPD_PIN_CS_S;
+#endif
+#ifdef EPD_PIN_VCC_EN
+        park_mask |= (1ULL << EPD_PIN_EN) | (1ULL << EPD_PIN_VCC_EN)
+                   | (1ULL << EPD_PIN_RST);
+#endif
+        if (park_mask) {
+            gpio_config_t park = {
+                .pin_bit_mask = park_mask,
+                .mode = GPIO_MODE_OUTPUT,
+                .pull_up_en = GPIO_PULLUP_ENABLE,
+            };
+            gpio_config(&park);
+#ifdef EPD_PIN_CS
+            gpio_set_level((gpio_num_t)EPD_PIN_CS, 1);
+#endif
+#ifdef EPD_PIN_CS_M
+            gpio_set_level((gpio_num_t)EPD_PIN_CS_M, 1);
+#endif
+#ifdef EPD_PIN_CS_S
+            gpio_set_level((gpio_num_t)EPD_PIN_CS_S, 1);
+#endif
+#ifdef EPD_PIN_VCC_EN
+            gpio_set_level((gpio_num_t)EPD_PIN_EN, 1);
+            gpio_set_level((gpio_num_t)EPD_PIN_VCC_EN, 1);
+            vTaskDelay(pdMS_TO_TICKS(20));
+            gpio_set_level((gpio_num_t)EPD_PIN_RST, 1);
+            vTaskDelay(pdMS_TO_TICKS(10));
+            gpio_set_level((gpio_num_t)EPD_PIN_RST, 0);
+            vTaskDelay(pdMS_TO_TICKS(10));
+            gpio_set_level((gpio_num_t)EPD_PIN_RST, 1);
+            vTaskDelay(pdMS_TO_TICKS(200));   /* controller boot to idle */
+#endif
+        }
+    }
+
     /* Shared panel bus: initialise it with the panel's own geometry so the
      * panel driver's later spi_bus_initialize() (which tolerates
      * ESP_ERR_INVALID_STATE) inherits a bus that fits full frames. */

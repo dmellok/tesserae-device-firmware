@@ -26,8 +26,10 @@
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_sleep.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -62,6 +64,8 @@ static const char *TAG = "epd_it8951";
 static spi_device_handle_t s_spi;
 static bool     s_port_inited = false;
 static uint32_t s_img_buf_addr;
+/* Wedge-recovery deep-sleep budget (see it8951_init); cleared on success. */
+static RTC_DATA_ATTR uint8_t s_recovery_sleeps;
 
 /* ---------- SPI framing (16-bit words, MSB-first) ---------- */
 
@@ -162,12 +166,21 @@ static void wait_display_done(void)
 
 static void hw_reset_and_power(void)
 {
-    /* Power-cycle the two rails, then pulse RST. */
+    /* TRUE power-cycle. Holding CS/RST HIGH during the off-window kept the
+     * controller parasitically alive through its input ESD diodes, so a
+     * wedged SPI state machine (e.g. a reset landing mid-16-bit-word)
+     * SURVIVED every "power cycle" -- only deep sleep, which isolates all
+     * pins, cleared it (bench 2026-07-24: cold-boot HRDY wedge persisted
+     * through 100 ms / 250 ms / 1 s rail-offs). Drive every line we own LOW
+     * while the rails are down so the chip actually discharges. */
+    gpio_set_level(EPD_PIN_CS, 0);
+    gpio_set_level(EPD_PIN_RST, 0);
     gpio_set_level(EPD_PIN_EN, 0);
     gpio_set_level(EPD_PIN_VCC_EN, 0);
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(500));
     gpio_set_level(EPD_PIN_EN, 1);
     gpio_set_level(EPD_PIN_VCC_EN, 1);
+    gpio_set_level(EPD_PIN_CS, 1);
     vTaskDelay(pdMS_TO_TICKS(50));
 
     gpio_set_level(EPD_PIN_RST, 1); vTaskDelay(pdMS_TO_TICKS(50));
@@ -232,14 +245,77 @@ static esp_err_t it8951_port_init(void)
 
 static void it8951_init(void)
 {
-    hw_reset_and_power();
-
-    write_cmd(SYS_RUN);
-
-    /* GET_DEV_INFO -> panelW, panelH, imgBufAddrL, imgBufAddrH, fw[8], lut[8]. */
+    /* Init with verification + one long-off retry: a cold boot can leave the
+     * controller wedged (HRDY stuck; bench 2026-07-24, likely a reset landing
+     * mid-SPI-word). GET_DEV_INFO doubles as the health check -- a wedged
+     * chip returns zeros/garbage instead of the panel geometry. */
     uint16_t info[20] = {0};
-    write_cmd(GET_DEV_INFO);
-    read_ndata(info, 20);
+
+    /* Soft attach first: if the controller is already powered and idle
+     * (HRDY high -- e.g. the SD layer booted it this wake, or a prior init),
+     * DO NOT power-cycle it. Power-cycling a live controller is what wedges
+     * it: our GPIO "off" never truly discharges the chip (SPI lines keep it
+     * parasitically alive through the ESD diodes), so it comes back with a
+     * corrupted state machine (bench 2026-07-24). Verify with GET_DEV_INFO;
+     * only an unresponsive chip proceeds to the hard power-up ladder. */
+    if (gpio_get_level(EPD_PIN_BUSY) == 1) {
+        write_cmd(SYS_RUN);
+        write_cmd(GET_DEV_INFO);
+        read_ndata(info, 20);
+        if (info[0] == EPD_WIDTH && info[1] == EPD_HEIGHT) {
+            s_recovery_sleeps = 0;
+            s_img_buf_addr = ((uint32_t)info[3] << 16) | info[2];
+            write_cmd(VCOM); write_data(0x0001); write_data(EPD_VCOM_MV);
+            write_reg(REG_I80CPCR, 0x0001);
+            write_cmd(CMD_TEMP); write_data(0x0001); write_data(14);
+            ESP_LOGI(TAG, "init complete (soft attach): dev %ux%u, img_buf=0x%08x",
+                     info[0], info[1], (unsigned)s_img_buf_addr);
+            return;
+        }
+        ESP_LOGW(TAG, "soft attach failed (dev %ux%u); hard power-up",
+                 info[0], info[1]);
+    }
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) {
+            ESP_LOGW(TAG, "controller unresponsive; long power-off retry");
+            gpio_set_level(EPD_PIN_CS, 0);    /* no ESD back-feed: all lines low */
+            gpio_set_level(EPD_PIN_RST, 0);
+            gpio_set_level(EPD_PIN_EN, 0);
+            gpio_set_level(EPD_PIN_VCC_EN, 0);
+            vTaskDelay(pdMS_TO_TICKS(1500));
+        }
+        hw_reset_and_power();
+        write_cmd(SYS_RUN);
+        memset(info, 0, sizeof info);
+        write_cmd(GET_DEV_INFO);
+        read_ndata(info, 20);
+        if (info[0] == EPD_WIDTH && info[1] == EPD_HEIGHT) {
+            s_recovery_sleeps = 0;   /* healthy: reset the recovery budget */
+            break;
+        }
+    }
+    if (info[0] != EPD_WIDTH || info[1] != EPD_HEIGHT) {
+        /* Last resort: the ONLY discharge proven to clear a wedged controller
+         * is deep sleep -- the ESP isolates every pin, killing the parasitic
+         * ESD-diode feed that keeps the chip alive through our GPIO "power
+         * cycles" (SPI-owned SCLK/MOSI and the SD MISO pull-up still back-
+         * feed even with CS/RST/rails low). Sleep 1 s and retry on the clean
+         * wake path; the RTC counter stops a dead panel from boot-looping. */
+        if (s_recovery_sleeps < 2) {
+            s_recovery_sleeps++;
+            ESP_LOGW(TAG, "controller wedged (dev %ux%u); 1 s isolation deep-sleep "
+                     "(recovery %u/2)", info[0], info[1], s_recovery_sleeps);
+            gpio_set_level(EPD_PIN_CS, 0);
+            gpio_set_level(EPD_PIN_RST, 0);
+            gpio_set_level(EPD_PIN_EN, 0);
+            gpio_set_level(EPD_PIN_VCC_EN, 0);
+            esp_deep_sleep(1000000);
+            /* not reached */
+        }
+        ESP_LOGE(TAG, "controller failed init verify (dev %ux%u); paints may fail",
+                 info[0], info[1]);
+    }
     s_img_buf_addr = ((uint32_t)info[3] << 16) | info[2];
 
     /* Tail of FastEPD's bbepInitIT8951: set VCOM, enable packed-write, force a
