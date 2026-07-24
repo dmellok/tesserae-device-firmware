@@ -121,9 +121,20 @@ bool sdcard_mount(void)
         ESP_LOGW(TAG, "spi_bus_initialize: %s", esp_err_to_name(err));
         goto fail_power;
     }
+    /* SD lines idle high; weak pull-ups firm up the shared lines between
+     * blocks (standard SDSPI practice, matters on loaded buses). */
+    gpio_set_pull_mode((gpio_num_t)SD_PIN_MISO, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode((gpio_num_t)EPD_PIN_MOSI, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode((gpio_num_t)SD_PIN_CS, GPIO_PULLUP_ONLY);
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = EPD_SPI_HOST;
+#ifdef SD_SPI_MAX_KHZ
+    /* Boards with a heavily loaded shared bus (E1003: the IT8951 hangs off
+     * the same MISO) can't run the SDSPI default 20 MHz -- init passes but
+     * bulk data reads fail (bench 2026-07-24). */
+    host.max_freq_khz = SD_SPI_MAX_KHZ;
+#endif
     sdspi_device_config_t slot = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot.host_id = EPD_SPI_HOST;
     slot.gpio_cs = (gpio_num_t)SD_PIN_CS;
@@ -160,6 +171,8 @@ void sdcard_unmount(void)
     gpio_set_level((gpio_num_t)SD_PIN_EN, 0);
 #endif
 }
+
+void *sdcard_handle(void) { return s_card; }
 
 uint64_t sdcard_free_bytes(void)
 {

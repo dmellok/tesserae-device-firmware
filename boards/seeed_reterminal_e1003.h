@@ -112,6 +112,7 @@
  * gate is GPIO39, not 16 like the other reTerminals (Seeed cookbook table). */
 #define TESSERAE_SD_SLOT   1
 #define SD_SPI_SHARED_BUS  1
+#define SD_SPI_MAX_KHZ 4000
 #define SD_PIN_MISO   8
 #define SD_PIN_CS     14
 #define SD_PIN_DET    15

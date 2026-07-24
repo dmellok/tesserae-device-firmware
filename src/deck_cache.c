@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -20,6 +21,9 @@ static const char *TAG = "deck_cache";
 
 /* Manifests are small JSON; cap well above DECK_MAX_PAGES worth of content. */
 #define DECK_MANIFEST_MAX (16 * 1024)
+
+static bool   bounce_write_fd(int fd, const uint8_t *src, size_t len);
+static size_t bounce_read_fd(int fd, uint8_t *dst, size_t cap);
 
 /* deck_id becomes a directory name on a user-readable card: restrict it to
  * filesystem-safe chars so a hostile server value cannot traverse paths. */
@@ -117,17 +121,17 @@ bool deck_cache_read_frame(const char *deck_id, const char *digest,
     char path[176];
     if (!frame_path(deck_id, digest, path, sizeof path)) return false;
 
-    FILE *f = fopen(path, "rb");
-    if (!f) return false;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return false;
 
     /* Frames are panel-sized; prefer PSRAM like the network fetch path. */
     uint8_t *buf = heap_caps_malloc(expect_bytes + 1,
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!buf) buf = malloc(expect_bytes + 1);
-    if (!buf) { fclose(f); return false; }
+    if (!buf) { close(fd); return false; }
 
-    size_t n = fread(buf, 1, expect_bytes + 1, f);   /* +1 catches oversize */
-    fclose(f);
+    size_t n = bounce_read_fd(fd, buf, expect_bytes + 1);   /* +1 catches oversize */
+    close(fd);
 
     if (!deck_digest_check(buf, n, expect_bytes, digest)) {
         ESP_LOGW(TAG, "cached frame %s fails verification; deleting", digest);
@@ -137,6 +141,47 @@ bool deck_cache_read_frame(const char *deck_id, const char *digest,
     }
     *out = buf;
     return true;
+}
+
+/* SD I/O bounce: frame buffers live in PSRAM, which the SD driver cannot DMA
+ * from -- it degrades to single-sector transfers, which cost ~123 ms EACH on
+ * the E1003's loaded shared bus (bench 2026-07-24: a 1.3 MB write took five
+ * minutes). Streaming through an internal DMA-capable chunk keeps everything
+ * on the fast multi-sector path (~150-200 KB/s at 4 MHz). */
+#define SD_BOUNCE_BYTES (32 * 1024)
+
+/* POSIX fd I/O, not stdio: newlib's FILE layer refills its (512-byte) buffer
+ * per call regardless of request size, which forces the SD driver back onto
+ * ~123 ms single-sector transfers (bench: a 1.3 MB fread took 210 s AFTER the
+ * write path was fixed). read()/write() pass the full DMA-capable chunk down
+ * to FATFS -> multi-sector -> ~150-200 KB/s. */
+static bool bounce_write_fd(int fd, const uint8_t *src, size_t len)
+{
+    uint8_t *chunk = heap_caps_malloc(SD_BOUNCE_BYTES, MALLOC_CAP_DMA);
+    if (!chunk) return false;
+    bool ok = true;
+    for (size_t off = 0; ok && off < len; off += SD_BOUNCE_BYTES) {
+        size_t n = len - off > SD_BOUNCE_BYTES ? SD_BOUNCE_BYTES : len - off;
+        memcpy(chunk, src + off, n);
+        ok = write(fd, chunk, n) == (ssize_t)n;
+    }
+    free(chunk);
+    return ok;
+}
+
+static size_t bounce_read_fd(int fd, uint8_t *dst, size_t cap)
+{
+    uint8_t *chunk = heap_caps_malloc(SD_BOUNCE_BYTES, MALLOC_CAP_DMA);
+    if (!chunk) return 0;
+    size_t total = 0;
+    while (total < cap) {
+        size_t want = cap - total > SD_BOUNCE_BYTES ? SD_BOUNCE_BYTES : cap - total;
+        ssize_t n = read(fd, chunk, want);
+        if (n > 0) { memcpy(dst + total, chunk, (size_t)n); total += (size_t)n; }
+        if (n < (ssize_t)want) break;
+    }
+    free(chunk);
+    return total;
 }
 
 bool deck_cache_write_frame(const char *deck_id, const char *digest,
@@ -154,10 +199,10 @@ bool deck_cache_write_frame(const char *deck_id, const char *digest,
     deck_dir(deck_id, dir, sizeof dir);
     snprintf(tmp, sizeof tmp, "%s/frame.tmp", dir);
 
-    FILE *f = fopen(tmp, "wb");
-    if (!f) return false;
-    bool ok = fwrite(data, 1, len, f) == len;
-    ok = (fclose(f) == 0) && ok;
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return false;
+    bool ok = bounce_write_fd(fd, data, len);
+    ok = (close(fd) == 0) && ok;
     if (ok) {
         unlink(path);
         ok = rename(tmp, path) == 0;

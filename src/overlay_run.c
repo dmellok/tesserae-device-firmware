@@ -98,7 +98,11 @@ static uint8_t *read_file(const char *path, size_t max, size_t *out_len)
 {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
-    uint8_t *buf = heap_caps_malloc(max, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    /* Internal RAM keeps the SD driver on its fast DMA multi-sector path
+     * (PSRAM degrades to single-sector; see deck_cache.c bounce note).
+     * Overlay files are small (<=64 KB), so internal is fine. */
+    uint8_t *buf = heap_caps_malloc(max, MALLOC_CAP_DMA);
+    if (!buf) buf = heap_caps_malloc(max, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!buf) { fclose(f); return NULL; }
     size_t n = fread(buf, 1, max, f);
     bool complete = feof(f);

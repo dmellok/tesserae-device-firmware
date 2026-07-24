@@ -62,6 +62,9 @@ void sdcard_unmount(void);
 /* Free bytes on the mounted filesystem, 0 when unmounted. */
 uint64_t sdcard_free_bytes(void);
 
+/* Raw card handle for diagnostics (sdmmc_card_t*), NULL when unmounted. */
+void *sdcard_handle(void);
+
 #else /* no slot wired: compile the feature out cold */
 
 static inline void     sdcard_quiesce(void)    { }
@@ -69,5 +72,6 @@ static inline bool     sdcard_mount(void)      { return false; }
 static inline bool     sdcard_mounted(void)    { return false; }
 static inline void     sdcard_unmount(void)    { }
 static inline uint64_t sdcard_free_bytes(void) { return 0; }
+static inline void    *sdcard_handle(void)     { return 0; }
 
 #endif /* TESSERAE_SD_SLOT */

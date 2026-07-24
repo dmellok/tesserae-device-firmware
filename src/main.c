@@ -36,6 +36,7 @@
 #include "overlay.h"        /* pure overlay engine (used by OVERLAY_SELFTEST) */
 #include "deck_cache.h"     /* + sdcard.h/deck.h: DECK_SD_SELFTEST round trip */
 #include "sdcard.h"
+#include "sdmmc_cmd.h"      /* raw-sector benchmark in DECK_SD_SELFTEST */
 #include "esp_heap_caps.h"
 #include "touch_gt911.h"    /* GT911 touch wake (guarded by BOARD_HAS_TOUCH) */
 #include "touch_queue.h"    /* RTC replay queue for unsent touches (guarded) */
@@ -759,6 +760,31 @@ void app_main(void)
     } else {
         ESP_LOGW(TAG, "DECK_SD_SELFTEST: mounted, %llu MB free",
                  (unsigned long long)(sdcard_free_bytes() >> 20));
+        {
+            /* Raw block-layer benchmark (bypasses FATFS): 64 sectors (32 KB)
+             * written + read at a scratch LBA far past the filesystem head.
+             * Separates bus/card behaviour from filesystem overhead. */
+            sdmmc_card_t *card = (sdmmc_card_t *)sdcard_handle();
+            uint8_t *sec = heap_caps_malloc(64 * 512, MALLOC_CAP_DMA);
+            if (card && sec) {
+                for (int i = 0; i < 64 * 512; i++) sec[i] = (uint8_t)(i * 7);
+                int64_t rb0 = esp_timer_get_time();
+                esp_err_t we = sdmmc_write_sectors(card, sec, 4000000, 64);
+                int64_t rb1 = esp_timer_get_time();
+                esp_err_t re = sdmmc_read_sectors(card, sec, 4000000, 64);
+                int64_t rb2 = esp_timer_get_time();
+                ESP_LOGW(TAG, "DECK_SD_SELFTEST: raw 32KB write=%lldms (%s) read=%lldms (%s)",
+                         (rb1 - rb0) / 1000, esp_err_to_name(we),
+                         (rb2 - rb1) / 1000, esp_err_to_name(re));
+                int64_t rb3 = esp_timer_get_time();
+                for (int i = 0; i < 8; i++)
+                    sdmmc_write_sectors(card, sec, 4000100 + i, 1);
+                int64_t rb4 = esp_timer_get_time();
+                ESP_LOGW(TAG, "DECK_SD_SELFTEST: raw 8x single-sector writes=%lldms total",
+                         (rb4 - rb3) / 1000);
+                free(sec);
+            }
+        }
         size_t n = EPD_BUF_BYTES;
         uint8_t *buf = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!buf) buf = malloc(n);
@@ -779,6 +805,24 @@ void app_main(void)
             ESP_LOGW(TAG, "DECK_SD_SELFTEST: read-back %s, contents %s",
                      r ? "OK" : "FAILED", same ? "MATCH" : "MISMATCH");
             free(back);
+#ifdef EPD_PIN_VCC_EN
+            /* E1003: repeat one pass with the IT8951 rails CUT -- the state
+             * mid-wake after a panel sleep, when deck/overlay code may still
+             * write to the card. Tells us whether the unpowered controller's
+             * bus clamp breaks SD at this clock. */
+            gpio_set_level((gpio_num_t)EPD_PIN_EN, 0);
+            gpio_set_level((gpio_num_t)EPD_PIN_VCC_EN, 0);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            bool w2 = deck_cache_write_frame("sdtest2", digest, buf, n, (uint32_t)n);
+            uint8_t *back2 = NULL;
+            bool r2 = w2 && deck_cache_read_frame("sdtest2", digest, (uint32_t)n, &back2);
+            ESP_LOGW(TAG, "DECK_SD_SELFTEST: rails-OFF pass %s",
+                     (w2 && r2) ? "OK" : "FAILED");
+            free(back2);
+            deck_cache_delete("sdtest2", digest);
+            gpio_set_level((gpio_num_t)EPD_PIN_EN, 1);
+            gpio_set_level((gpio_num_t)EPD_PIN_VCC_EN, 1);
+#endif
             free(buf);
             deck_cache_delete("sdtest", digest);
             ESP_LOGW(TAG, "DECK_SD_SELFTEST: %s. Press RESET to repeat.",
