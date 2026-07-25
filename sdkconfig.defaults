@@ -27,7 +27,10 @@ CONFIG_FREERTOS_HZ=1000
 # app_main runs the whole cycle on the main task: provisioning (httpd + mDNS +
 # DNS bringup) or the REST path (esp_http_client + TLS + cJSON + image decode).
 # The 3584-byte default overflows; 8 KB gives comfortable headroom.
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+# 16 KB, not the IDF-default-ish 8192: protocol v2 raised the wake's stack
+# high-water (manifest cJSON parse + /tap HTTP + deferred patch blob fetch
+# in one chain); 8 KB overflowed live on 2026-07-27.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 
 # --- Networking ---
 CONFIG_LWIP_LOCAL_HOSTNAME="tesserae-esp32"
