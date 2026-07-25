@@ -62,6 +62,22 @@ bool overlay_take_refetch(void);
  * values or patches. */
 void overlay_linger_poll(void);
 
+/* ---- framebuffer access for proto2_run (v2 tier engine) ----
+ * overlay_run owns the in-RAM frame copies and the partial-refresh hygiene
+ * counter; proto2 composites its feedback (inverts, tiles, text) through
+ * these instead of duplicating 2 x 1.3 MB of PSRAM buffers. */
+
+/* Working framebuffer (what partials stream from), or NULL when this wake
+ * has no full copy. full=true only when it holds the complete frame (not a
+ * sparse SD reconstruction). */
+uint8_t *overlay_work_fb(bool *full);
+/* Pristine base copy (server frame without local composites); NULL when
+ * absent or sparse. */
+uint8_t *overlay_base_fb(void);
+/* Partial-refresh a rect from the work buffer through the shared hygiene
+ * counter (DU when fast). Initialises the panel port on demand. */
+void overlay_partial_refresh(int x, int y, int w, int h, bool fast);
+
 #else /* !BOARD_OVERLAY_PARTIAL */
 
 static inline void overlay_boot(void) { }
@@ -72,5 +88,9 @@ static inline void overlay_ingest_values(const char *j, size_t l) { (void)j; (vo
 static inline void overlay_ingest_patches(const char *j, size_t l) { (void)j; (void)l; }
 static inline bool overlay_take_refetch(void) { return false; }
 static inline void overlay_linger_poll(void) { }
+static inline uint8_t *overlay_work_fb(bool *full) { if (full) *full = false; return (uint8_t *)0; }
+static inline uint8_t *overlay_base_fb(void) { return (uint8_t *)0; }
+static inline void overlay_partial_refresh(int x, int y, int w, int h, bool fast)
+{ (void)x; (void)y; (void)w; (void)h; (void)fast; }
 
 #endif /* BOARD_OVERLAY_PARTIAL */

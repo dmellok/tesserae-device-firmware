@@ -297,13 +297,17 @@ void overlay_frame_downloaded(const char *digest)
 void overlay_after_paint(const uint8_t *frame, const char *digest)
 {
     overlay_hygiene_reset(&s_hygiene);   /* full paint clears ghosting */
-    if (!spec_usable_for(digest)) return;
 
-    if (!s_base && !(s_base = fb_alloc())) { drop_state(); return; }
-    if (!s_work && !(s_work = fb_alloc())) { drop_state(); return; }
+    /* The frame copies are kept regardless of a schema-1 spec: proto2's
+     * tier engine composites feedback into them for ANY manifest frame,
+     * and schema-2 patches need them even spec-less. */
+    if (!s_base && !(s_base = fb_alloc())) return;
+    if (!s_work && !(s_work = fb_alloc())) return;
     memcpy(s_base, frame, EPD_BUF_BYTES);
     memcpy(s_work, frame, EPD_BUF_BYTES);
     s_sparse = false;
+
+    if (!spec_usable_for(digest)) return;
 
     /* SD cache: raw spec + rect patches, so the next wake can echo offline. */
     if (sdcard_mounted()) {
@@ -581,6 +585,14 @@ void overlay_ingest_patches(const char *json, size_t len)
         hygiene_or_partial(bx0, by0, bx1 - bx0, by1 - by0, true /* DU */);
     }
     s_patch_seq = doc.seq;
+#if BOARD_HAS_TOUCH
+    /* Server-wins rule (proto2 §6): patch rects clear any optimistic-ledger
+     * entries and tap echoes they overlap -- the patch IS the correction. */
+    {
+        extern void proto2_note_patch_rects(const overlay_patch_rect_t *r, int n);
+        proto2_note_patch_rects(doc.rects, doc.n_rects);
+    }
+#endif
     ESP_LOGI(TAG, "patch seq %lld applied: %d rect(s), %u B in %lld ms",
              (long long)doc.seq, doc.n_rects, (unsigned)doc.bytes,
              (esp_timer_get_time() - t0) / 1000);
@@ -591,6 +603,25 @@ bool overlay_take_refetch(void)
     bool r = s_refetch;
     s_refetch = false;
     return r;
+}
+
+uint8_t *overlay_work_fb(bool *full)
+{
+    if (full) *full = s_work && !s_sparse;
+    return s_work;
+}
+
+uint8_t *overlay_base_fb(void)
+{
+    return s_sparse ? NULL : s_base;
+}
+
+void overlay_partial_refresh(int x, int y, int w, int h, bool fast)
+{
+    if (!s_work) return;
+    if (epd_port_init() != ESP_OK) return;
+    epd_init();
+    hygiene_or_partial(x, y, w, h, fast);
 }
 
 void overlay_linger_poll(void)

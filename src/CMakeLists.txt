@@ -31,6 +31,8 @@ idf_component_register(
         "ota_report.c"
         "overlay.c"
         "overlay_run.c"
+        "proto2.c"
+        "proto2_run.c"
         "deck.c"
         "deck_digest.c"
         "deck_cache.c"

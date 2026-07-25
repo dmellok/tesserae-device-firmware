@@ -34,6 +34,7 @@
 #include "buttons.h"        /* front-button wake/report (header-only; no-op if none) */
 #include "deck_run.h"       /* SD deck cache: local nav + sync (no-op w/o card) */
 #include "overlay_run.h"    /* local overlay render mode (no-op w/o partial panel) */
+#include "proto2_run.h"     /* protocol v2: device-owned touch (no-op w/o touch) */
 #include "overlay.h"        /* pure overlay engine (used by OVERLAY_SELFTEST) */
 #include "deck_cache.h"     /* + sdcard.h/deck.h: DECK_SD_SELFTEST round trip */
 #include "sdcard.h"
@@ -84,6 +85,13 @@ RTC_NOINIT_ATTR static uint64_t s_button_event_seq;
 /* One-shot deep-sleep interval override (seconds); 0 = use the server interval.
  * Set before sleep to schedule a shorter WiFi retry backoff. */
 static int32_t s_sleep_override_s = 0;
+
+/* proto2_run mints its /tap event ids off the same counter every other
+ * input event uses (contract: one uint64 stream per boot). */
+uint64_t app_next_event_id(void)
+{
+    return ++s_button_event_seq;
+}
 
 /* Increment on each manual reset; two within one wake window => settings mode.
  * The window is closed by zeroing the counter when we commit to deep sleep
@@ -411,6 +419,7 @@ static bool fetch_and_paint_current(const char *server_url)
     free(img.data);
     if (!frame) return false;
     overlay_frame_downloaded(fo.etag);   /* refresh spec for the new digest */
+    proto2_frame_downloaded(fo.etag, fo.manifest_digest, fo.manifest_url);
     ESP_ERROR_CHECK(epd_port_init());
     epd_init();
     epd_display(frame);
@@ -420,6 +429,7 @@ static bool fetch_and_paint_current(const char *server_url)
      * patch applications in this same linger window composite onto the
      * frame actually on glass (frame freed only after the copy). */
     overlay_after_paint(frame, fo.etag);
+    proto2_frame_painted(fo.etag);   /* server-wins: clears the ledger */
     free(frame);
     return true;
 }
@@ -872,6 +882,7 @@ void app_main(void)
     /* Overlay boot: restore the SD-cached overlay spec for the displayed
      * frame so a wake tap can echo before any network round trip. */
     overlay_boot();
+    proto2_boot();     /* manifest for the frame on glass, from SD */
 
     /* Local deck nav: a button wake whose press matches a cached link on the
      * current page paints from SD (1-2 s) and never brings the radio up. Any
@@ -939,10 +950,19 @@ void app_main(void)
                          stub_rx, stub_ry, fx, fy);
             }
             if (touch_st.valid) {
-                touch_ev = ++s_button_event_seq;   /* shares the wake-event counter */
-                ESP_LOGI(TAG, "touch (%d,%d)->(%d,%d) %ums (event %llu)",
+                ESP_LOGI(TAG, "touch (%d,%d)->(%d,%d) %ums",
                          touch_st.x0, touch_st.y0, touch_st.x1, touch_st.y1,
-                         (unsigned)touch_st.ms, (unsigned long long)touch_ev);
+                         (unsigned)touch_st.ms);
+                /* Protocol v2 first: with a manifest held for the frame on
+                 * glass the device owns hit-testing + feedback; the /tap
+                 * report queues until the radio is up (flushed post-status).
+                 * Without one, today's v1 chain runs unchanged. */
+                bool p2_poll = false;
+                if (proto2_try_touch(touch_st.x0, touch_st.y0,
+                                     touch_st.x1, touch_st.y1,
+                                     touch_st.ms, &p2_poll)) {
+                    /* wake continues: frame GET + status deliver the result */
+                } else {
                 /* Overlay echo FIRST (sub-second feedback): if the tap hits a
                  * server-declared target rect, invert + partial-refresh it
                  * immediately. Never delays or replaces the dispatch below. */
@@ -956,8 +976,10 @@ void app_main(void)
                     sleep_forever_or_until_timer();
                     return;   /* not reached */
                 }
+                touch_ev = ++s_button_event_seq;   /* shares the wake-event counter */
                 rest_set_touch(touch_st.x0, touch_st.y0, touch_st.x1, touch_st.y1,
                                touch_st.ms, rest_config_get()->last_frame_etag, touch_ev);
+                }
             } else {
                 /* Quick-tap race: the finger lifted before the ~1 s deep-sleep
                  * boot let us read a point. Do NOT force a repaint -- fall through
@@ -1142,7 +1164,11 @@ void app_main(void)
             free(img.data);
             /* Radio is up and the new frame's digest is known: fetch the
              * overlay spec + atlases for it (404 = dormant, no-op). */
-            if (frame != NULL) overlay_frame_downloaded(new_etag);
+            if (frame != NULL) {
+                overlay_frame_downloaded(new_etag);
+                proto2_frame_downloaded(new_etag, fo.manifest_digest,
+                                        fo.manifest_url);
+            }
         } else {
             ESP_LOGE(TAG, "frame fetch failed for %s", fullurl);
         }
@@ -1294,6 +1320,7 @@ void app_main(void)
         if (new_etag[0]) { rest_config_set_frame_etag(new_etag); cfg_dirty = true; }
         rest_config_set_ui_state(UI_CONNECTED);   /* a real frame is up now */
         overlay_after_paint(frame, new_etag);      /* keep base copy + SD patches */
+        proto2_frame_painted(new_etag);   /* server-wins: full frame clears the ledger */
         free(frame);   /* AFTER after_paint: it memcpys the frame into its buffers */
         deck_network_painted();   /* SD-paint report no longer describes the display */
     } else if (just_onboarded) {
@@ -1352,6 +1379,7 @@ void app_main(void)
                  * in place. A patch the poll couldn't honour falls back to
                  * one normal /frame poll (the contract's only fallback). */
                 overlay_linger_poll();
+                proto2_flush_reports();
                 if (overlay_take_refetch()) {
                     /* The digest never changes under schema 2, so the forced
                      * repaint needs the cached ETag dropped to get a 200. */
@@ -1373,15 +1401,26 @@ void app_main(void)
             touch_stroke_t st;
             touch_capture_stroke(&st, TOUCH_FIRST_POINT_MS, TOUCH_CAP_MS);
             if (!st.valid) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
-            /* Overlay echo first, then dispatch exactly as before. */
-            overlay_try_echo(st.x1, st.y1);
-            uint64_t ev = ++s_button_event_seq;
-            ESP_LOGI(TAG, "linger touch (%d,%d)->(%d,%d) %ums (event %llu)",
-                     st.x0, st.y0, st.x1, st.y1, (unsigned)st.ms,
-                     (unsigned long long)ev);
-            rest_set_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
-                           rest_config_get()->last_frame_etag, ev);
-            if (fetch_and_paint_current(rest_config_get()->server_url)) cfg_dirty = true;
+            bool p2_poll = false;
+            if (proto2_try_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
+                                 &p2_poll)) {
+                /* v2 owned it. Tier 0/1 results ride the 1 s patch polls;
+                 * nav/refresh/tier-2 want an actual frame poll. */
+                if (p2_poll &&
+                    fetch_and_paint_current(rest_config_get()->server_url))
+                    cfg_dirty = true;
+            } else {
+                /* v1 chain: echo, coordinate dispatch, frame poll. */
+                overlay_try_echo(st.x1, st.y1);
+                uint64_t ev = ++s_button_event_seq;
+                ESP_LOGI(TAG, "linger touch (%d,%d)->(%d,%d) %ums (event %llu)",
+                         st.x0, st.y0, st.x1, st.y1, (unsigned)st.ms,
+                         (unsigned long long)ev);
+                rest_set_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
+                               rest_config_get()->last_frame_etag, ev);
+                if (fetch_and_paint_current(rest_config_get()->server_url))
+                    cfg_dirty = true;
+            }
             deadline = esp_timer_get_time() + (int64_t)linger_s * 1000000;   /* reset */
         }
         rest_set_touch(0, 0, 0, 0, 0, NULL, 0);   /* clear pending touch */
