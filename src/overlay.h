@@ -39,8 +39,14 @@
 #define OVERLAY_URL_CAP       160
 #define OVERLAY_DIGEST_HEX    16
 
-/* Hygiene: after this many partial refreshes, do a full-quality repaint. */
-#define OVERLAY_HYGIENE_LIMIT 8
+/* Hygiene: after this many partial refreshes, do a full-quality repaint.
+ * 24, not the original 8: live pages carry fast-changing value slots (3
+ * small text rects redrawn every 30 s wake), and at 8 the counter expired
+ * every ~3 wakes -- a full-flash every ~90 s all day (bench 2026-07-25).
+ * DU ghosting on small text rects accumulates slowly; ~24 partials before
+ * a GC16 clean matches the every-few-minutes cadence e-paper dashboards
+ * normally full-refresh at anyway. */
+#define OVERLAY_HYGIENE_LIMIT 24
 
 typedef enum { OVERLAY_ECHO_INVERT = 1 } overlay_echo_t;
 typedef enum { OVERLAY_ALIGN_LEFT = 0, OVERLAY_ALIGN_CENTER, OVERLAY_ALIGN_RIGHT } overlay_align_t;

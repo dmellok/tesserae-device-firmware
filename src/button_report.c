@@ -2,7 +2,7 @@
 
 #include <stdio.h>
 
-void button_report_set(button_report_t *report, const char *name, uint32_t event_id)
+void button_report_set(button_report_t *report, const char *name, uint64_t event_id)
 {
     if (name && name[0]) snprintf(report->name, sizeof report->name, "%s", name);
     else                report->name[0] = '\0';
@@ -21,8 +21,9 @@ int button_report_append_frame_query(const button_report_t *report,
         return offset;
 
     int written = snprintf(url + offset, url_size - (size_t)offset,
-                           "?button=%s&button_event_id=%u",
-                           report->name, (unsigned)report->event_id);
+                           "?button=%s&button_event_id=%llu",
+                           report->name,
+                           (unsigned long long)report->event_id);
     if (written < 0) return offset;
 
     size_t next = (size_t)offset + (size_t)written;

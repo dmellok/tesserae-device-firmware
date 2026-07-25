@@ -25,14 +25,14 @@
 typedef struct {
     int32_t  x0, y0, x1, y1;
     uint32_t ms;
-    uint32_t event_id;
+    uint64_t event_id;
     char     digest[24];   /* frame ETag displayed when touched (render_id ~16 hex) */
 } touch_qentry_t;
 
 /* Append a captured stroke + the ETag on screen at the time. Drops the oldest
  * entry if full. digest may be NULL/empty (then the entry is not queued -- the
  * server needs the frame digest to dispatch). */
-void touch_queue_push(const touch_stroke_t *st, uint32_t event_id, const char *digest);
+void touch_queue_push(const touch_stroke_t *st, uint64_t event_id, const char *digest);
 
 /* Number of queued (unsent) strokes. */
 int  touch_queue_count(void);

@@ -51,7 +51,7 @@ static uint32_t s_server_date;
  * Empty = none. Set by rest_set_button() on a button wake (see buttons.h). */
 static button_report_t s_button;
 
-void rest_set_button(const char *name, uint32_t event_id)
+void rest_set_button(const char *name, uint64_t event_id)
 {
     button_report_set(&s_button, name, event_id);
 }
@@ -100,11 +100,11 @@ static void add_deck_capability(cJSON *o)
 static bool     s_touch_on;
 static int      s_touch_x0, s_touch_y0, s_touch_x1, s_touch_y1;
 static uint32_t s_touch_ms;
-static uint32_t s_touch_event;
+static uint64_t s_touch_event;
 static char     s_touch_digest[80];
 
 void rest_set_touch(int x0, int y0, int x1, int y1, uint32_t ms,
-                    const char *digest, uint32_t event_id)
+                    const char *digest, uint64_t event_id)
 {
     if (!digest || !digest[0]) { s_touch_on = false; s_touch_digest[0] = '\0'; return; }
     s_touch_on = true;
@@ -341,6 +341,16 @@ static void add_overlay_capability(cJSON *o)
     /* Additive: lets the server trim target lists per device instead of
      * assuming a fixed cap (servers that ignore it keep sending <= 8). */
     cJSON_AddNumberToObject(ov, "max_targets", OVERLAY_MAX_TARGETS);
+    /* proto2: extended atlas charset (digits+symbols+A-Z, <= 64 glyphs). */
+    cJSON_AddNumberToObject(ov, "max_glyphs", 64);
+}
+
+/* Protocol v2 (device-owned touch): sticky server-side, advertised every
+ * beat anyway to heal server restarts (proto2 contract, "capability"). */
+static void add_proto_capability(cJSON *o)
+{
+    cJSON *p = cJSON_AddObjectToObject(o, "proto");
+    if (p) cJSON_AddNumberToObject(p, "v", 2);
 }
 #endif
 
@@ -366,6 +376,7 @@ static char *identity_body(uint16_t panel_w, uint16_t panel_h,
     if (advertise_ota) add_deck_capability(o);
 #if BOARD_OVERLAY_PARTIAL
     if (advertise_ota) add_overlay_capability(o);
+    if (advertise_ota) add_proto_capability(o);
 #endif
     char *body = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
@@ -463,9 +474,10 @@ rest_status_t rest_get_frame(rest_frame_out_t *out, uint32_t timeout_ms)
          * classifies tap/swipe/slide and repaints in the same response. */
         snprintf(url + un, sizeof url - un,
                  "?touch_x0=%d&touch_y0=%d&touch_x1=%d&touch_y1=%d"
-                 "&touch_ms=%u&touch_digest=%s&touch_event_id=%u",
+                 "&touch_ms=%u&touch_digest=%s&touch_event_id=%llu",
                  s_touch_x0, s_touch_y0, s_touch_x1, s_touch_y1,
-                 (unsigned)s_touch_ms, s_touch_digest, (unsigned)s_touch_event);
+                 (unsigned)s_touch_ms, s_touch_digest,
+                 (unsigned long long)s_touch_event);
     }
 #endif
     /* SD-paint report rides the same-wake frame GET too (contract). */
@@ -509,6 +521,14 @@ rest_status_t rest_get_frame(rest_frame_out_t *out, uint32_t timeout_ms)
     out->panel_w = (uint16_t)json_get_int(r, "panel_w", 0);
     out->panel_h = (uint16_t)json_get_int(r, "panel_h", 0);
     out->button_wake_s = json_get_int(r, "button_wake_s", -1);
+    /* proto v2: the manifest block is the server's version signal. */
+    cJSON *man = cJSON_GetObjectItemCaseSensitive(r, "manifest");
+    if (cJSON_IsObject(man)) {
+        json_get_str(man, "digest", out->manifest_digest,
+                     sizeof out->manifest_digest);
+        json_get_str(man, "url", out->manifest_url, sizeof out->manifest_url);
+        out->has_manifest = out->manifest_digest[0] != '\0';
+    }
     cJSON_Delete(r);
     return out->url[0] ? REST_OK : REST_HTTP_ERR;
 }
@@ -583,6 +603,70 @@ rest_status_t rest_get_frame_data(const char *digest, char *buf, size_t cap,
     return small_get(url, buf, cap, out_len, timeout_ms);
 }
 
+rest_status_t rest_get_manifest(const char *digest, char *buf, size_t cap,
+                                size_t *out_len, uint32_t timeout_ms)
+{
+    char url[300];
+    snprintf(url, sizeof url, "%s/api/v1/device/%s/frame/manifest?digest=%s",
+             rest_config_get()->server_url, rest_config_device_id(), digest);
+    return small_get(url, buf, cap, out_len, timeout_ms);
+}
+
+rest_status_t rest_get_bundle(char *buf, size_t cap, size_t *out_len,
+                              uint32_t timeout_ms)
+{
+    char url[300];
+    snprintf(url, sizeof url, "%s/api/v1/device/%s/bundle",
+             rest_config_get()->server_url, rest_config_device_id());
+    return small_get(url, buf, cap, out_len, timeout_ms);
+}
+
+rest_status_t rest_post_tap(const char *region_id, const char *gesture,
+                            int value, const char *digest, uint64_t event_id,
+                            int x0, int y0, int x1, int y1,
+                            char *outcome, size_t outcome_cap,
+                            uint32_t timeout_ms)
+{
+    if (outcome && outcome_cap) outcome[0] = '\0';
+    char url[300];
+    snprintf(url, sizeof url, "%s/api/v1/device/%s/tap",
+             rest_config_get()->server_url, rest_config_device_id());
+
+    cJSON *o = cJSON_CreateObject();
+    if (!o) return REST_NET_ERR;
+    cJSON_AddStringToObject(o, "region_id", region_id);
+    cJSON_AddStringToObject(o, "gesture", gesture);
+    if (value >= 0) cJSON_AddNumberToObject(o, "value", value);
+    cJSON_AddStringToObject(o, "digest", digest);
+    /* uint64 as a JSON number: the seeder keeps ids <= 2^53 so the double
+     * round-trip is exact (see button_report.h). */
+    cJSON_AddNumberToObject(o, "event_id", (double)event_id);
+    cJSON_AddNumberToObject(o, "x0", x0);
+    cJSON_AddNumberToObject(o, "y0", y0);
+    cJSON_AddNumberToObject(o, "x1", x1);
+    cJSON_AddNumberToObject(o, "y1", y1);
+    char *body = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (!body) return REST_NET_ERR;
+
+    char auth[300];
+    snprintf(auth, sizeof auth, "Bearer %s", rest_config_get()->device_token);
+    rest_hdr_t hdrs[] = { { "Authorization", auth } };
+    const char *rbody = NULL;
+    rest_status_t st = do_request(HTTP_METHOD_POST, url, hdrs, 1, body, &rbody,
+                                  timeout_ms);
+    free(body);
+    if (st != REST_OK) return st;
+
+    cJSON *r = cJSON_Parse(rbody);
+    if (r) {
+        if (outcome && outcome_cap)
+            json_get_str(r, "outcome", outcome, outcome_cap);
+        cJSON_Delete(r);
+    }
+    return REST_OK;
+}
+
 rest_status_t rest_post_status(int rssi, const char *ip,
                                uint16_t panel_w, uint16_t panel_h,
                                int32_t next_sleep_s, uint32_t sleep_until,
@@ -596,6 +680,9 @@ rest_status_t rest_post_status(int rssi, const char *ip,
 #if BOARD_HAS_TOUCH
     out->touch_enabled = -1;
     out->touch_linger_s = -1;
+#endif
+#if BOARD_OVERLAY_PARTIAL
+    out->local_hh = out->local_mm = -1;
 #endif
 
     const rest_config_t *c = rest_config_get();
@@ -645,12 +732,16 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     if (sleep_until) cJSON_AddNumberToObject(o, "sleep_until", (double)sleep_until);
     if (button_report_pending(&s_button)) { /* failed /frame fallback */
         cJSON_AddStringToObject(o, "button", s_button.name);
-        cJSON_AddNumberToObject(o, "button_event_id", s_button.event_id);
+        cJSON_AddNumberToObject(o, "button_event_id", (double)s_button.event_id);
     }
     add_deck_capability(o);
 #if BOARD_OVERLAY_PARTIAL
     add_overlay_capability(o);
+    add_proto_capability(o);
 #endif
+    /* proto2 status contract: tz rides every beat (server-config sourced;
+     * empty until the server delivers one). */
+    cJSON_AddStringToObject(o, "tz", c->tz);
     if (s_deck_page[0]) {
         /* The displayed frame came from the SD cache: these two fields are
          * the only signal the server needs to keep its nav state truthful
@@ -686,6 +777,12 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         else if (cJSON_IsNumber(te)) out->touch_enabled = te->valueint ? 1 : 0;
         out->touch_linger_s = json_get_int(cfg, "touch_linger_s", -1);
 #endif
+        char tz[40] = {0};
+        json_get_str(cfg, "tz", tz, sizeof tz);
+        if (tz[0] && strcmp(tz, c->tz) != 0) {
+            rest_config_set_tz(tz);
+            rest_config_save();
+        }
     }
 #if BOARD_OVERLAY_PARTIAL
     /* overlay_values / overlay_patches ride the status response; hand the
@@ -704,6 +801,17 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         char *raw = cJSON_PrintUnformatted(op);
         if (raw) {
             snprintf(out->overlay_patches, sizeof out->overlay_patches, "%s", raw);
+            free(raw);
+        }
+    }
+    /* proto v2 extras: the sync digest triple + clock discipline. */
+    out->local_hh = json_get_int(r, "local_hh", -1);
+    out->local_mm = json_get_int(r, "local_mm", -1);
+    cJSON *sy = cJSON_GetObjectItemCaseSensitive(r, "sync");
+    if (cJSON_IsObject(sy)) {
+        char *raw = cJSON_PrintUnformatted(sy);
+        if (raw) {
+            snprintf(out->sync_obj, sizeof out->sync_obj, "%s", raw);
             free(raw);
         }
     }

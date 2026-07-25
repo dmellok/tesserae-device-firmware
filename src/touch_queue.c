@@ -24,7 +24,7 @@ static void ensure_init(void)
     }
 }
 
-void touch_queue_push(const touch_stroke_t *st, uint32_t event_id, const char *digest)
+void touch_queue_push(const touch_stroke_t *st, uint64_t event_id, const char *digest)
 {
     ensure_init();
     if (!st || !st->valid || !digest || !digest[0]) return;

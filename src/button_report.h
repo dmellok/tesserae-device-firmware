@@ -7,10 +7,12 @@
 
 typedef struct {
     char name[16];
-    uint32_t event_id;
+    /* uint64, kept <= 2^53 by the seeder: the id travels as a JSON
+     * number and cJSON doubles lose integer precision above that. */
+    uint64_t event_id;
 } button_report_t;
 
-void button_report_set(button_report_t *report, const char *name, uint32_t event_id);
+void button_report_set(button_report_t *report, const char *name, uint64_t event_id);
 bool button_report_pending(const button_report_t *report);
 
 /* Append the canonical frame query to an existing URL. Returns the next safe

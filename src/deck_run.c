@@ -154,7 +154,7 @@ static bool try_nav_event(const char *button, int tx, int ty, bool is_touch)
     return serve_page_from_sd(target);
 }
 
-bool deck_try_button(const char *button, uint32_t *event_seq, bool *fallthrough)
+bool deck_try_button(const char *button, uint64_t *event_seq, bool *fallthrough)
 {
     *fallthrough = false;
     if (!button || !try_nav_event(button, 0, 0, false)) return false;
@@ -179,9 +179,10 @@ bool deck_try_button(const char *button, uint32_t *event_seq, bool *fallthrough)
             button_id_t b = buttons_poll_pressed();
             if (b == BTN_NONE) continue;
             const char *name = button_name(b);
-            uint32_t ev = ++(*event_seq);
+            uint64_t ev = ++(*event_seq);
             if (try_nav_event(name, 0, 0, false)) {
-                ESP_LOGI(TAG, "local nav '%s' (event %u)", name, (unsigned)ev);
+                ESP_LOGI(TAG, "local nav '%s' (event %llu)", name,
+                         (unsigned long long)ev);
                 idle_ms = 0;   /* window restarts after each served press */
             } else {
                 /* No cached link for this press: today's behaviour, over the

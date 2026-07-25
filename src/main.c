@@ -79,7 +79,7 @@ RTC_NOINIT_ATTR static uint32_t s_wifi_fail_count;
 
 /* Monotonic id bumped on every button wake (RTC-retained) so the server can
  * dedup a retried request to one action; survives deep sleep, distinct per press. */
-RTC_NOINIT_ATTR static uint32_t s_button_event_seq;
+RTC_NOINIT_ATTR static uint64_t s_button_event_seq;
 
 /* One-shot deep-sleep interval override (seconds); 0 = use the server interval.
  * Set before sleep to schedule a shorter WiFi retry backoff. */
@@ -102,7 +102,11 @@ static bool detect_settings_mode(esp_reset_reason_t reason)
          * 2026-07-25: taps 304-acked but HA never fired). Random restart
          * points keep ids unique for any realistic history; within a boot
          * the sequence stays monotonic for retry dedup. */
-        s_button_event_seq = esp_random();
+        /* 52-bit random start point: ids travel as JSON numbers, so they
+         * must stay <= 2^53 for the cJSON double round-trip to be exact
+         * (proto2 /tap event_id). Monotonic within a boot as before. */
+        s_button_event_seq = ((uint64_t)(esp_random() & 0xFFFFF) << 32)
+                             | esp_random();
     }
 
     bool manual = (reason == ESP_RST_POWERON || reason == ESP_RST_EXT);
@@ -435,7 +439,8 @@ static void touch_queue_flush(void)
         rest_frame_out_t fo;
         rest_status_t fs = rest_get_frame(&fo, 8000);
         if (fs == REST_NET_ERR || fs == REST_RATELIMIT) break;   /* transient: retry next wake */
-        ESP_LOGI(TAG, "replayed queued touch (event %u) -> %d", (unsigned)e.event_id, fs);
+        ESP_LOGI(TAG, "replayed queued touch (event %llu) -> %d",
+                 (unsigned long long)e.event_id, fs);
         touch_queue_pop();   /* dispatched, stale-dropped, or unrecoverable -> remove */
     }
     rest_set_touch(0, 0, 0, 0, 0, NULL, 0);   /* clear so it doesn't leak into later GETs */
@@ -590,9 +595,9 @@ void app_main(void)
     button_id_t woke_btn = buttons_which_woke();
     bool woke_by_button = (woke_btn != BTN_NONE);
     if (woke_by_button) {
-        uint32_t ev = ++s_button_event_seq;
-        ESP_LOGI(TAG, "woke on '%s' button: report + refresh (event %u)",
-                 button_name(woke_btn), (unsigned)ev);
+        uint64_t ev = ++s_button_event_seq;
+        ESP_LOGI(TAG, "woke on '%s' button: report + refresh (event %llu)",
+                 button_name(woke_btn), (unsigned long long)ev);
         rest_set_button(button_name(woke_btn), ev);
     }
 
@@ -905,7 +910,7 @@ void app_main(void)
                          (esp_sleep_get_ext1_wakeup_status() & TOUCH_INT_WAKE_MASK);
     /* Kept in function scope so the WiFi-fail path can queue an unsent stroke. */
     touch_stroke_t touch_st = { .valid = false };
-    uint32_t       touch_ev = 0;
+    uint64_t       touch_ev = 0;
     if (woke_by_touch) {
         if (touch_init() == ESP_OK) {
             /* The RTC wake stub may have grabbed the point ~1 ms after wake. Take
@@ -935,9 +940,9 @@ void app_main(void)
             }
             if (touch_st.valid) {
                 touch_ev = ++s_button_event_seq;   /* shares the wake-event counter */
-                ESP_LOGI(TAG, "touch (%d,%d)->(%d,%d) %ums (event %u)",
+                ESP_LOGI(TAG, "touch (%d,%d)->(%d,%d) %ums (event %llu)",
                          touch_st.x0, touch_st.y0, touch_st.x1, touch_st.y1,
-                         (unsigned)touch_st.ms, (unsigned)touch_ev);
+                         (unsigned)touch_st.ms, (unsigned long long)touch_ev);
                 /* Overlay echo FIRST (sub-second feedback): if the tap hits a
                  * server-declared target rect, invert + partial-refresh it
                  * immediately. Never delays or replaces the dispatch below. */
@@ -1370,9 +1375,10 @@ void app_main(void)
             if (!st.valid) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
             /* Overlay echo first, then dispatch exactly as before. */
             overlay_try_echo(st.x1, st.y1);
-            uint32_t ev = ++s_button_event_seq;
-            ESP_LOGI(TAG, "linger touch (%d,%d)->(%d,%d) %ums (event %u)",
-                     st.x0, st.y0, st.x1, st.y1, (unsigned)st.ms, (unsigned)ev);
+            uint64_t ev = ++s_button_event_seq;
+            ESP_LOGI(TAG, "linger touch (%d,%d)->(%d,%d) %ums (event %llu)",
+                     st.x0, st.y0, st.x1, st.y1, (unsigned)st.ms,
+                     (unsigned long long)ev);
             rest_set_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
                            rest_config_get()->last_frame_etag, ev);
             if (fetch_and_paint_current(rest_config_get()->server_url)) cfg_dirty = true;
@@ -1403,8 +1409,9 @@ void app_main(void)
         while (esp_timer_get_time() < deadline && esp_timer_get_time() < hard_cap) {
             button_id_t b = buttons_poll_pressed();
             if (b == BTN_NONE) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
-            uint32_t ev = ++s_button_event_seq;
-            ESP_LOGI(TAG, "window press '%s' (event %u)", button_name(b), (unsigned)ev);
+            uint64_t ev = ++s_button_event_seq;
+            ESP_LOGI(TAG, "window press '%s' (event %llu)", button_name(b),
+                     (unsigned long long)ev);
             rest_set_button(button_name(b), ev);
             /* Like the wake press: a manual press forces a repaint (200, not 304). */
             rest_config_set_frame_etag("");

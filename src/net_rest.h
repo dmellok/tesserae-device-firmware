@@ -59,6 +59,11 @@ typedef struct {
     uint16_t panel_w, panel_h;
     char     etag[80];          /* new ETag to persist (quotes stripped) */
     int32_t  button_wake_s;     /* top-level "button_wake_s": -1 if absent */
+    /* Protocol v2: optional "manifest" block. Present only on v2 servers;
+     * its absence on a 200 is the primary v1-fallback signal (proto2 §10). */
+    bool     has_manifest;
+    char     manifest_digest[17];
+    char     manifest_url[160];
 } rest_frame_out_t;
 
 typedef struct {
@@ -85,6 +90,11 @@ typedef struct {
     /* Raw "overlay_patches" object (schema 2), "" when absent. Sized for the
      * contract cap: 12 rects + header comfortably fits. */
     char     overlay_patches[1536];
+    /* Raw "sync" object (proto v2: frame/manifest/bundle digest triple),
+     * "" when absent. Same envelope as the SSE sync event. */
+    char     sync_obj[256];
+    /* Clock discipline for local: text keys; -1 when absent. */
+    int      local_hh, local_mm;
 #endif
 } rest_status_out_t;
 
@@ -108,17 +118,18 @@ rest_status_t rest_register(uint16_t panel_w, uint16_t panel_h,
  * ?button=<name>&button_event_id=<id> to the frame GET. An acknowledged frame
  * response clears it before /status; a pre-ack failure retains it so the status
  * body can deliver {"button","button_event_id"} as a fallback. */
-void rest_set_button(const char *name, uint32_t event_id);
+void rest_set_button(const char *name, uint64_t event_id);
 
 #if BOARD_HAS_TOUCH
-/* Report a touch stroke with the subsequent frame GET. Coordinates are in the
- * served frame's pixel space; x1/y1 is the stroke end (== start for a point
- * tap). digest is the ETag currently displayed (quotes stripped). event_id
- * shares the button wake-event counter and dedups retries. Clear with
- * rest_set_touch(0,0,0,0,0,NULL,0) (a zero digest disables the params). Sticky
- * until cleared. A stale digest or miss degrades server-side to a plain poll. */
+/* Report a touch stroke with the subsequent frame GET (v1 fallback path).
+ * Coordinates are in the served frame's pixel space; x1/y1 is the stroke end
+ * (== start for a point tap). digest is the ETag currently displayed (quotes
+ * stripped). event_id shares the button wake-event counter and dedups
+ * retries. Clear with rest_set_touch(0,0,0,0,0,NULL,0) (a zero digest
+ * disables the params). Sticky until cleared. A stale digest or miss
+ * degrades server-side to a plain poll. */
 void rest_set_touch(int x0, int y0, int x1, int y1, uint32_t ms,
-                    const char *digest, uint32_t event_id);
+                    const char *digest, uint64_t event_id);
 #endif
 
 /* GET /api/v1/device/<id>/frame with Bearer auth and If-None-Match (cached
@@ -170,3 +181,28 @@ rest_status_t rest_get_overlay_spec(const char *digest, char *buf, size_t cap,
 /* GET /api/v1/device/<id>/frame/data?digest=<digest> (values document). */
 rest_status_t rest_get_frame_data(const char *digest, char *buf, size_t cap,
                                   size_t *out_len, uint32_t timeout_ms);
+
+/* ---- protocol v2 (proto2.h; device-owned touch) ---- */
+
+/* GET /api/v1/device/<id>/frame/manifest?digest=<digest>. REST_OK copies the
+ * interaction-manifest JSON into buf (NUL-terminated). REST_NOT_FOUND = v1
+ * server or no interactivity on this frame (v1 fallback, proto2 §10). */
+rest_status_t rest_get_manifest(const char *digest, char *buf, size_t cap,
+                                size_t *out_len, uint32_t timeout_ms);
+
+/* GET /api/v1/device/<id>/bundle (state bundle manifest). REST_NOT_FOUND /
+ * REST_NO_CONTENT = no bundle; all nav is tier 2. */
+rest_status_t rest_get_bundle(char *buf, size_t cap, size_t *out_len,
+                              uint32_t timeout_ms);
+
+/* POST /api/v1/device/<id>/tap: the v2 action report. gesture is a
+ * p2_gesture_name() string; value is 0-100 for slides, -1 to omit; digest is
+ * the frame hit-tested against. outcome (cap >= 24) receives the server's
+ * "outcome" string on REST_OK ("" when absent). Fire-and-forget for feedback
+ * purposes: the caller applies local feedback before, and regardless of,
+ * this call's result. */
+rest_status_t rest_post_tap(const char *region_id, const char *gesture,
+                            int value, const char *digest, uint64_t event_id,
+                            int x0, int y0, int x1, int y1,
+                            char *outcome, size_t outcome_cap,
+                            uint32_t timeout_ms);

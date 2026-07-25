@@ -17,6 +17,9 @@
 
 #include "deck.h"          /* deck_sha256 / deck_digest_hex16 (mbedTLS-backed) */
 #include "epd_driver.h"
+#if BOARD_HAS_TOUCH
+#include "touch_gt911.h"   /* echo preemption: a tap outranks a patch paint */
+#endif
 #include "panel/epd_panel.h"   /* epd_active_driver()->info.bpp */
 #include "image_fetcher.h"
 #include "net_rest.h"
@@ -461,6 +464,14 @@ void overlay_ingest_patches(const char *json, size_t len)
     /* Newest wins; equal seq = the doc we already applied. */
     if (doc.seq <= s_patch_seq) return;
 
+#if BOARD_HAS_TOUCH
+    /* Echo preemption: a finger on the glass outranks a background patch.
+     * The apply costs seconds (blob fetch + DU pass) and the doc is not
+     * going anywhere -- the next 1 s poll re-delivers it. Without this,
+     * echoes queue behind patch traffic (bench: 0.9 s idle vs 3-6 s busy). */
+    if (touch_int_asserted()) return;
+#endif
+
     /* Patches composite into the in-RAM frame copy. Without a full one
      * (cold wake: none, or SD-restored sparse slot patches only) there is
      * nothing correct to stream partial refreshes from -- and since the
@@ -503,6 +514,10 @@ void overlay_ingest_patches(const char *json, size_t len)
         free(img.data);
         return;
     }
+#if BOARD_HAS_TOUCH
+    /* Second preemption point: a tap may have landed during the fetch. */
+    if (touch_int_asserted()) { free(img.data); return; }
+#endif
 
     /* Apply every rect to BOTH copies: base (pristine background future slot
      * redraws restore from) and work (what partials stream from). Writing
@@ -527,11 +542,14 @@ void overlay_ingest_patches(const char *json, size_t len)
         return;
     }
 
-    /* Slot values ride their own seq stream: a slot whose rect the patch
-     * touched gets redrawn on top of the fresh base so the newest value
-     * string wins over an older render baked into the patch. */
+    /* Slot values ride their own seq stream. The patch pixels already
+     * contain the server's re-rendered slot content, so a redraw (1.3 s of
+     * DU per slot, bench-measured) is only worth it when the values stream
+     * is strictly NEWER than this patch's render -- both seqs come from the
+     * same server wall clock. */
     uint32_t slots_hit = 0;
-    if (s_have_spec && overlay_spec_matches(&s_spec, glass)) {
+    if (s_values_seq > doc.seq &&
+        s_have_spec && overlay_spec_matches(&s_spec, glass)) {
         for (int si = 0; si < s_spec.n_slots; si++) {
             const overlay_slot_t *sl = &s_spec.slots[si];
             for (int i = 0; i < doc.n_rects; i++)
