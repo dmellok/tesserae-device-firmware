@@ -33,6 +33,7 @@ idf_component_register(
         "overlay_run.c"
         "proto2.c"
         "proto2_run.c"
+        "sse_client.c"
         "deck.c"
         "deck_digest.c"
         "deck_cache.c"

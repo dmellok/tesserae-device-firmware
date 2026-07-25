@@ -25,6 +25,7 @@ static const char *TAG = "rest_cfg";
 #define NVS_KEY_DECK_RV    "deck_rv"    /* last server-announced version */
 #define NVS_KEY_DECK_SD    "deck_sd"    /* displayed frame came from SD */
 #define NVS_KEY_TZ         "tz"         /* IANA timezone (proto2) */
+#define NVS_KEY_KIOSK      "kiosk"      /* always-on power policy */
 #if BOARD_HAS_TOUCH
 #define NVS_KEY_TOUCH_EN   "touch_en"
 #define NVS_KEY_TOUCH_LIN  "touch_lin"
@@ -91,6 +92,8 @@ void rest_config_load(void)
         uint8_t dsd = 0;
         if (nvs_get_u8(h, NVS_KEY_DECK_SD, &dsd) == ESP_OK) s_cfg.deck_sd_painted = (dsd != 0);
         load_str(h, NVS_KEY_TZ, s_cfg.tz, sizeof s_cfg.tz);
+        uint8_t ko = 0;
+        if (nvs_get_u8(h, NVS_KEY_KIOSK, &ko) == ESP_OK) s_cfg.always_on = (ko != 0);
         nvs_close(h);
     }
 
@@ -144,6 +147,7 @@ esp_err_t rest_config_save(void)
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DECK_RV, s_cfg.deck_srv_ver);
     if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_DECK_SD, s_cfg.deck_sd_painted ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_TZ, s_cfg.tz);
+    if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_KIOSK, s_cfg.always_on ? 1 : 0);
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err;
@@ -227,6 +231,11 @@ void rest_config_set_deck_sd_painted(bool painted)
 void rest_config_set_tz(const char *tz)
 {
     set_str(s_cfg.tz, sizeof s_cfg.tz, tz ? tz : "");
+}
+
+void rest_config_set_always_on(bool on)
+{
+    s_cfg.always_on = on;
 }
 
 /* Persisted onboarding-splash state (a small standalone NVS u8, not part of the

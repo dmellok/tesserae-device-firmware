@@ -40,6 +40,10 @@ typedef struct {
     char    deck_srv_ver[DECK_VERSION_CAP];    /* last server-announced version */
     bool    deck_sd_painted;      /* displayed frame came from the SD cache */
     char    tz[40];               /* IANA timezone (server config; proto2 status body) */
+    bool    always_on;            /* server config: kiosk mode (no deep sleep on
+                                   * this device; SSE push viable). Admin choice
+                                   * -- the firmware adds only a low-battery
+                                   * escape hatch. */
 } rest_config_t;
 
 /* Load config from NVS into the RAM cache. Never fails; missing keys default
@@ -95,6 +99,9 @@ void rest_config_set_deck_sd_painted(bool painted);
 /* IANA timezone string from server config (proto2: echoed on every /status).
  * Cache mutator like the rest; persist with rest_config_save(). */
 void rest_config_set_tz(const char *tz);
+
+/* Kiosk (always-on) flag from server config. Persist with rest_config_save. */
+void rest_config_set_always_on(bool on);
 
 /* Persisted onboarding-splash state (0 = none/fresh, board-defined otherwise),
  * used to repaint connect-status splashes only when the state changes. */

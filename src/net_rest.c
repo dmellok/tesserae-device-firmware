@@ -783,6 +783,11 @@ rest_status_t rest_post_status(int rssi, const char *ip,
             rest_config_set_tz(tz);
             rest_config_save();
         }
+        cJSON *ao = cJSON_GetObjectItemCaseSensitive(cfg, "always_on");
+        if (cJSON_IsBool(ao) && cJSON_IsTrue(ao) != c->always_on) {
+            rest_config_set_always_on(cJSON_IsTrue(ao));
+            rest_config_save();
+        }
     }
 #if BOARD_OVERLAY_PARTIAL
     /* overlay_values / overlay_patches ride the status response; hand the

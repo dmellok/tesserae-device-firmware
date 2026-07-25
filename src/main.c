@@ -35,6 +35,7 @@
 #include "deck_run.h"       /* SD deck cache: local nav + sync (no-op w/o card) */
 #include "overlay_run.h"    /* local overlay render mode (no-op w/o partial panel) */
 #include "proto2_run.h"     /* protocol v2: device-owned touch (no-op w/o touch) */
+#include "sse_client.h"     /* proto2 push transport (kiosk mode only) */
 #include "overlay.h"        /* pure overlay engine (used by OVERLAY_SELFTEST) */
 #include "deck_cache.h"     /* + sdcard.h/deck.h: DECK_SD_SELFTEST round trip */
 #include "sdcard.h"
@@ -168,8 +169,107 @@ static int effective_sleep_s(void)
 
 /* ---------- deep sleep ---------- */
 
+#if defined(BOARD_OVERLAY_PARTIAL) && defined(BOARD_HAS_TOUCH)
+/* Kiosk mode (server config always_on): never deep-sleep; hold WiFi + SSE
+ * and keep the digitizer hot, so EVERY tap is a warm tap (echo ~1 s,
+ * patches ~2-3 s) and the cold-wake UX gap disappears. Heartbeats + frame
+ * polls continue at the configured cadence. Escape hatches: config turns
+ * it off (next heartbeat notices), or the battery drops below 15 % -- then
+ * fall back to the normal deep-sleep cycle to protect the pack. Note: a
+ * queued OTA is deliberately not applied mid-kiosk; it lands on the next
+ * reboot/sleep cycle. */
+static bool fetch_and_paint_current(const char *server_url);
+static void kiosk_loop(void)
+{
+    ESP_LOGI(TAG, "kiosk mode: staying awake (config always_on)");
+    if (wifi_sta_connect_stored() != ESP_OK)
+        return;   /* no network: sleep normally, retry next wake */
+    if (touch_init() != ESP_OK) ESP_LOGW(TAG, "kiosk: GT911 init failed");
+
+    int64_t next_beat_us = 0;
+    for (;;) {
+        const rest_config_t *c = rest_config_get();
+        if (!c->always_on) { ESP_LOGI(TAG, "kiosk off (config)"); break; }
+        int mv = battery_read_mv();
+        if (battery_pct(mv) < 15 && !usb_serial_jtag_is_connected()) {
+            ESP_LOGW(TAG, "kiosk: battery %d%%; resuming sleep cycles",
+                     battery_pct(mv));
+            break;
+        }
+
+        if (touch_int_asserted()) {
+            touch_stroke_t st;
+            touch_capture_stroke(&st, TOUCH_FIRST_POINT_MS, TOUCH_CAP_MS);
+            if (st.valid) {
+                bool p2_poll = false;
+                if (proto2_try_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
+                                     &p2_poll)) {
+                    if (p2_poll && fetch_and_paint_current(c->server_url)) {}
+                } else {
+                    overlay_try_echo(st.x1, st.y1);
+                    uint64_t ev = ++s_button_event_seq;
+                    rest_set_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
+                                   c->last_frame_etag, ev);
+                    fetch_and_paint_current(c->server_url);
+                    rest_set_touch(0, 0, 0, 0, 0, NULL, 0);
+                }
+            }
+            continue;
+        }
+
+        sse_pump(150);
+        if (!sse_connected()) overlay_linger_poll();   /* polling fallback */
+        proto2_flush_reports();
+        proto2_linger_tick();
+        if (overlay_take_refetch()) {
+            rest_config_set_frame_etag("");
+            rest_config_save();
+            fetch_and_paint_current(c->server_url);
+        }
+        if (proto2_sync_pending()) proto2_sync_tail();
+
+        if (esp_timer_get_time() >= next_beat_us) {
+            /* Heartbeat: frame freshness + status (config/values/sync). */
+            fetch_and_paint_current(c->server_url);
+            char ip[16] = {0};
+            wifi_manager_get_sta_ip(ip, sizeof ip);
+            rest_status_out_t so;
+            if (rest_post_status(current_rssi(), ip, EPD_WIDTH, EPD_HEIGHT,
+                                 c->sleep_s, 0, FW_VERSION, &so,
+                                 8000) == REST_OK) {
+                if (so.overlay_values[0]) {
+                    overlay_ingest_values(so.overlay_values,
+                                          strlen(so.overlay_values));
+                    proto2_ingest_values(so.overlay_values,
+                                         strlen(so.overlay_values));
+                }
+                if (so.overlay_patches[0])
+                    overlay_ingest_patches(so.overlay_patches,
+                                           strlen(so.overlay_patches));
+                proto2_note_clock(so.server_time, so.local_hh, so.local_mm);
+                if (so.sync_obj[0])
+                    proto2_note_sync(so.sync_obj, strlen(so.sync_obj));
+                if (so.sleep_interval_s > 0)
+                    rest_config_set_sleep_s(so.sleep_interval_s);
+            }
+            int32_t beat_s = c->sleep_s > 0 ? c->sleep_s : SLEEP_INTERVAL_S;
+            next_beat_us = esp_timer_get_time() + (int64_t)beat_s * 1000000;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    sse_stop();
+    wifi_sta_stop();
+}
+#endif /* kiosk */
+
 static void sleep_forever_or_until_timer(void)
 {
+#if defined(BOARD_OVERLAY_PARTIAL) && defined(BOARD_HAS_TOUCH)
+    /* Kiosk power policy: the admin opted this device out of deep sleep.
+     * Runs until config or low battery says otherwise, then sleeps. */
+    if (rest_config_get()->always_on) kiosk_loop();
+#endif
+
     /* Card off before every deep sleep (and before a dev-loop restart);
      * no-op when nothing is mounted. */
     deck_pre_sleep();
