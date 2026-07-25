@@ -406,12 +406,17 @@ static bool fetch_and_paint_current(const char *server_url)
     if (image_decode_to_frame(&img, fullurl, &frame) != ESP_OK) frame = NULL;
     free(img.data);
     if (!frame) return false;
+    overlay_frame_downloaded(fo.etag);   /* refresh spec for the new digest */
     ESP_ERROR_CHECK(epd_port_init());
     epd_init();
     epd_display(frame);
     epd_sleep();
-    free(frame);
     if (fo.etag[0]) rest_config_set_frame_etag(fo.etag);
+    /* Keep the overlay buffers current so follow-up echoes and schema-2
+     * patch applications in this same linger window composite onto the
+     * frame actually on glass (frame freed only after the copy). */
+    overlay_after_paint(frame, fo.etag);
+    free(frame);
     return true;
 }
 #endif /* BOARD_HAS_TOUCH || BOARD_HAS_BUTTONS */
@@ -1062,6 +1067,17 @@ void app_main(void)
     char new_etag[80] = {0};
     bool deck_sync_needed = false;   /* status asked for a deck cache resync */
     char deck_srv_ver[DECK_VERSION_CAP] = {0};
+#if BOARD_OVERLAY_PARTIAL
+    /* Status-borne patch doc, held until AFTER the paint: on a wake that
+     * downloads a frame, the overlay buffers only exist once
+     * overlay_after_paint has run -- ingesting at status time would hit the
+     * no-buffer fallback and force a useless full re-download (the render
+     * bin under a stable digest stays the ORIGINAL state; the patch is the
+     * only carrier of the post-action pixels). Static: 1.5 KB on the main
+     * task stack overflowed it (bench 2026-07-25); one wake per boot, so
+     * bss zero-init gives the same per-wake semantics. */
+    static char pending_patches[1536];
+#endif
 
     /* 1. Bootstrap a device token (discover/claim, or register with a code). */
     if (c->device_token[0] == '\0') {
@@ -1180,12 +1196,13 @@ void app_main(void)
             }
 #endif
 #if BOARD_OVERLAY_PARTIAL
-            /* overlay_values / overlay_patches may ride the status response. */
+            /* overlay_values may ride the status response; patches too, but
+             * those are deferred until after the paint (see pending_patches). */
             if (so.overlay_values[0])
                 overlay_ingest_values(so.overlay_values, strlen(so.overlay_values));
             if (so.overlay_patches[0])
-                overlay_ingest_patches(so.overlay_patches,
-                                       strlen(so.overlay_patches));
+                snprintf(pending_patches, sizeof pending_patches, "%s",
+                         so.overlay_patches);
 #endif
             /* Deck resync signal: decided here, executed at the tail of the
              * wake (after painting + reporting, radio still up). */
@@ -1269,10 +1286,10 @@ void app_main(void)
         epd_init();
         epd_display(frame);
         epd_sleep();
-        free(frame);
         if (new_etag[0]) { rest_config_set_frame_etag(new_etag); cfg_dirty = true; }
         rest_config_set_ui_state(UI_CONNECTED);   /* a real frame is up now */
         overlay_after_paint(frame, new_etag);      /* keep base copy + SD patches */
+        free(frame);   /* AFTER after_paint: it memcpys the frame into its buffers */
         deck_network_painted();   /* SD-paint report no longer describes the display */
     } else if (just_onboarded) {
         /* Onboarding completed but the server has no frame ready yet -- confirm
@@ -1290,6 +1307,15 @@ void app_main(void)
     } else {
         ESP_LOGI(TAG, "no frame yet; leaving panel as-is");
     }
+
+#if BOARD_OVERLAY_PARTIAL
+    /* Deferred status-borne patch doc: buffers are live now on a paint wake
+     * (partial-refreshes the patched rects on top of the just-painted base).
+     * On a 304 wake with only the sparse SD restore, the ingest falls back
+     * to clearing the ETag; the next wake's full download converges. */
+    if (pending_patches[0])
+        overlay_ingest_patches(pending_patches, strlen(pending_patches));
+#endif
 
     /* Deck cache sync tail (contract: AFTER painting and reporting): the
      * radio was kept up for this; fetch the manifest, diff, fetch missing
@@ -1321,9 +1347,21 @@ void app_main(void)
                  * in place. A patch the poll couldn't honour falls back to
                  * one normal /frame poll (the contract's only fallback). */
                 overlay_linger_poll();
-                if (overlay_take_refetch() &&
-                    fetch_and_paint_current(rest_config_get()->server_url))
+                if (overlay_take_refetch()) {
+                    /* The digest never changes under schema 2, so the forced
+                     * repaint needs the cached ETag dropped to get a 200. */
+                    rest_config_set_frame_etag("");
                     cfg_dirty = true;
+                    if (fetch_and_paint_current(rest_config_get()->server_url)) {
+                        /* The fallback full repaint can outlive the linger
+                         * window; keep it open a few more polls so the patch
+                         * that forced the refetch can now apply onto the live
+                         * buffers (and taps latched during the paint still
+                         * get serviced). */
+                        int64_t floor_us = esp_timer_get_time() + 6 * 1000000LL;
+                        if (deadline < floor_us) deadline = floor_us;
+                    }
+                }
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }

@@ -366,8 +366,12 @@ static void hygiene_or_partial(int x, int y, int w, int h, bool fast)
             return;
         }
         /* Sparse wake: no full frame on hand. Force the next network cycle
-         * to repaint fully by dropping the cached ETag. */
+         * to repaint fully by dropping the cached ETag. Persist it: the
+         * mutator only touches the RAM cache, and this wake's config save
+         * belongs to main -- without an explicit save the old ETag comes
+         * back from NVS next wake and the refetch never happens. */
         rest_config_set_frame_etag("");
+        rest_config_save();
         overlay_hygiene_reset(&s_hygiene);
     }
     epd_display_partial(s_work, x, y, w, h, fast);
@@ -435,7 +439,10 @@ void overlay_ingest_patches(const char *json, size_t len)
 {
     if (!json || !len || !epd_supports_partial()) return;
 
-    overlay_patch_doc_t doc;
+    /* Static: called deep in the linger loop's call chain; ~800 B of doc +
+     * url on the main task stack contributed to a bench stack overflow.
+     * Single-threaded per wake, so a static is safe. */
+    static overlay_patch_doc_t doc;
     if (!overlay_patch_parse(json, len, EPD_WIDTH, EPD_HEIGHT, EPD_BPP_NUM, &doc))
         return;   /* malformed = dropped whole; never clipped or best-efforted */
 
@@ -461,9 +468,14 @@ void overlay_ingest_patches(const char *json, size_t len)
      * stale glass forever. Clear the ETag so the fallback poll re-downloads
      * the full frame (the server's frame body already reflects the patch). */
     if (!s_work || s_sparse) {
-        ESP_LOGI(TAG, "patch %lld with no full frame in RAM; forcing refetch",
+        /* No pixel source to composite into. Only flag the refetch: the
+         * linger loop consumes it (someone is watching; worth a full
+         * repaint). On a timer wake the flag simply expires -- the server
+         * stages patches for every periodic re-render (clock/sensor rects),
+         * and paying a 30 s GC16 per clock tick would burn the panel and
+         * the battery; values keep the declared slots fresh regardless. */
+        ESP_LOGI(TAG, "patch %lld with no full frame in RAM; linger may refetch",
                  (long long)doc.seq);
-        rest_config_set_frame_etag("");
         s_refetch = true;
         return;
     }
@@ -510,6 +522,7 @@ void overlay_ingest_patches(const char *json, size_t len)
     free(img.data);
     if (!applied) {   /* blob-bounds refusal: buffers may be half-patched */
         rest_config_set_frame_etag("");
+        rest_config_save();
         s_refetch = true;
         return;
     }
@@ -533,10 +546,21 @@ void overlay_ingest_patches(const char *json, size_t len)
     if (epd_port_init() == ESP_OK) {
         epd_init();
         redraw_changed_slots(slots_hit);   /* draws + refreshes slot rects */
-        for (int i = 0; i < doc.n_rects; i++) {
+        /* One refresh over the union bounding box, not one per rect: at
+         * ~1 s of DU waveform per window, 8-10 rects serialized cost 10+ s
+         * and trip the hygiene limit mid-patch (bench 2026-07-25: 16-22 s
+         * per apply). The buffers already hold every rect, so a single
+         * bbox pass paints them all in one waveform and one hygiene tick. */
+        int bx0 = doc.rects[0].x, by0 = doc.rects[0].y;
+        int bx1 = bx0 + doc.rects[0].w, by1 = by0 + doc.rects[0].h;
+        for (int i = 1; i < doc.n_rects; i++) {
             const overlay_patch_rect_t *r = &doc.rects[i];
-            hygiene_or_partial(r->x, r->y, r->w, r->h, true /* DU */);
+            if (r->x < bx0) bx0 = r->x;
+            if (r->y < by0) by0 = r->y;
+            if (r->x + r->w > bx1) bx1 = r->x + r->w;
+            if (r->y + r->h > by1) by1 = r->y + r->h;
         }
+        hygiene_or_partial(bx0, by0, bx1 - bx0, by1 - by0, true /* DU */);
     }
     s_patch_seq = doc.seq;
     ESP_LOGI(TAG, "patch seq %lld applied: %d rect(s), %u B in %lld ms",
