@@ -62,6 +62,18 @@ void proto2_frame_painted(const char *digest);
  * on glass (main uses this to floor the linger window). */
 bool proto2_active(void);
 
+/* A values envelope arrived ({"seq": ms, "values": {key: str}}) -- from
+ * /status, /frame/data, or SSE. Re-blits changed text regions. Keeps its
+ * own seq high-water mark (same stream semantics as overlay values). */
+void proto2_ingest_values(const char *json, size_t len);
+
+/* Clock discipline from /status: server_time (unix s) + the server-local
+ * hh:mm. local: text keys render from this offset with zero requests. */
+void proto2_note_clock(uint32_t server_time, int local_hh, int local_mm);
+
+/* Linger idle tick: re-blits local:clock regions on the minute. */
+void proto2_linger_tick(void);
+
 #else /* !proto2 boards */
 
 static inline void proto2_boot(void) { }
@@ -75,5 +87,9 @@ static inline bool proto2_try_touch(int x0, int y0, int x1, int y1,
 static inline void proto2_flush_reports(void) { }
 static inline void proto2_frame_painted(const char *d) { (void)d; }
 static inline bool proto2_active(void) { return false; }
+static inline void proto2_ingest_values(const char *j, size_t l) { (void)j; (void)l; }
+static inline void proto2_note_clock(uint32_t t, int h, int m)
+{ (void)t; (void)h; (void)m; }
+static inline void proto2_linger_tick(void) { }
 
 #endif

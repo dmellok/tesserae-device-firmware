@@ -1229,8 +1229,11 @@ void app_main(void)
 #if BOARD_OVERLAY_PARTIAL
             /* overlay_values may ride the status response; patches too, but
              * those are deferred until after the paint (see pending_patches). */
-            if (so.overlay_values[0])
+            if (so.overlay_values[0]) {
                 overlay_ingest_values(so.overlay_values, strlen(so.overlay_values));
+                proto2_ingest_values(so.overlay_values, strlen(so.overlay_values));
+            }
+            proto2_note_clock(so.server_time, so.local_hh, so.local_mm);
             if (so.overlay_patches[0])
                 snprintf(pending_patches, sizeof pending_patches, "%s",
                          so.overlay_patches);
@@ -1380,6 +1383,7 @@ void app_main(void)
                  * one normal /frame poll (the contract's only fallback). */
                 overlay_linger_poll();
                 proto2_flush_reports();
+                proto2_linger_tick();   /* local:clock minute re-blit */
                 if (overlay_take_refetch()) {
                     /* The digest never changes under schema 2, so the forced
                      * repaint needs the cached ETag dropped to get a 200. */

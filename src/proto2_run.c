@@ -8,10 +8,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
+#include "cJSON.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "image_fetcher.h"
 
 #include "deck.h"           /* deck_digest_valid (16-hex check) */
 #include "epd_driver.h"
@@ -28,6 +31,7 @@ static const char *TAG = "proto2";
 #define P2_MANIFEST_MAX   (16 * 1024)   /* raw JSON cap (32 KB parsed pools) */
 #define P2_LEDGER_MAX     16
 #define P2_RQUEUE_MAX     16
+#define P2_ATLAS_MAX_B    (64 * 1024)   /* per-strip cap (contract §9) */
 
 /* Minted by main.c (the single wake-event counter, uint64, <= 2^53). */
 extern uint64_t app_next_event_id(void);
@@ -38,6 +42,14 @@ static p2_manifest_t s_man;
 static bool          s_have_man;
 static char         *s_raw_man;         /* raw JSON kept for the SD cache */
 static size_t        s_raw_man_len;
+static uint8_t      *s_atlas_bits[P2_MAX_ATLASES];  /* PSRAM-resident strips */
+static int64_t       s_values_seq = -1; /* v2 values stream high-water */
+
+/* local: clock discipline (from /status). The offset converts the RTC's
+ * unix time into server-local wall minutes without any tz database. */
+static bool    s_clock_ok;
+static int32_t s_clock_off_min;         /* local = utc_minutes + off */
+static int     s_clock_last_min = -1;   /* last rendered minute-of-day */
 
 /* Server generation probe, cached per boot (a wake = a connection epoch):
  * 0 unknown, +1 v2 (manifest block seen), -1 v1 (200 without the block). */
@@ -199,6 +211,174 @@ static void report_or_queue(const p2_report_t *rep)
     if (s_rq_len > 0 || !report_send(rep)) rq_push(rep);
 }
 
+/* ---- atlas strips (fetch + SD cache + digest verify; PSRAM resident) ---- */
+
+static bool atlas_path(char *out, size_t cap, const char *digest)
+{
+    if (!sdcard_mounted() || !deck_digest_valid(digest)) return false;
+    int n = snprintf(out, cap,
+                     SDCARD_MOUNT_POINT "/tesserae/proto2/atlas-%s.bin",
+                     digest);
+    return n > 0 && n < (int)cap;
+}
+
+static bool atlas_digest_ok(const uint8_t *bits, size_t len, const char *digest)
+{
+    uint8_t sha[32];
+    char hex[DECK_DIGEST_HEX + 1];
+    deck_sha256(bits, len, sha);
+    deck_digest_hex16(sha, hex);
+    return strcmp(hex, digest) == 0;
+}
+
+/* Expected packed strip size: total width always even (contract §9);
+ * tolerate an odd parse by rounding the stride up. */
+static size_t atlas_expected_len(const p2_atlas_t *a)
+{
+    return (size_t)((a->strip_w + 1) / 2) * (size_t)a->height;
+}
+
+static void free_atlases(void)
+{
+    for (int i = 0; i < P2_MAX_ATLASES; i++) {
+        free(s_atlas_bits[i]);
+        s_atlas_bits[i] = NULL;
+    }
+}
+
+/* Attach bits for every manifest atlas: SD first, network second. A text
+ * region whose atlas fails stays parsed but unrenderable (draw no-ops). */
+static void load_atlases(void)
+{
+    for (int i = 0; i < s_man.n_atlases; i++) {
+        p2_atlas_t *a = &s_man.atlases[i];
+        size_t want = atlas_expected_len(a);
+        if (want == 0 || want > P2_ATLAS_MAX_B) continue;
+
+        char path[144];
+        uint8_t *bits = NULL;
+        if (atlas_path(path, sizeof path, a->digest)) {
+            FILE *f = fopen(path, "rb");
+            if (f) {
+                bits = malloc(want + 1);
+                size_t got = bits ? fread(bits, 1, want + 1, f) : 0;
+                fclose(f);
+                if (!bits || got != want ||
+                    !atlas_digest_ok(bits, got, a->digest)) {
+                    free(bits); bits = NULL;
+                    unlink(path);
+                }
+            }
+        }
+        if (!bits) {
+            char url[320];
+            if (a->url[0] == '/')
+                snprintf(url, sizeof url, "%s%s",
+                         rest_config_get()->server_url, a->url);
+            else
+                snprintf(url, sizeof url, "%s", a->url);
+            fetched_image_t img;
+            if (image_fetch_auth(url, rest_bearer_token(), &img) != ESP_OK)
+                continue;
+            if (img.len != want || !atlas_digest_ok(img.data, img.len,
+                                                    a->digest)) {
+                ESP_LOGW(TAG, "atlas %s wrong size/digest", a->digest);
+                free(img.data);
+                continue;
+            }
+            bits = img.data;
+            if (atlas_path(path, sizeof path, a->digest)) {
+                mkdir(SDCARD_MOUNT_POINT "/tesserae", 0775);
+                mkdir(SDCARD_MOUNT_POINT "/tesserae/proto2", 0775);
+                FILE *f = fopen(path, "wb");
+                if (f) { fwrite(bits, 1, want, f); fclose(f); }
+            }
+        }
+        free(s_atlas_bits[i]);
+        s_atlas_bits[i] = bits;
+        a->bits = bits;
+    }
+}
+
+/* ---- text regions: values + local clock + slider live text ---- */
+
+static void draw_text_region(p2_text_t *t, const char *str)
+{
+    bool full = false;
+    uint8_t *work = overlay_work_fb(&full);
+    if (!work || !full) return;
+    const p2_atlas_t *a = &s_man.atlases[t->atlas_idx];
+    if (!a->bits) return;
+    snprintf(t->value, sizeof t->value, "%s", str);
+    p2_draw_text(work, EPD_WIDTH, EPD_HEIGHT, t, a, str);
+    overlay_partial_refresh(t->x, t->y, t->w, t->h, true /* DU */);
+}
+
+void proto2_ingest_values(const char *json, size_t len)
+{
+    if (!s_have_man || s_man.n_text == 0 || !json || !len) return;
+    if (!p2_manifest_matches(&s_man, rest_config_get()->last_frame_etag))
+        return;
+
+    cJSON *root = cJSON_ParseWithLength(json, len);
+    if (!root) return;
+    do {
+        const cJSON *seq = cJSON_GetObjectItemCaseSensitive(root, "seq");
+        if (!cJSON_IsNumber(seq)) break;
+        int64_t sq = (int64_t)seq->valuedouble;
+        if (s_values_seq >= 0 && sq <= s_values_seq) break;  /* newest wins */
+        const cJSON *values = cJSON_GetObjectItemCaseSensitive(root, "values");
+        if (!cJSON_IsObject(values)) break;
+        s_values_seq = sq;
+
+        for (int i = 0; i < s_man.n_text; i++) {
+            p2_text_t *t = &s_man.text[i];
+            const cJSON *v = cJSON_GetObjectItemCaseSensitive(values, t->key);
+            if (!cJSON_IsString(v) || !v->valuestring) continue;
+            if (strcmp(v->valuestring, t->value) == 0) continue;
+            draw_text_region(t, v->valuestring);
+            ESP_LOGI(TAG, "text '%s' = \"%s\"", t->id, t->value);
+        }
+    } while (0);
+    cJSON_Delete(root);
+}
+
+void proto2_note_clock(uint32_t server_time, int local_hh, int local_mm)
+{
+    if (!server_time || local_hh < 0 || local_mm < 0) return;
+    int utc_min = (int)((server_time / 60) % (24 * 60));
+    int loc_min = local_hh * 60 + local_mm;
+    s_clock_off_min = loc_min - utc_min;   /* may wrap; normalised on use */
+    s_clock_ok = true;
+}
+
+/* Render one local: key. Format "local:clock:HH.MM" -> "14.05" style. */
+static void render_local_clock(p2_text_t *t)
+{
+    if (!s_clock_ok) return;
+    time_t now = time(NULL);
+    if (now < 1000000000) return;          /* RTC undisciplined */
+    int m = (int)((now / 60 + s_clock_off_min) % (24 * 60));
+    if (m < 0) m += 24 * 60;
+    const char *fmt = t->key + strlen("local:clock:");
+    char sep = strchr(fmt, ':') ? ':' : '.';
+    char out[8];
+    snprintf(out, sizeof out, "%02d%c%02d", m / 60, sep, m % 60);
+    if (strcmp(out, t->value) != 0) draw_text_region(t, out);
+}
+
+void proto2_linger_tick(void)
+{
+    if (!s_have_man || !s_clock_ok) return;
+    time_t now = time(NULL);
+    int cur = (int)((now / 60 + s_clock_off_min) % (24 * 60));
+    if (cur == s_clock_last_min) return;
+    s_clock_last_min = cur;
+    for (int i = 0; i < s_man.n_text; i++)
+        if (strncmp(s_man.text[i].key, "local:clock:", 12) == 0)
+            render_local_clock(&s_man.text[i]);
+}
+
 /* ---- manifest lifecycle ---- */
 
 static void drop_manifest(void)
@@ -207,6 +387,8 @@ static void drop_manifest(void)
     s_raw_man = NULL;
     s_raw_man_len = 0;
     s_have_man = false;
+    s_values_seq = -1;
+    free_atlases();
     memset(&s_man, 0, sizeof s_man);
 }
 
@@ -233,6 +415,9 @@ void proto2_boot(void)
     s_raw_man = buf;
     s_raw_man_len = n;
     s_have_man = true;
+    /* Cold boot: SD-cached strips only (no radio yet); a cache miss just
+     * leaves that text region dormant until the next radio-up wake. */
+    load_atlases();
     ESP_LOGI(TAG, "manifest restored from SD for %s (%d regions, %d text)",
              digest, s_man.n_regions, s_man.n_text);
 }
@@ -288,6 +473,7 @@ void proto2_frame_downloaded(const char *digest, const char *manifest_digest,
     s_raw_man = buf;
     s_raw_man_len = len;
     s_have_man = true;
+    load_atlases();
     man_cache_write(digest);
     ESP_LOGI(TAG, "manifest %s: %d regions, %d text, %d atlases",
              s_man.manifest_digest, s_man.n_regions, s_man.n_text,
@@ -358,6 +544,19 @@ bool proto2_try_touch(int x0, int y0, int x1, int y1, uint32_t ms,
     rep.event_id = app_next_event_id();
     rep.x0 = x0; rep.y0 = y0; rep.x1 = x1; rep.y1 = y1;
     report_or_queue(&rep);
+
+    /* Slider: update the declared value_text locally so the number tracks
+     * the thumb before any server round trip (format approximated as the
+     * bare percentage; the server's next values envelope makes it exact). */
+    if (g == P2_G_SLIDE && r->fb == P2_FB_SLIDER && r->fb_value_text[0]) {
+        for (int i = 0; i < s_man.n_text; i++)
+            if (strcmp(s_man.text[i].id, r->fb_value_text) == 0) {
+                char v[8];
+                snprintf(v, sizeof v, "%d%%", value);
+                draw_text_region(&s_man.text[i], v);
+                break;
+            }
+    }
 
     /* 3. What happens next. Tier 2 (and nav until bundles land) waits on a
      * new frame; tier 0/1 corrections ride the linger's patch polling. */

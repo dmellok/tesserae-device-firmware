@@ -643,6 +643,12 @@ void overlay_linger_poll(void)
     if (st == REST_OK) {         /* incl. 404: silently dormant */
         overlay_ingest_values(buf, len);
         overlay_ingest_patches(buf, len);
+#if BOARD_HAS_TOUCH
+        {   /* proto2 text regions share the same values envelope (§7) */
+            extern void proto2_ingest_values(const char *json, size_t len);
+            proto2_ingest_values(buf, len);
+        }
+#endif
     }
     free(buf);
 }
