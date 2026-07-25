@@ -268,6 +268,53 @@ int main(void)
         CHECK(fb[2 * 8 + 1] == 0x77);
     }
 
+    /* ---- bundle parse ---- */
+    {
+        static const char BUNDLE[] =
+        "{"
+        "  \"bundle_digest\": \"9c01d2e4f6a81b3c\","
+        "  \"states\": ["
+        "    {\"kind\": \"frame\", \"state_id\": \"page:b2f1c3d4e5f60718\","
+        "     \"frame_digest\": \"cd15a5fe1a4532e3\","
+        "     \"manifest_digest\": \"77aa88bb99cc00dd\", \"bytes\": 1314144,"
+        "     \"ttl_s\": 900, \"url\": \"/api/v1/device/d/bundle/frame/cd15a5fe1a4532e3\"},"
+        "    {\"kind\": \"tile\", \"state_id\": \"st:tile_desk/on\","
+        "     \"rect\": {\"x\": 128, \"y\": 640, \"w\": 300, \"h\": 90},"
+        "     \"tile_digest\": \"e4b0aa11bb22cc33\", \"format\": \"fb-rect\","
+        "     \"bytes\": 13500, \"url\": \"/api/v1/device/d/bundle/tile/e4b0aa11bb22cc33\"},"
+        "    {\"kind\": \"tile\", \"state_id\": \"st:bad/size\","
+        "     \"rect\": {\"x\": 128, \"y\": 640, \"w\": 300, \"h\": 90},"
+        "     \"tile_digest\": \"a119bb22cc33dd44\", \"bytes\": 999,"
+        "     \"url\": \"/x\"},"
+        "    {\"kind\": \"hologram\", \"state_id\": \"st:future\","
+        "     \"bytes\": 1, \"url\": \"/x\"},"
+        "    {\"kind\": \"frame\", \"state_id\": \"page:wrongsize\","
+        "     \"frame_digest\": \"cd15a5fe1a4532e4\", \"bytes\": 5,"
+        "     \"url\": \"/x\"}"
+        "  ],"
+        "  \"links\": {\"page:home\": {\"swipe_left\": \"page:b2f1c3d4e5f60718\","
+        "                              \"el:nav_next:tap\": \"page:b2f1c3d4e5f60718\"}}"
+        "}";
+        static p2_bundle_t b;
+        CHECK(p2_bundle_parse(BUNDLE, sizeof BUNDLE - 1, 1314144, &b));
+        CHECK(strcmp(b.bundle_digest, "9c01d2e4f6a81b3c") == 0);
+        /* bad-size tile, unknown kind, wrong-size frame all dropped */
+        CHECK(b.n_states == 2);
+        CHECK(b.states[0].kind == P2_BK_FRAME && b.states[0].ttl_s == 900);
+        CHECK(strcmp(b.states[0].man_digest, "77aa88bb99cc00dd") == 0);
+        CHECK(b.states[1].kind == P2_BK_TILE);
+        CHECK(b.states[1].bytes == 300u / 2 * 90);
+        CHECK(b.n_links == 2);
+        CHECK(p2_bundle_state(&b, "st:tile_desk/on") == &b.states[1]);
+        CHECK(p2_bundle_state(&b, "st:nope") == NULL);
+        const char *to = p2_bundle_link(&b, "page:home", "swipe_left");
+        CHECK(to && strcmp(to, "page:b2f1c3d4e5f60718") == 0);
+        CHECK(p2_bundle_link(&b, "page:home", "swipe_right") == NULL);
+        CHECK(p2_bundle_link(&b, "page:away", "swipe_left") == NULL);
+        /* strict: bad digest fails the whole document */
+        CHECK(!p2_bundle_parse("{\"bundle_digest\": \"XYZ\"}", 24, 0, &b));
+    }
+
     printf("%d tests, %d failures\n", tests, fails);
     return fails ? 1 : 0;
 }

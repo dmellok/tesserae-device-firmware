@@ -74,6 +74,13 @@ void proto2_note_clock(uint32_t server_time, int local_hh, int local_mm);
 /* Linger idle tick: re-blits local:clock regions on the minute. */
 void proto2_linger_tick(void);
 
+/* A "sync" envelope arrived (raw JSON: frame/manifest/bundle digests).
+ * A bundle_digest mismatch flags a resync executed by proto2_sync_tail()
+ * at the wake's tail (radio still up), mirroring the deck sync pattern. */
+void proto2_note_sync(const char *json, size_t len);
+bool proto2_sync_pending(void);
+void proto2_sync_tail(void);
+
 #else /* !proto2 boards */
 
 static inline void proto2_boot(void) { }
@@ -91,5 +98,8 @@ static inline void proto2_ingest_values(const char *j, size_t l) { (void)j; (voi
 static inline void proto2_note_clock(uint32_t t, int h, int m)
 { (void)t; (void)h; (void)m; }
 static inline void proto2_linger_tick(void) { }
+static inline void proto2_note_sync(const char *j, size_t l) { (void)j; (void)l; }
+static inline bool proto2_sync_pending(void) { return false; }
+static inline void proto2_sync_tail(void) { }
 
 #endif

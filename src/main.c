@@ -1234,6 +1234,8 @@ void app_main(void)
                 proto2_ingest_values(so.overlay_values, strlen(so.overlay_values));
             }
             proto2_note_clock(so.server_time, so.local_hh, so.local_mm);
+            if (so.sync_obj[0])
+                proto2_note_sync(so.sync_obj, strlen(so.sync_obj));
             if (so.overlay_patches[0])
                 snprintf(pending_patches, sizeof pending_patches, "%s",
                          so.overlay_patches);
@@ -1312,7 +1314,8 @@ void app_main(void)
 #endif
     /* A pending deck sync keeps the radio up through the paint so the sync
      * tail can run afterwards (contract: sync after painting + reporting). */
-    if (!will_linger && !deck_sync_needed) wifi_sta_stop();
+    if (!will_linger && !deck_sync_needed && !proto2_sync_pending())
+        wifi_sta_stop();
 
     if (frame != NULL) {
         ESP_LOGI(TAG, "painting downloaded frame (~30 s)...");
@@ -1357,6 +1360,11 @@ void app_main(void)
      * frames, delete orphans. Then finish the deferred radio-down. */
     if (deck_sync_needed) {
         deck_sync_tail(true, deck_srv_ver);
+        if (!will_linger && !proto2_sync_pending()) wifi_sta_stop();
+    }
+    /* proto2 bundle resync (contract: after painting + reporting). */
+    if (proto2_sync_pending()) {
+        proto2_sync_tail();
         if (!will_linger) wifi_sta_stop();
     }
 

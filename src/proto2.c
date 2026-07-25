@@ -362,6 +362,124 @@ int p2_hit(const p2_manifest_t *m, int x0, int y0, int x1, int y1,
     return -1;
 }
 
+/* ---------- state bundles ---------- */
+
+bool p2_bundle_parse(const char *json, size_t len, uint32_t frame_bytes,
+                     p2_bundle_t *out)
+{
+    memset(out, 0, sizeof *out);
+    if (!json || !len) return false;
+    cJSON *root = cJSON_ParseWithLength(json, len);
+    if (!root) return false;
+
+    bool ok = false;
+    do {
+        if (!copy_str(out->bundle_digest, sizeof out->bundle_digest,
+                      cJSON_GetObjectItemCaseSensitive(root, "bundle_digest")) ||
+            !digest16_ok(out->bundle_digest))
+            break;
+
+        const cJSON *states = cJSON_GetObjectItemCaseSensitive(root, "states");
+        const cJSON *js;
+        if (cJSON_IsArray(states)) cJSON_ArrayForEach(js, states) {
+            if (out->n_states >= P2_MAX_BSTATES) break;
+            p2_bstate_t *st = &out->states[out->n_states];
+            memset(st, 0, sizeof *st);
+            char kind[8] = {0};
+            copy_str(kind, sizeof kind,
+                     cJSON_GetObjectItemCaseSensitive(js, "kind"));
+            if (!copy_str(st->state_id, sizeof st->state_id,
+                          cJSON_GetObjectItemCaseSensitive(js, "state_id")) ||
+                !copy_str(st->url, sizeof st->url,
+                          cJSON_GetObjectItemCaseSensitive(js, "url")))
+                continue;
+            const cJSON *jb = cJSON_GetObjectItemCaseSensitive(js, "bytes");
+            if (!cJSON_IsNumber(jb) || jb->valuedouble < 1) continue;
+            st->bytes = (uint32_t)jb->valuedouble;
+
+            if (strcmp(kind, "frame") == 0) {
+                st->kind = P2_BK_FRAME;
+                if (!copy_str(st->digest, sizeof st->digest,
+                              cJSON_GetObjectItemCaseSensitive(js, "frame_digest")) ||
+                    !digest16_ok(st->digest))
+                    continue;
+                copy_str(st->man_digest, sizeof st->man_digest,
+                         cJSON_GetObjectItemCaseSensitive(js, "manifest_digest"));
+                const cJSON *jt = cJSON_GetObjectItemCaseSensitive(js, "ttl_s");
+                st->ttl_s = cJSON_IsNumber(jt) ? (int32_t)jt->valuedouble : 0;
+                if (frame_bytes && st->bytes != frame_bytes) continue;
+            } else if (strcmp(kind, "tile") == 0) {
+                st->kind = P2_BK_TILE;
+                if (!copy_str(st->digest, sizeof st->digest,
+                              cJSON_GetObjectItemCaseSensitive(js, "tile_digest")) ||
+                    !digest16_ok(st->digest))
+                    continue;
+                const cJSON *jr = cJSON_GetObjectItemCaseSensitive(js, "rect");
+                if (!cJSON_IsObject(jr)) continue;
+                const cJSON *jx = cJSON_GetObjectItemCaseSensitive(jr, "x");
+                const cJSON *jy = cJSON_GetObjectItemCaseSensitive(jr, "y");
+                const cJSON *jw = cJSON_GetObjectItemCaseSensitive(jr, "w");
+                const cJSON *jh = cJSON_GetObjectItemCaseSensitive(jr, "h");
+                if (!cJSON_IsNumber(jx) || !cJSON_IsNumber(jy) ||
+                    !cJSON_IsNumber(jw) || !cJSON_IsNumber(jh)) continue;
+                st->x = (int)jx->valuedouble; st->y = (int)jy->valuedouble;
+                st->w = (int)jw->valuedouble; st->h = (int)jh->valuedouble;
+                if (st->w <= 0 || st->h <= 0 ||
+                    (st->x & 1) || (st->w & 1)) continue;  /* wire even rule */
+                if (st->bytes != (uint32_t)(st->w / 2) * (uint32_t)st->h)
+                    continue;                              /* size mismatch */
+            } else {
+                continue;   /* unknown kind: ignore (additive) */
+            }
+            out->n_states++;
+        }
+
+        const cJSON *links = cJSON_GetObjectItemCaseSensitive(root, "links");
+        const cJSON *jf;
+        if (cJSON_IsObject(links)) cJSON_ArrayForEach(jf, links) {
+            if (!jf->string || !cJSON_IsObject(jf)) continue;
+            const cJSON *jk;
+            cJSON_ArrayForEach(jk, jf) {
+                if (out->n_links >= P2_MAX_LINKS) break;
+                if (!jk->string || !cJSON_IsString(jk) || !jk->valuestring)
+                    continue;
+                p2_blink_t *l = &out->links[out->n_links];
+                if (strlen(jf->string) >= sizeof l->from ||
+                    strlen(jk->string) >= sizeof l->key ||
+                    strlen(jk->valuestring) >= sizeof l->to) continue;
+                strcpy(l->from, jf->string);
+                strcpy(l->key, jk->string);
+                strcpy(l->to, jk->valuestring);
+                out->n_links++;
+            }
+        }
+        ok = true;
+    } while (0);
+
+    cJSON_Delete(root);
+    if (!ok) memset(out, 0, sizeof *out);
+    return ok;
+}
+
+const p2_bstate_t *p2_bundle_state(const p2_bundle_t *b, const char *state_id)
+{
+    if (!b || !state_id) return NULL;
+    for (int i = 0; i < b->n_states; i++)
+        if (strcmp(b->states[i].state_id, state_id) == 0) return &b->states[i];
+    return NULL;
+}
+
+const char *p2_bundle_link(const p2_bundle_t *b, const char *from,
+                           const char *key)
+{
+    if (!b || !from || !key) return NULL;
+    for (int i = 0; i < b->n_links; i++)
+        if (strcmp(b->links[i].from, from) == 0 &&
+            strcmp(b->links[i].key, key) == 0)
+            return b->links[i].to;
+    return NULL;
+}
+
 const char *p2_gesture_name(p2_gesture_t g)
 {
     switch (g) {

@@ -22,6 +22,7 @@
 #include "net_rest.h"
 #include "overlay.h"        /* overlay_invert_rect (shared fb primitive) */
 #include "overlay_run.h"    /* framebuffer + hygiene accessors */
+#include "deck_cache.h"     /* digest-verified SD store (pseudo-deck p2bundle) */
 #include "proto2.h"
 #include "rest_config.h"
 #include "sdcard.h"
@@ -35,6 +36,8 @@ static const char *TAG = "proto2";
 
 /* Minted by main.c (the single wake-event counter, uint64, <= 2^53). */
 extern uint64_t app_next_event_id(void);
+
+static void bundle_track_page(const char *frame_digest);   /* fwd */
 
 /* ---- state (statics: the linger call chain must stay off the stack) ---- */
 
@@ -54,6 +57,17 @@ static int     s_clock_last_min = -1;   /* last rendered minute-of-day */
 /* Server generation probe, cached per boot (a wake = a connection epoch):
  * 0 unknown, +1 v2 (manifest block seen), -1 v1 (200 without the block). */
 static int s_epoch;
+
+/* State bundle (§8): tier-0 nav frames + toggle tiles, stored through
+ * deck_cache under a reserved pseudo-deck id (digest+length verified,
+ * tmp+rename writes, mtime for ttl). */
+#define P2_BUNDLE_DECK "p2bundle"
+#define P2_BUNDLE_JSON SDCARD_MOUNT_POINT "/tesserae/decks/" P2_BUNDLE_DECK                        "/manifest.json"
+static p2_bundle_t s_bundle;
+static bool s_have_bundle;
+static bool s_bundle_sync;              /* sync envelope requested a resync */
+static char s_cur_page[P2_ID_CAP];      /* bundle state id on glass, "" unknown */
+static int8_t s_cycle_idx[P2_MAX_REGIONS];   /* tile cycle position, -1 unknown */
 
 /* Optimistic ledger (§6). Echo inversions and tier-1 optimistic pixels
  * share it: both are "device composites awaiting a covering server
@@ -140,6 +154,18 @@ static bool rects_overlap(int ax, int ay, int aw, int ah,
 /* overlay_run calls this after applying schema-2 patch rects. */
 void proto2_note_patch_rects(const overlay_patch_rect_t *r, int n)
 {
+    /* A server artifact over a tile region makes its cycle parity unknown
+     * again (the server may have rendered either state). */
+    for (int i = 0; i < s_man.n_regions; i++) {
+        if (s_cycle_idx[i] < 0) continue;
+        for (int j = 0; j < n; j++)
+            if (rects_overlap(s_man.regions[i].x, s_man.regions[i].y,
+                              s_man.regions[i].w, s_man.regions[i].h,
+                              r[j].x, r[j].y, r[j].w, r[j].h)) {
+                s_cycle_idx[i] = -1;
+                break;
+            }
+    }
     for (int i = 0; i < P2_LEDGER_MAX; i++) {
         if (!s_ledger[i].active) continue;
         for (int j = 0; j < n; j++)
@@ -156,8 +182,9 @@ void proto2_note_patch_rects(const overlay_patch_rect_t *r, int n)
 
 void proto2_frame_painted(const char *digest)
 {
-    (void)digest;
     ledger_clear_all();   /* a full frame covers every optimistic rect */
+    memset(s_cycle_idx, -1, sizeof s_cycle_idx);   /* tile parity unknown */
+    if (digest && digest[0] && s_have_bundle) bundle_track_page(digest);
 }
 
 /* ---- reports ---- */
@@ -379,6 +406,130 @@ void proto2_linger_tick(void)
             render_local_clock(&s_man.text[i]);
 }
 
+/* ---- state bundle: sync, tiles, tier-0 nav sources ---- */
+
+/* Track which bundle page is on glass (frame states map digest -> page). */
+static void bundle_track_page(const char *frame_digest)
+{
+    s_cur_page[0] = '\0';
+    for (int i = 0; i < s_bundle.n_states; i++)
+        if (s_bundle.states[i].kind == P2_BK_FRAME &&
+            strncmp(s_bundle.states[i].digest, frame_digest,
+                    P2_DIGEST_HEX) == 0) {
+            snprintf(s_cur_page, sizeof s_cur_page, "%s",
+                     s_bundle.states[i].state_id);
+            return;
+        }
+}
+
+static void bundle_restore_sd(void)
+{
+    if (!sdcard_mounted()) return;
+    FILE *f = fopen(P2_BUNDLE_JSON, "rb");
+    if (!f) return;
+    char *buf = malloc(P2_MANIFEST_MAX);
+    if (!buf) { fclose(f); return; }
+    size_t n = fread(buf, 1, P2_MANIFEST_MAX - 1, f);
+    bool complete = feof(f);
+    fclose(f);
+    if (complete && n &&
+        p2_bundle_parse(buf, n, EPD_BUF_BYTES, &s_bundle)) {
+        s_have_bundle = true;
+        bundle_track_page(rest_config_get()->last_frame_etag);
+    }
+    free(buf);
+}
+
+/* Radio-up bundle sync: fetch the manifest, diff member digests against
+ * the SD inventory, fetch only unknown digests (verified writes), delete
+ * orphans. 404/204 = no bundle: drop everything (nav degrades to tier 2). */
+static void bundle_sync(void)
+{
+    s_bundle_sync = false;
+    char *buf = malloc(P2_MANIFEST_MAX);
+    if (!buf) return;
+    size_t len = 0;
+    rest_status_t st = rest_get_bundle(buf, P2_MANIFEST_MAX, &len, 8000);
+    if (st != REST_OK) {
+        if (st == REST_NOT_FOUND || st == REST_NO_CONTENT) {
+            s_have_bundle = false;
+            memset(&s_bundle, 0, sizeof s_bundle);
+        }
+        free(buf);
+        return;
+    }
+    static p2_bundle_t nb;
+    if (!p2_bundle_parse(buf, len, EPD_BUF_BYTES, &nb)) { free(buf); return; }
+
+    int fetched = 0, kept = 0;
+    for (int i = 0; i < nb.n_states; i++) {
+        const p2_bstate_t *bs = &nb.states[i];
+        if (deck_cache_frame_age_s(P2_BUNDLE_DECK, bs->digest) != INT32_MAX) {
+            kept++;
+            continue;   /* present + verified at read time */
+        }
+        char url[320];
+        if (bs->url[0] == '/')
+            snprintf(url, sizeof url, "%s%s",
+                     rest_config_get()->server_url, bs->url);
+        else
+            snprintf(url, sizeof url, "%s", bs->url);
+        fetched_image_t img;
+        if (image_fetch_auth(url, rest_bearer_token(), &img) != ESP_OK)
+            continue;
+        if (img.len == bs->bytes &&
+            deck_cache_write_frame(P2_BUNDLE_DECK, bs->digest,
+                                   img.data, img.len, bs->bytes))
+            fetched++;
+        free(img.data);
+    }
+
+    /* Evict members the new manifest dropped. */
+    static char present[P2_MAX_BSTATES * 2][DECK_DIGEST_HEX + 1];
+    int n_present = deck_cache_list(P2_BUNDLE_DECK, present,
+                                    P2_MAX_BSTATES * 2);
+    for (int i = 0; i < n_present; i++) {
+        bool wanted = false;
+        for (int j = 0; j < nb.n_states && !wanted; j++)
+            wanted = strcmp(nb.states[j].digest, present[i]) == 0;
+        if (!wanted) deck_cache_delete(P2_BUNDLE_DECK, present[i]);
+    }
+
+    s_bundle = nb;
+    s_have_bundle = true;
+    deck_cache_save_manifest(P2_BUNDLE_DECK, buf, len);
+    bundle_track_page(rest_config_get()->last_frame_etag);
+    memset(s_cycle_idx, -1, sizeof s_cycle_idx);
+    ESP_LOGI(TAG, "bundle %s: %d states (%d fetched, %d cached)",
+             s_bundle.bundle_digest, s_bundle.n_states, fetched, kept);
+    free(buf);
+}
+
+void proto2_note_sync(const char *json, size_t len)
+{
+    if (!json || !len) return;
+    cJSON *root = cJSON_ParseWithLength(json, len);
+    if (!root) return;
+    const cJSON *bd = cJSON_GetObjectItemCaseSensitive(root, "bundle_digest");
+    if (cJSON_IsString(bd) && bd->valuestring &&
+        (!s_have_bundle ||
+         strncmp(bd->valuestring, s_bundle.bundle_digest,
+                 P2_DIGEST_HEX) != 0)) {
+        s_bundle_sync = true;
+    }
+    cJSON_Delete(root);
+}
+
+bool proto2_sync_pending(void)
+{
+    return s_bundle_sync;
+}
+
+void proto2_sync_tail(void)
+{
+    if (s_bundle_sync) bundle_sync();
+}
+
 /* ---- manifest lifecycle ---- */
 
 static void drop_manifest(void)
@@ -418,6 +569,8 @@ void proto2_boot(void)
     /* Cold boot: SD-cached strips only (no radio yet); a cache miss just
      * leaves that text region dormant until the next radio-up wake. */
     load_atlases();
+    memset(s_cycle_idx, -1, sizeof s_cycle_idx);
+    bundle_restore_sd();
     ESP_LOGI(TAG, "manifest restored from SD for %s (%d regions, %d text)",
              digest, s_man.n_regions, s_man.n_text);
 }
@@ -488,13 +641,48 @@ bool proto2_active(void)
 
 /* ---- tier engine ---- */
 
+/* Blit the region's NEXT tile from the bundle (SD, digest-verified) into
+ * the work buffer. False on any miss -- the caller falls back to invert. */
+static bool apply_tile(int region_idx, const p2_region_t *r)
+{
+    if (!s_have_bundle || r->n_cycle < 2) return false;
+    int idx = s_cycle_idx[region_idx];
+    idx = (idx < 0) ? 1 : (idx + 1) % r->n_cycle;   /* unknown: frame shows [0] */
+
+    char state_id[P2_ID_CAP + P2_NAME_CAP];
+    snprintf(state_id, sizeof state_id, "%s/%s", r->fb_set, r->cycle[idx]);
+    const p2_bstate_t *bs = p2_bundle_state(&s_bundle, state_id);
+    if (!bs || bs->kind != P2_BK_TILE) return false;
+
+    bool full = false;
+    uint8_t *work = overlay_work_fb(&full);
+    if (!work || !full) return false;
+
+    uint8_t *blob = NULL;
+    if (!deck_cache_read_frame(P2_BUNDLE_DECK, bs->digest, bs->bytes, &blob))
+        return false;
+    overlay_patch_rect_t pr = { .x = bs->x, .y = bs->y, .w = bs->w,
+                                .h = bs->h, .offset = 0, .len = bs->bytes };
+    bool ok = overlay_patch_apply_rect(work, EPD_WIDTH, EPD_HEIGHT,
+                                       epd_active_driver()->info.bpp,
+                                       &pr, blob, bs->bytes);
+    free(blob);
+    if (!ok) return false;
+    overlay_partial_refresh(bs->x, bs->y, bs->w, bs->h, true /* DU */);
+    s_cycle_idx[region_idx] = (int8_t)idx;
+    ESP_LOGI(TAG, "tile '%s' -> %s", r->id, state_id);
+    return true;
+}
+
 /* Apply the region's feedback into the work framebuffer + partial refresh.
- * Stage C renders invert for every mode (tiles/slider visuals land with the
- * bundle + text stages); "none" stays dark. Returns true when pixels moved
- * (the caller then ledgers them). */
-static bool apply_feedback(const p2_region_t *r)
+ * Tiles blit the next cached state; everything else (and every tile miss)
+ * inverts; "none" stays dark. Returns true when pixels moved (the caller
+ * then ledgers them). */
+static bool apply_feedback(int region_idx, const p2_region_t *r)
 {
     if (r->fb == P2_FB_NONE) return false;
+    if (r->fb == P2_FB_TILES && apply_tile(region_idx, r)) return true;
+
     bool full = false;
     uint8_t *work = overlay_work_fb(&full);
     if (!work || !full) return false;   /* cold wake: no pixel source */
@@ -507,6 +695,53 @@ static bool apply_feedback(const p2_region_t *r)
     ESP_LOGI(TAG, "feedback '%s' in %lld ms (invert %d,%d %dx%d)",
              r->id, (esp_timer_get_time() - t0) / 1000,
              r->x, r->y, r->w, r->h);
+    return true;
+}
+
+/* Tier-0 nav: paint the target page straight from the bundle cache. The
+ * digest/manifest pointers swap to the cached state; the position report
+ * still goes to the server (async). False = bundle miss/expired: caller
+ * degrades to tier 2. Read+paint costs ~10-13 s on the E1003's 4 MHz
+ * shared SD bus -- far off the contract's 1.5 s target, but with zero
+ * network and no flash-cycling; flagged in the v2 report (a PSRAM preload
+ * of the likeliest link target is the known follow-up). */
+static bool nav_from_bundle(const char *target)
+{
+    if (!s_have_bundle || !target || !target[0]) return false;
+    const p2_bstate_t *bs = p2_bundle_state(&s_bundle, target);
+    if (!bs || bs->kind != P2_BK_FRAME) return false;
+    if (bs->ttl_s > 0) {
+        int32_t age = deck_cache_frame_age_s(P2_BUNDLE_DECK, bs->digest);
+        if (age == INT32_MAX || age > bs->ttl_s) {
+            ESP_LOGI(TAG, "bundle frame %s expired (age %ld)", bs->digest,
+                     (long)age);
+            return false;   /* stays cached until the manifest drops it */
+        }
+    }
+    uint8_t *frame = NULL;
+    if (!deck_cache_read_frame(P2_BUNDLE_DECK, bs->digest, bs->bytes, &frame))
+        return false;
+
+    int64_t t0 = esp_timer_get_time();
+    if (epd_port_init() != ESP_OK) { free(frame); return false; }
+    epd_init();
+    epd_display(frame);
+    epd_sleep();
+    rest_config_set_frame_etag(bs->digest);
+    rest_config_save();
+    overlay_after_paint(frame, bs->digest);
+    free(frame);
+    ledger_clear_all();
+    memset(s_cycle_idx, -1, sizeof s_cycle_idx);
+    snprintf(s_cur_page, sizeof s_cur_page, "%s", target);
+
+    /* Swap the manifest to the cached target's (SD-cached under the new
+     * frame digest from an earlier visit; a miss leaves regions dormant
+     * until the next radio-up wake re-fetches it). */
+    drop_manifest();
+    proto2_boot();
+    ESP_LOGI(TAG, "tier-0 nav -> %s in %lld ms", target,
+             (esp_timer_get_time() - t0) / 1000);
     return true;
 }
 
@@ -529,8 +764,32 @@ bool proto2_try_touch(int x0, int y0, int x1, int y1, uint32_t ms,
     }
     const p2_region_t *r = &s_man.regions[idx];
 
+    /* Tier-0 nav resolves its target through the region or the links
+     * graph, paints from SD, and reports the new position. A miss (no
+     * bundle, expired ttl, cache gone) degrades this activation to
+     * tier 2: echo + report + frame poll. */
+    if (r->type == P2_ACT_NAV && r->tier == 0) {
+        const char *target = r->target[0] ? r->target : NULL;
+        if (!target && s_cur_page[0])
+            target = p2_bundle_link(&s_bundle, s_cur_page, r->id);
+        if (!target && s_cur_page[0])
+            target = p2_bundle_link(&s_bundle, s_cur_page, p2_gesture_name(g));
+        if (nav_from_bundle(target)) {
+            p2_report_t rep;
+            memset(&rep, 0, sizeof rep);
+            snprintf(rep.region_id, sizeof rep.region_id, "%s", r->id);
+            snprintf(rep.gesture, sizeof rep.gesture, "%s", p2_gesture_name(g));
+            rep.value = -1;
+            snprintf(rep.digest, sizeof rep.digest, "%s", glass);
+            rep.event_id = app_next_event_id();
+            rep.x0 = x0; rep.y0 = y0; rep.x1 = x1; rep.y1 = y1;
+            report_or_queue(&rep);
+            return true;   /* no frame poll: the glass already moved */
+        }
+    }
+
     /* 1. Local feedback first -- before, and regardless of, the report. */
-    bool painted = apply_feedback(r);
+    bool painted = apply_feedback(idx, r);
     if (painted && r->tier != 0) ledger_add(r);
     /* (tier 0 expects no correction; nothing to track) */
 

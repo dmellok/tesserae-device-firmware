@@ -172,3 +172,49 @@ void p2_draw_text(uint8_t *fb, int fb_w, int fb_h,
 
 /* ---- gesture name strings (report bodies) ---- */
 const char *p2_gesture_name(p2_gesture_t g);   /* "tap"/"swipe_left"/... */
+
+/* ---- state bundles (§8: tier-0 nav + toggle tiles) ---- */
+
+#define P2_MAX_BSTATES 24
+#define P2_MAX_LINKS   16
+
+typedef enum { P2_BK_FRAME = 0, P2_BK_TILE } p2_bkind_t;
+
+typedef struct {
+    p2_bkind_t kind;
+    char     state_id[P2_ID_CAP];      /* "page:<16hex>" / "st:set/name" */
+    char     digest[P2_DIGEST_HEX + 1];/* frame_digest or tile_digest */
+    char     man_digest[P2_DIGEST_HEX + 1]; /* frames: manifest_digest ("") */
+    int      x, y, w, h;               /* tiles: target rect */
+    uint32_t bytes;
+    int32_t  ttl_s;                    /* frames: 0 = no ttl */
+    char     url[P2_URL_CAP];
+} p2_bstate_t;
+
+typedef struct {
+    char from[P2_ID_CAP];              /* source page state id */
+    char key[P2_ID_CAP];               /* "swipe_left" or a region id */
+    char to[P2_ID_CAP];                /* target page state id */
+} p2_blink_t;
+
+typedef struct {
+    char bundle_digest[P2_DIGEST_HEX + 1];
+    int  n_states;
+    p2_bstate_t states[P2_MAX_BSTATES];
+    int  n_links;
+    p2_blink_t links[P2_MAX_LINKS];
+} p2_bundle_t;
+
+/* Parse a GET /bundle 200 body. Strict on bundle_digest; individually
+ * drops malformed states/links; frame states validate bytes against the
+ * panel size the caller passes (frame_bytes, 0 = skip the check). */
+bool p2_bundle_parse(const char *json, size_t len, uint32_t frame_bytes,
+                     p2_bundle_t *out);
+
+/* State lookup by id; NULL when absent. */
+const p2_bstate_t *p2_bundle_state(const p2_bundle_t *b, const char *state_id);
+
+/* Link lookup: the target state id for (from_page, key), else NULL. key is
+ * a region id ("el:nav_next:tap") or a bare gesture name ("swipe_left"). */
+const char *p2_bundle_link(const p2_bundle_t *b, const char *from,
+                           const char *key);
