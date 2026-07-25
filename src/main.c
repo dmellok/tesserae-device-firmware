@@ -21,6 +21,7 @@
 #include "driver/usb_serial_jtag.h"
 #include "esp_attr.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -94,7 +95,14 @@ static bool detect_settings_mode(esp_reset_reason_t reason)
         s_rtc_magic = RTC_TAP_MAGIC;
         s_reset_taps = 0;
         s_wifi_fail_count = 0;
-        s_button_event_seq = 0;
+        /* Random seed, NOT zero: the server dedups on event_id ACROSS
+         * reboots (device_facts persistence), so restarting the sequence at
+         * 1 after a power-on/reflash replays already-consumed ids and every
+         * button/touch action is silently dropped as a duplicate (bench
+         * 2026-07-25: taps 304-acked but HA never fired). Random restart
+         * points keep ids unique for any realistic history; within a boot
+         * the sequence stays monotonic for retry dedup. */
+        s_button_event_seq = esp_random();
     }
 
     bool manual = (reason == ESP_RST_POWERON || reason == ESP_RST_EXT);
