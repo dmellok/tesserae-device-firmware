@@ -25,7 +25,7 @@
 #include <stdint.h>
 
 #define P2_PROTO          2
-#define P2_MAX_REGIONS    32
+#define P2_MAX_REGIONS    64
 #define P2_MAX_TEXT       8
 #define P2_MAX_ATLASES    2
 #define P2_MAX_GLYPHS     64

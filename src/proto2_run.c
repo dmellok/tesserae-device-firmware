@@ -29,7 +29,7 @@
 
 static const char *TAG = "proto2";
 
-#define P2_MANIFEST_MAX   (16 * 1024)   /* raw JSON cap (32 KB parsed pools) */
+#define P2_MANIFEST_MAX   (24 * 1024)   /* raw JSON cap (64-region manifests) */
 #define P2_LEDGER_MAX     16
 #define P2_RQUEUE_MAX     16
 #define P2_ATLAS_MAX_B    (64 * 1024)   /* per-strip cap (contract §9) */

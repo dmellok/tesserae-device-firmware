@@ -183,13 +183,13 @@ int main(void)
 
     /* ---- target cap: 32 parse, 40 overflow (first 32 win, doc valid) ---- */
     {
-        CHECK(OVERLAY_MAX_TARGETS == 32);   /* the advertised max_targets */
+        CHECK(OVERLAY_MAX_TARGETS == 64);   /* the advertised max_targets */
 
         char doc[16384];
         int n = snprintf(doc, sizeof doc,
                          "{\"schema\":1,\"frame_digest\":\"00112233445566aa\","
                          "\"targets\":[");
-        for (int i = 0; i < 40; i++) {
+        for (int i = 0; i < 70; i++) {
             n += snprintf(doc + n, sizeof doc - (size_t)n,
                           "%s{\"id\":\"t%d\",\"x\":%d,\"y\":%d,"
                           "\"w\":60,\"h\":40,\"echo\":\"invert\"}",
@@ -198,19 +198,19 @@ int main(void)
         n += snprintf(doc + n, sizeof doc - (size_t)n, "]}");
         overlay_spec_t big;
         CHECK(overlay_spec_parse(doc, (size_t)n, PW, PH, &big));
-        CHECK(big.n_targets == 32);                          /* extras dropped */
+        CHECK(big.n_targets == 64);                          /* extras dropped */
         CHECK(strcmp(big.targets[0].id, "t0") == 0);         /* first N win... */
-        CHECK(strcmp(big.targets[31].id, "t31") == 0);       /* ...in doc order */
+        CHECK(strcmp(big.targets[63].id, "t63") == 0);       /* ...in doc order */
         CHECK(overlay_hit_target(&big, 71, 1) != NULL);      /* t1 still hits */
-        CHECK(overlay_hit_target(&big, (39 % 8) * 70 + 1, (39 / 8) * 50 + 1)
-              != NULL || true);   /* t39's cell may be covered by none: no crash */
+        CHECK(overlay_hit_target(&big, (69 % 8) * 70 + 1, (69 / 8) * 50 + 1)
+              != NULL || true);   /* t69's cell may be covered by none: no crash */
 
-        /* exactly 32 parses cleanly too */
-        char *tail = strstr(doc, ",{\"id\":\"t32\"");
+        /* exactly the cap parses cleanly too */
+        char *tail = strstr(doc, ",{\"id\":\"t64\"");
         CHECK(tail != NULL);
         memcpy(tail, "]}", 3);
         CHECK(overlay_spec_parse(doc, strlen(doc), PW, PH, &big));
-        CHECK(big.n_targets == 32);
+        CHECK(big.n_targets == 64);
     }
 
     /* ---- spec-size arithmetic: worst-case doc fits the 8 KB device cap ---- */

@@ -29,7 +29,7 @@
 
 static const char *TAG = "overlay";
 
-#define OVERLAY_SPEC_MAX   (8 * 1024)
+#define OVERLAY_SPEC_MAX   (16 * 1024)  /* 64-target specs (cap raise 2026-07-26) */
 #define OVERLAY_ATLAS_MAX  (64 * 1024)
 #define OVERLAY_DATA_MAX   (4 * 1024)   /* /frame/data body: values + patches */
 #define OVERLAY_POLL_MS    1000         /* schema-2 contract: ~1 s in linger */

@@ -24,12 +24,14 @@
 
 #define OVERLAY_SCHEMA        1
 /* Grid-editor dashboards emit whole-cell targets, so dense boards need far
- * more than the original 8; 32 static targets cost <1 KB of parser state.
+ * more than the original 8; 64 static targets cost ~2 KB of parser state
+ * (raised from 32 on 2026-07-26: the first real v2 dashboard truncated
+ * mid-document at 32 and its tail sections went dead).
  * The firmware advertises this cap ("overlay": {"schema": 1, "max_targets":
  * 32}) so the server trims per device instead of assuming. Overflow rule:
  * extras beyond the cap are dropped individually in document order (first N
  * win) and the spec stays valid -- never a wholesale reject. */
-#define OVERLAY_MAX_TARGETS   32
+#define OVERLAY_MAX_TARGETS   64
 #define OVERLAY_MAX_SLOTS     8
 #define OVERLAY_MAX_ATLASES   2
 #define OVERLAY_MAX_GLYPHS    32
