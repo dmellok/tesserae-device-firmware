@@ -44,9 +44,22 @@ void overlay_after_paint(const uint8_t *frame, const char *digest);
  * semantics as the polled values document; newest seq wins. */
 void overlay_ingest_values(const char *json, size_t len);
 
-/* Call every 1-2 s from the touch-linger window (radio up, awake): poll
- * GET /frame/data, apply, redraw + partial-refresh changed slots. NEVER
- * called outside the awake window -- the device must not wake for values. */
+/* A patch document arrived (schema 2: post-action frame patches) -- either
+ * the raw "overlay_patches" object off a /status response or a full
+ * /frame/data body carrying "patches". Digest-anchored to the frame on
+ * glass; fetches the rect blob and partial-refreshes the changed rects.
+ * The frame digest never changes: the patches ARE the repaint. */
+void overlay_ingest_patches(const char *json, size_t len);
+
+/* True once (clears on read) when a patch could not be honoured and the
+ * contract fallback applies: run a normal /frame poll (fetch_and_paint).
+ * Poll from the linger loop right after overlay_linger_poll(). */
+bool overlay_take_refetch(void);
+
+/* Call every ~1 s from the touch-linger window (radio up, awake): poll
+ * GET /frame/data, apply values + patches, partial-refresh what changed.
+ * NEVER called outside the awake window -- the device must not wake for
+ * values or patches. */
 void overlay_linger_poll(void);
 
 #else /* !BOARD_OVERLAY_PARTIAL */
@@ -56,6 +69,8 @@ static inline bool overlay_try_echo(int x, int y) { (void)x; (void)y; return fal
 static inline void overlay_frame_downloaded(const char *d) { (void)d; }
 static inline void overlay_after_paint(const uint8_t *f, const char *d) { (void)f; (void)d; }
 static inline void overlay_ingest_values(const char *j, size_t l) { (void)j; (void)l; }
+static inline void overlay_ingest_patches(const char *j, size_t l) { (void)j; (void)l; }
+static inline bool overlay_take_refetch(void) { return false; }
 static inline void overlay_linger_poll(void) { }
 
 #endif /* BOARD_OVERLAY_PARTIAL */

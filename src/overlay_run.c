@@ -28,8 +28,8 @@ static const char *TAG = "overlay";
 
 #define OVERLAY_SPEC_MAX   (8 * 1024)
 #define OVERLAY_ATLAS_MAX  (64 * 1024)
-#define OVERLAY_VALUES_MAX (2 * 1024)
-#define OVERLAY_POLL_MS    1500
+#define OVERLAY_DATA_MAX   (4 * 1024)   /* /frame/data body: values + patches */
+#define OVERLAY_POLL_MS    1000         /* schema-2 contract: ~1 s in linger */
 
 /* One overlay state per wake. s_base/s_work are full-frame PSRAM copies:
  * base = pristine server frame (slot background restore), work = base +
@@ -43,7 +43,18 @@ static uint8_t *s_base, *s_work;
 static bool     s_sparse;
 static char    *s_raw_spec;          /* raw JSON kept for the SD cache */
 static size_t   s_raw_spec_len;
-static int32_t  s_values_seq = -1;
+static int64_t  s_values_seq = -1;
+
+/* Patch high-water mark (schema 2). Deliberately a PLAIN static, not RTC:
+ * the contract forbids persisting a seq across our own reboots (the server's
+ * seqs are time-derived and strictly increasing; a fresh boot must accept
+ * whatever is current). Newest wins; equal = already applied = no-op. */
+static int64_t  s_patch_seq = -1;
+
+/* Set when a patch document could not be honoured (digest mismatch, or no
+ * in-RAM frame to composite into). The linger loop consumes it and runs a
+ * normal /frame poll -- the contract's only sanctioned fallback. */
+static bool     s_refetch;
 
 /* Hygiene counter survives deep sleep so repeated wake-echoes on the same
  * frame still trigger a full-quality pass. */
@@ -418,20 +429,149 @@ void overlay_ingest_values(const char *json, size_t len)
     }
 }
 
+/* ---------- patch documents (schema 2: post-action frame patches) ---------- */
+
+void overlay_ingest_patches(const char *json, size_t len)
+{
+    if (!json || !len || !epd_supports_partial()) return;
+
+    overlay_patch_doc_t doc;
+    if (!overlay_patch_parse(json, len, EPD_WIDTH, EPD_HEIGHT, EPD_BPP_NUM, &doc))
+        return;   /* malformed = dropped whole; never clipped or best-efforted */
+
+    /* Digest anchor (hard rule): the document must name the frame currently
+     * on glass. A mismatch means one side moved on -- drop the document and
+     * let a normal /frame poll converge (server returns 200 when it really
+     * has a newer frame, 304 when the doc was the stale party). */
+    const char *glass = rest_config_get()->last_frame_etag;
+    if (strcmp(doc.frame_digest, glass) != 0) {
+        ESP_LOGW(TAG, "patch doc for %s but glass shows %s; dropping",
+                 doc.frame_digest, glass[0] ? glass : "(none)");
+        s_refetch = true;
+        return;
+    }
+
+    /* Newest wins; equal seq = the doc we already applied. */
+    if (doc.seq <= s_patch_seq) return;
+
+    /* Patches composite into the in-RAM frame copy. Without a full one
+     * (cold wake: none, or SD-restored sparse slot patches only) there is
+     * nothing correct to stream partial refreshes from -- and since the
+     * digest never changes under schema 2, waiting on a 304 would show
+     * stale glass forever. Clear the ETag so the fallback poll re-downloads
+     * the full frame (the server's frame body already reflects the patch). */
+    if (!s_work || s_sparse) {
+        ESP_LOGI(TAG, "patch %lld with no full frame in RAM; forcing refetch",
+                 (long long)doc.seq);
+        rest_config_set_frame_etag("");
+        s_refetch = true;
+        return;
+    }
+
+    /* Fetch the blob (Bearer; immutable for its lifetime, <= 256 KB so the
+     * linger loop is back polling touch within the contract's ~1.5 s). A
+     * 404 means a newer action superseded it: drop, the next 1 s poll
+     * carries the newer document. Any other failure: retry on next poll. */
+    char url[320];
+    if (doc.url[0] == '/')
+        snprintf(url, sizeof url, "%s%s", rest_config_get()->server_url, doc.url);
+    else
+        snprintf(url, sizeof url, "%s", doc.url);
+    fetched_image_t img;
+    esp_err_t err = image_fetch_auth(url, rest_bearer_token(), &img);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_NOT_FOUND)
+            ESP_LOGI(TAG, "patch blob seq %lld superseded (404)",
+                     (long long)doc.seq);
+        return;
+    }
+    if (img.len != doc.bytes) {
+        ESP_LOGW(TAG, "patch blob %u B != declared %u B; dropping",
+                 (unsigned)img.len, (unsigned)doc.bytes);
+        free(img.data);
+        return;
+    }
+
+    /* Apply every rect to BOTH copies: base (pristine background future slot
+     * redraws restore from) and work (what partials stream from). Writing
+     * over a pending tap-echo inversion is the point -- the patch IS the
+     * action's result and supersedes the echo; never re-invert. */
+    int64_t t0 = esp_timer_get_time();
+    bool applied = true;
+    for (int i = 0; i < doc.n_rects; i++) {
+        applied &= overlay_patch_apply_rect(s_work, EPD_WIDTH, EPD_HEIGHT,
+                                            EPD_BPP_NUM, &doc.rects[i],
+                                            img.data, img.len);
+        if (s_base)
+            overlay_patch_apply_rect(s_base, EPD_WIDTH, EPD_HEIGHT,
+                                     EPD_BPP_NUM, &doc.rects[i],
+                                     img.data, img.len);
+    }
+    free(img.data);
+    if (!applied) {   /* blob-bounds refusal: buffers may be half-patched */
+        rest_config_set_frame_etag("");
+        s_refetch = true;
+        return;
+    }
+
+    /* Slot values ride their own seq stream: a slot whose rect the patch
+     * touched gets redrawn on top of the fresh base so the newest value
+     * string wins over an older render baked into the patch. */
+    uint32_t slots_hit = 0;
+    if (s_have_spec && overlay_spec_matches(&s_spec, glass)) {
+        for (int si = 0; si < s_spec.n_slots; si++) {
+            const overlay_slot_t *sl = &s_spec.slots[si];
+            for (int i = 0; i < doc.n_rects; i++)
+                if (overlay_patch_rect_intersects(&doc.rects[i],
+                                                  sl->x, sl->y, sl->w, sl->h)) {
+                    slots_hit |= 1u << si;
+                    break;
+                }
+        }
+    }
+
+    if (epd_port_init() == ESP_OK) {
+        epd_init();
+        redraw_changed_slots(slots_hit);   /* draws + refreshes slot rects */
+        for (int i = 0; i < doc.n_rects; i++) {
+            const overlay_patch_rect_t *r = &doc.rects[i];
+            hygiene_or_partial(r->x, r->y, r->w, r->h, true /* DU */);
+        }
+    }
+    s_patch_seq = doc.seq;
+    ESP_LOGI(TAG, "patch seq %lld applied: %d rect(s), %u B in %lld ms",
+             (long long)doc.seq, doc.n_rects, (unsigned)doc.bytes,
+             (esp_timer_get_time() - t0) / 1000);
+}
+
+bool overlay_take_refetch(void)
+{
+    bool r = s_refetch;
+    s_refetch = false;
+    return r;
+}
+
 void overlay_linger_poll(void)
 {
     static int64_t s_last_poll;
-    if (!s_have_spec || s_spec.n_slots == 0) return;
+    /* Schema 2: patches can land for ANY frame after a touch action, spec or
+     * no spec, so the gate is only "a digest is on glass". */
+    const char *digest = rest_config_get()->last_frame_etag;
+    if (!deck_digest_valid(digest)) return;
     int64_t now = esp_timer_get_time();
     if (now - s_last_poll < (int64_t)OVERLAY_POLL_MS * 1000) return;
     s_last_poll = now;
 
-    char buf[OVERLAY_VALUES_MAX];
+    char *buf = heap_caps_malloc(OVERLAY_DATA_MAX, MALLOC_CAP_8BIT);
+    if (!buf) return;
     size_t len = 0;
-    rest_status_t st = rest_get_frame_data(s_spec.frame_digest, buf, sizeof buf,
+    rest_status_t st = rest_get_frame_data(digest, buf, OVERLAY_DATA_MAX,
                                            &len, 3000);
-    if (st != REST_OK) return;   /* incl. 404: silently dormant */
-    overlay_ingest_values(buf, len);
+    if (st == REST_OK) {         /* incl. 404: silently dormant */
+        overlay_ingest_values(buf, len);
+        overlay_ingest_patches(buf, len);
+    }
+    free(buf);
 }
 
 #endif /* BOARD_OVERLAY_PARTIAL */

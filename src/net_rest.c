@@ -337,7 +337,7 @@ static void add_overlay_capability(cJSON *o)
 {
     cJSON *ov = cJSON_AddObjectToObject(o, "overlay");
     if (!ov) return;
-    cJSON_AddNumberToObject(ov, "schema", 1);
+    cJSON_AddNumberToObject(ov, "schema", 2);   /* 2: post-action frame patches */
     /* Additive: lets the server trim target lists per device instead of
      * assuming a fixed cap (servers that ignore it keep sending <= 8). */
     cJSON_AddNumberToObject(ov, "max_targets", OVERLAY_MAX_TARGETS);
@@ -688,13 +688,22 @@ rest_status_t rest_post_status(int rssi, const char *ip,
 #endif
     }
 #if BOARD_OVERLAY_PARTIAL
-    /* overlay_values rides the status response; hand the raw object to the
-     * overlay engine (same semantics as the polled values document). */
+    /* overlay_values / overlay_patches ride the status response; hand the
+     * raw objects to the overlay engine (same semantics as the polled
+     * /frame/data document; newest seq wins independently per stream). */
     cJSON *ov = cJSON_GetObjectItemCaseSensitive(r, "overlay_values");
     if (cJSON_IsObject(ov)) {
         char *raw = cJSON_PrintUnformatted(ov);
         if (raw) {
             snprintf(out->overlay_values, sizeof out->overlay_values, "%s", raw);
+            free(raw);
+        }
+    }
+    cJSON *op = cJSON_GetObjectItemCaseSensitive(r, "overlay_patches");
+    if (cJSON_IsObject(op)) {
+        char *raw = cJSON_PrintUnformatted(op);
+        if (raw) {
+            snprintf(out->overlay_patches, sizeof out->overlay_patches, "%s", raw);
             free(raw);
         }
     }

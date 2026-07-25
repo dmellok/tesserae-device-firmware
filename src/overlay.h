@@ -117,9 +117,57 @@ int overlay_text_width(const overlay_atlas_t *a, const char *text);
 /* Apply a values document ({"seq": n, "values": {key: str}}) to the spec's
  * slots. `last_seq` is the newest seq applied so far (in/out): an older or
  * equal seq is ignored entirely (returns 0). Returns a bitmask of slot
- * indices whose value CHANGED (bit i = slots[i] needs a redraw). */
+ * indices whose value CHANGED (bit i = slots[i] needs a redraw). Seqs are
+ * int64: schema-2 servers derive them from wall time (ms). */
 uint32_t overlay_values_apply(overlay_spec_t *s, const char *json, size_t len,
-                              int32_t *last_seq);
+                              int64_t *last_seq);
+
+/* ---- patch documents (schema 2: post-action frame patches) ----
+ *
+ * After a touch action the server re-renders the page headless, diffs the
+ * new wire framebuffer against the frame on glass, and stages only the
+ * changed rects; the firmware fetches the blob and paints those rects with
+ * partial refresh. The frame digest NEVER changes during this -- the
+ * patches ARE the repaint. Contract: docs/dev/client-protocol.md, "Patch
+ * documents (schema 2)" (server v0.194.0). */
+
+#define OVERLAY_PATCH_SCHEMA    2
+#define OVERLAY_MAX_PATCH_RECTS 12
+#define OVERLAY_PATCH_BLOB_MAX  (256 * 1024)
+
+typedef struct {
+    int      x, y, w, h;       /* frame pixel space; x/w on byte boundaries */
+    uint32_t offset, len;      /* rect's rows inside the blob */
+} overlay_patch_rect_t;
+
+typedef struct {
+    char     frame_digest[OVERLAY_DIGEST_HEX + 1];
+    int64_t  seq;              /* strictly increasing, time-derived */
+    char     url[OVERLAY_URL_CAP];
+    uint32_t bytes;            /* total blob size */
+    int      n_rects;
+    overlay_patch_rect_t rects[OVERLAY_MAX_PATCH_RECTS];
+} overlay_patch_doc_t;
+
+/* Parse a patch document. Accepts either the bare object (status-borne
+ * "overlay_patches") or a wrapper carrying it as "patches" (the /frame/data
+ * response). STRICT -- returns false on: wrong schema, malformed digest,
+ * format != "fb-rect", > OVERLAY_MAX_PATCH_RECTS rects, blob cap exceeded,
+ * or ANY rect that is off-panel, not byte-aligned for `bpp`, or whose
+ * offset/len disagree with its geometry or the blob size. Never clips or
+ * "best efforts" -- a bad document is dropped whole (dormant principle). */
+bool overlay_patch_parse(const char *json, size_t len, int panel_w,
+                         int panel_h, int bpp, overlay_patch_doc_t *out);
+
+/* Row-wise copy of one rect's rows from the blob into a packed framebuffer.
+ * Geometry was validated at parse; false only on blob-bounds violations. */
+bool overlay_patch_apply_rect(uint8_t *fb, int fb_w, int fb_h, int bpp,
+                              const overlay_patch_rect_t *r,
+                              const uint8_t *blob, size_t blob_len);
+
+/* True iff rect r intersects the axis-aligned box (x,y,w,h). */
+bool overlay_patch_rect_intersects(const overlay_patch_rect_t *r,
+                                   int x, int y, int w, int h);
 
 /* ---- framebuffer operations (pure byte math; fb is panel-native) ---- */
 

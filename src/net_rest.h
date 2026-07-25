@@ -82,6 +82,9 @@ typedef struct {
     /* Raw "overlay_values" object from the response, "" when absent. Same
      * semantics as the polled values document (overlay.h); newest seq wins. */
     char     overlay_values[512];
+    /* Raw "overlay_patches" object (schema 2), "" when absent. Sized for the
+     * contract cap: 12 rects + header comfortably fits. */
+    char     overlay_patches[1536];
 #endif
 } rest_status_out_t;
 

@@ -725,7 +725,7 @@ void app_main(void)
 
             uint8_t *pristine = heap_caps_malloc(EPD_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             if (pristine) memcpy(pristine, base, EPD_BUF_BYTES);
-            int32_t seq = -1;
+            int64_t seq = -1;
             for (int d = 0; d <= 9 && pristine; d++) {
                 char doc[64];
                 snprintf(doc, sizeof doc, "{\"seq\":%d,\"values\":{\"v\":\"%d\"}}", d + 1, d);
@@ -1172,9 +1172,12 @@ void app_main(void)
             }
 #endif
 #if BOARD_OVERLAY_PARTIAL
-            /* overlay_values may ride the status response. */
+            /* overlay_values / overlay_patches may ride the status response. */
             if (so.overlay_values[0])
                 overlay_ingest_values(so.overlay_values, strlen(so.overlay_values));
+            if (so.overlay_patches[0])
+                overlay_ingest_patches(so.overlay_patches,
+                                       strlen(so.overlay_patches));
 #endif
             /* Deck resync signal: decided here, executed at the tail of the
              * wake (after painting + reporting, radio still up). */
@@ -1295,13 +1298,24 @@ void app_main(void)
      * The window resets on each interaction; it ends when idle for the window. */
     if (will_linger) {
         int linger_s = rest_config_get()->touch_linger_s;
+#if BOARD_OVERLAY_PARTIAL
+        /* Schema 2: the post-action patch lands a couple of seconds after
+         * the tap's HA call round-trips; a short linger would sleep through
+         * it and the digest never changes to wake us later. */
+        if (linger_s < 10) linger_s = 10;
+#endif
         ESP_LOGI(TAG, "touch linger: up to %d s awake for further touches", linger_s);
         int64_t deadline = esp_timer_get_time() + (int64_t)linger_s * 1000000;
         while (esp_timer_get_time() < deadline) {
             if (!touch_int_asserted()) {
-                /* Values slots (overlay): poll every 1-2 s ONLY while awake
-                 * in this window; changed slots partial-refresh in place. */
+                /* Values slots + schema-2 patches (overlay): poll ~1 s ONLY
+                 * while awake in this window; changed rects partial-refresh
+                 * in place. A patch the poll couldn't honour falls back to
+                 * one normal /frame poll (the contract's only fallback). */
                 overlay_linger_poll();
+                if (overlay_take_refetch() &&
+                    fetch_and_paint_current(rest_config_get()->server_url))
+                    cfg_dirty = true;
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }

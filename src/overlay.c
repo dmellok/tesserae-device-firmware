@@ -230,7 +230,7 @@ int overlay_text_width(const overlay_atlas_t *a, const char *text)
 /* ---------- values document ---------- */
 
 uint32_t overlay_values_apply(overlay_spec_t *s, const char *json, size_t len,
-                              int32_t *last_seq)
+                              int64_t *last_seq)
 {
     if (!s || !json || !len) return 0;
     cJSON *root = cJSON_ParseWithLength(json, len);
@@ -240,7 +240,7 @@ uint32_t overlay_values_apply(overlay_spec_t *s, const char *json, size_t len,
     do {
         const cJSON *seq = cJSON_GetObjectItemCaseSensitive(root, "seq");
         if (!cJSON_IsNumber(seq)) break;
-        int32_t sq = (int32_t)seq->valuedouble;
+        int64_t sq = (int64_t)seq->valuedouble;
         /* Newest seq wins; equal seq = no repaint. */
         if (*last_seq >= 0 && sq <= *last_seq) break;
 
@@ -354,4 +354,128 @@ void overlay_draw_slot(uint8_t *fb, const uint8_t *base, int fb_w, int fb_h,
         cx += gw;
         if (cx >= slot->x + slot->w) break;
     }
+}
+
+/* ---------- patch documents (schema 2) ---------- */
+
+static bool patch_rect_ok(const overlay_patch_rect_t *r, int pw, int ph,
+                          int bpp, uint32_t blob_bytes)
+{
+    if (r->w <= 0 || r->h <= 0) return false;
+    if (r->x < 0 || r->y < 0 || r->x + r->w > pw || r->y + r->h > ph)
+        return false;                          /* hard rule: never clip */
+    int px_per_byte = 8 / bpp;
+    if (r->x % px_per_byte || r->w % px_per_byte)
+        return false;                          /* byte-boundary guarantee */
+    uint64_t row_bytes = (uint64_t)r->w * bpp / 8;
+    uint64_t need = row_bytes * (uint64_t)r->h;
+    if ((uint64_t)r->len != need) return false;
+    if ((uint64_t)r->offset + need > blob_bytes) return false;
+    return true;
+}
+
+bool overlay_patch_parse(const char *json, size_t len, int panel_w,
+                         int panel_h, int bpp, overlay_patch_doc_t *out)
+{
+    memset(out, 0, sizeof *out);
+    if (!json || !len || panel_w <= 0 || panel_h <= 0) return false;
+    if (bpp != 4 && bpp != 1 && bpp != 2) return false;
+
+    cJSON *root = cJSON_ParseWithLength(json, len);
+    if (!root) return false;
+
+    /* /frame/data wraps the document as "patches"; status delivers it bare. */
+    const cJSON *doc = cJSON_GetObjectItemCaseSensitive(root, "patches");
+    if (!cJSON_IsObject(doc)) doc = root;
+
+    bool ok = false;
+    do {
+        const cJSON *schema = cJSON_GetObjectItemCaseSensitive(doc, "schema");
+        if (!cJSON_IsNumber(schema) ||
+            (int)schema->valuedouble != OVERLAY_PATCH_SCHEMA) break;
+
+        if (!copy_str(out->frame_digest, sizeof out->frame_digest,
+                      cJSON_GetObjectItemCaseSensitive(doc, "frame_digest")) ||
+            !digest16_ok(out->frame_digest)) break;
+
+        const cJSON *seq = cJSON_GetObjectItemCaseSensitive(doc, "seq");
+        if (!cJSON_IsNumber(seq) || seq->valuedouble < 0) break;
+        out->seq = (int64_t)seq->valuedouble;
+
+        char fmt[16] = {0};
+        copy_str(fmt, sizeof fmt, cJSON_GetObjectItemCaseSensitive(doc, "format"));
+        if (strcmp(fmt, "fb-rect") != 0) break;
+
+        if (!copy_str(out->url, sizeof out->url,
+                      cJSON_GetObjectItemCaseSensitive(doc, "url"))) break;
+
+        const cJSON *bytes = cJSON_GetObjectItemCaseSensitive(doc, "bytes");
+        if (!cJSON_IsNumber(bytes) || bytes->valuedouble < 1 ||
+            bytes->valuedouble > OVERLAY_PATCH_BLOB_MAX) break;
+        out->bytes = (uint32_t)bytes->valuedouble;
+
+        const cJSON *rects = cJSON_GetObjectItemCaseSensitive(doc, "rects");
+        if (!cJSON_IsArray(rects)) break;
+        int n = cJSON_GetArraySize(rects);
+        if (n < 1 || n > OVERLAY_MAX_PATCH_RECTS) break;
+
+        bool rects_ok = true;
+        for (int i = 0; i < n && rects_ok; i++) {
+            const cJSON *jr = cJSON_GetArrayItem(rects, i);
+            overlay_patch_rect_t *r = &out->rects[i];
+            const cJSON *jx = cJSON_GetObjectItemCaseSensitive(jr, "x");
+            const cJSON *jy = cJSON_GetObjectItemCaseSensitive(jr, "y");
+            const cJSON *jw = cJSON_GetObjectItemCaseSensitive(jr, "w");
+            const cJSON *jh = cJSON_GetObjectItemCaseSensitive(jr, "h");
+            const cJSON *jo = cJSON_GetObjectItemCaseSensitive(jr, "offset");
+            const cJSON *jl = cJSON_GetObjectItemCaseSensitive(jr, "len");
+            if (!cJSON_IsNumber(jx) || !cJSON_IsNumber(jy) ||
+                !cJSON_IsNumber(jw) || !cJSON_IsNumber(jh) ||
+                !cJSON_IsNumber(jo) || !cJSON_IsNumber(jl) ||
+                jo->valuedouble < 0 || jl->valuedouble < 0) {
+                rects_ok = false;
+                break;
+            }
+            r->x = (int)jx->valuedouble;      r->y = (int)jy->valuedouble;
+            r->w = (int)jw->valuedouble;      r->h = (int)jh->valuedouble;
+            r->offset = (uint32_t)jo->valuedouble;
+            r->len    = (uint32_t)jl->valuedouble;
+            if (!patch_rect_ok(r, panel_w, panel_h, bpp, out->bytes))
+                rects_ok = false;
+        }
+        if (!rects_ok) break;
+        out->n_rects = n;
+        ok = true;
+    } while (0);
+
+    cJSON_Delete(root);
+    if (!ok) memset(out, 0, sizeof *out);
+    return ok;
+}
+
+bool overlay_patch_apply_rect(uint8_t *fb, int fb_w, int fb_h, int bpp,
+                              const overlay_patch_rect_t *r,
+                              const uint8_t *blob, size_t blob_len)
+{
+    if (!fb || !blob || !r) return false;
+    (void)fb_h;   /* geometry validated at parse */
+    size_t row_bytes = (size_t)r->w * bpp / 8;
+    if ((size_t)r->offset + row_bytes * (size_t)r->h > blob_len) return false;
+
+    size_t fb_pitch = (size_t)fb_w * bpp / 8;
+    const uint8_t *src = blob + r->offset;
+    uint8_t *dst = fb + (size_t)r->y * fb_pitch + (size_t)r->x * bpp / 8;
+    for (int row = 0; row < r->h; row++) {
+        memcpy(dst, src, row_bytes);
+        src += row_bytes;
+        dst += fb_pitch;
+    }
+    return true;
+}
+
+bool overlay_patch_rect_intersects(const overlay_patch_rect_t *r,
+                                   int x, int y, int w, int h)
+{
+    return r->x < x + w && x < r->x + r->w &&
+           r->y < y + h && y < r->y + r->h;
 }

@@ -106,7 +106,7 @@ int main(void)
 
     /* ---- values doc + seq rules ---- */
     {
-        int32_t seq = -1;
+        int64_t seq = -1;
         static const char V7[] = "{\"seq\":7,\"values\":{\"sensor.temp\":\"21.4\"}}";
         uint32_t ch = overlay_values_apply(&sp, V7, sizeof V7 - 1, &seq);
         CHECK(ch == 0x1 && seq == 7);
@@ -255,6 +255,74 @@ int main(void)
         overlay_spec_t big;
         CHECK(overlay_spec_parse(doc, (size_t)n, PW, PH, &big));
         CHECK(big.n_targets == 32 && big.n_slots == 8);
+    }
+
+    /* ---- schema-2 patch documents ---- */
+    {
+        static const char PDOC[] =
+        "{\"schema\":2,\"frame_digest\":\"00112233445566aa\","
+        "\"seq\":1753430000123,\"format\":\"fb-rect\","
+        "\"url\":\"/api/v1/device/d/frame/patch/aabbccddeeff0011\","
+        "\"bytes\":13500,"
+        "\"rects\":[{\"x\":128,\"y\":640,\"w\":300,\"h\":90,"
+        "\"offset\":0,\"len\":13500}]}";
+        overlay_patch_doc_t pd;
+        CHECK(overlay_patch_parse(PDOC, sizeof PDOC - 1, PW, PH, 4, &pd));
+        CHECK(pd.seq == 1753430000123LL);          /* int64 survives */
+        CHECK(pd.n_rects == 1 && pd.rects[0].len == 13500);
+
+        /* wrapper form ("patches" next to "values") parses identically */
+        char wrapped[600];
+        snprintf(wrapped, sizeof wrapped,
+                 "{\"seq\":9,\"values\":{},\"patches\":%s}", PDOC);
+        CHECK(overlay_patch_parse(wrapped, strlen(wrapped), PW, PH, 4, &pd));
+        CHECK(pd.seq == 1753430000123LL);
+
+        /* strict rejects: schema, format, digest, alignment, len mismatch,
+         * off-panel, blob-cap */
+        overlay_patch_doc_t t;
+        char bad[600];
+        #define MUT(a, b) do { \
+            memcpy(bad, PDOC, sizeof PDOC); \
+            char *pp = strstr(bad, a); CHECK(pp != NULL); \
+            memcpy(pp, b, strlen(b)); \
+            CHECK(!overlay_patch_parse(bad, strlen(bad), PW, PH, 4, &t)); \
+        } while (0)
+        MUT("\"schema\":2", "\"schema\":1");
+        MUT("fb-rect", "fb-blob");
+        MUT("00112233445566aa", "00112233445566AA");
+        MUT("\"x\":128", "\"x\":127");            /* odd x at 4bpp */
+        MUT("\"w\":300", "\"w\":301");            /* odd w at 4bpp */
+        MUT("\"len\":13500", "\"len\":13400");    /* len != w*h*bpp/8 */
+        MUT("\"y\":640", "\"y\":1400");           /* runs off-panel */
+        #undef MUT
+
+        /* apply: row-wise copy into a synthetic 16x4 4bpp fb */
+        {
+            enum { W = 16, H = 4 };
+            uint8_t fb[W / 2 * H];
+            memset(fb, 0x11, sizeof fb);
+            uint8_t blob[2 * 2 + 4];                /* rect 4x2 @4bpp + slack */
+            memset(blob, 0xAB, sizeof blob);
+            overlay_patch_rect_t r = { .x = 4, .y = 1, .w = 4, .h = 2,
+                                       .offset = 0, .len = 4 };
+            CHECK(overlay_patch_apply_rect(fb, W, H, 4, &r, blob, sizeof blob));
+            CHECK(fb[1 * (W / 2) + 2] == 0xAB && fb[1 * (W / 2) + 3] == 0xAB);
+            CHECK(fb[2 * (W / 2) + 2] == 0xAB);
+            CHECK(fb[0] == 0x11 && fb[1 * (W / 2) + 1] == 0x11);  /* outside */
+            /* re-applying (overlap) is correct and idempotent */
+            CHECK(overlay_patch_apply_rect(fb, W, H, 4, &r, blob, sizeof blob));
+            /* blob-bounds violation refused */
+            overlay_patch_rect_t r2 = { .x = 4, .y = 1, .w = 4, .h = 2,
+                                        .offset = 6, .len = 4 };
+            CHECK(!overlay_patch_apply_rect(fb, W, H, 4, &r2, blob, 8));
+        }
+
+        /* intersect helper (tap-echo supersede) */
+        overlay_patch_rect_t ir = { .x = 100, .y = 100, .w = 50, .h = 50 };
+        CHECK(overlay_patch_rect_intersects(&ir, 140, 140, 20, 20));
+        CHECK(!overlay_patch_rect_intersects(&ir, 150, 100, 10, 10));
+        CHECK(!overlay_patch_rect_intersects(&ir, 100, 150, 10, 10));
     }
 
     printf("%d tests, %d failures\n", tests, fails);
