@@ -222,6 +222,125 @@ the device echoes offline. A server without overlay support (404) leaves the
 feature fully dormant. Bring-up: the `…-overlaytest` env runs a synthetic
 spec (invert target + digits atlas) with timings on serial.
 
+### Device-owned touch (touch v3)
+
+The newest interaction model inverts the old one: instead of the server
+extracting hotspots from HTML, hit-testing coordinates, and shipping frame
+patches back, **the device draws the controls and owns the interaction.** The
+server renders the dashboard image with the control rects left *blank* and
+serves a small declarative spec; the firmware fills those rects with four
+primitives — `button`, `switch`, `slider`, `stepper` — hit-tests locally,
+gives instant partial-refresh feedback, and reports a *semantic* event
+(which control, what interaction, what value). Action payloads never reach
+the device; it learns only a tier and a type.
+
+Boards with touch + partial refresh advertise `"touch": {"v": 3,
+"primitives": [...]}` alongside `panel.depth_bpp` / `panel.grayscale`,
+`partial_refresh` and `can_stay_awake`. That last one is a hardware fact — the
+device *can* run without deep sleep — and is what lets the server offer it
+interactive controls. Whether it actually stays awake is **server config**
+(`config.always_on` on the /status response, on the same channel as
+`sleep_interval_s`), adopted on every poll, so flipping it takes effect on the
+next poll with no reboot: true holds WiFi, the digitizer and the SSE state
+stream; false runs the normal sleep cycle, draws the primitives statically from
+the spec's values, and each interaction wakes → reports → sleeps.
+
+Per frame the firmware pulls `GET /frame/spec?layout=<held>`. That param is
+*advisory* — the server answers for the device's current frame regardless — so
+the **returned** `layout_digest` is what detects a layout change (it is stable
+across data-only redraws: a clock tick does not invalidate it), and a 404/204 is
+what means "no touch on this frame". A matching digest reuses the parsed spec
+and its loaded atlases, adopting only the freshly seeded `state`/`value`, which
+are data and can move under an unchanged layout. Uncached
+`GET /atlas/<digest>` strips are fetched, the primitives are composed into the
+frame *before* the paint so one GC16 shows image and controls together, and
+interactions go to `POST /interact`.
+
+`/interact` replies carry only `{outcome, primitive_id}` and fire the side
+effect with no server re-render — the device owns feedback. The outcome is
+logged, never branched on, since the pixels already moved. Reconciliation comes
+instead from the **values stream**: `GET /frame/stream` (SSE) emits
+`{"seq":…,"values":{"ha:light.desk":"on"}}` keyed by `value_key`, and the
+firmware maps those keys onto its own primitives — that mapping is the device's
+job, since the server doesn't know which primitives exist. Newest `seq` wins,
+several primitives may share a key, and the same envelope arrives on `/status`
+so a battery device without SSE still corrects on each wake.
+
+The `touch_v3` feature is behind a server experiment that is **off by default**,
+and the off state is an empty `primitives` array — valid, not an error. v3 then
+holds nothing and declines each stroke so the existing v2/v1 paths handle it
+exactly as they do today; swallowing it would disable working touch on every
+device with the flag off.
+
+Geometry comes from the contract's shared `primitives.json`, which the server's
+canvas preview draws from too — that shared source of truth is what makes the
+device output match the preview, and geometry drift is the main fidelity risk.
+Two conventions meet in the renderer and are worth knowing before editing it.
+Spec rects are **final device-framebuffer coordinates**: the firmware draws at
+each rect exactly as given and only maps GT911 points through the board's touch
+calibration — there is deliberately no canvas→panel scaling or rotation on the
+device, because that transform is the server's job. (It is still a pending
+server task, so until it lands rects may land off-target on the glass; that is
+expected, and the fix belongs on the server, not here.) And the contract's ink
+scale is **inverted** relative to the panel's (`0 = paper … 15 = ink` versus the
+framebuffer's `0x0 = black … 0xF = white`), so every draw op and atlas blit
+inverts on the way out.
+
+The renderer is panel-agnostic — every entry point takes
+`(fb, width, height, bpp)` and no board symbols — so a new touch-capable board
+needs no changes to it, only a touch-controller driver and the two board gates
+(`BOARD_HAS_TOUCH` + `BOARD_OVERLAY_PARTIAL`; instant local feedback is
+impossible without partial refresh, so colour/Spectra panels are out regardless
+of digitizer). At **1bpp** the four-level palette folds deliberately: only
+`paper` stays white, so a stepper's `soft` dividers and a switch's `mid` on-track
+stay visible, and the switch thumb flips to paper over a filled track instead of
+disappearing into it. Glyph coverage is continuous tone and thresholds at the
+midpoint rather than inking every level, so mono text keeps its intended weight.
+`panel.grayscale` comes from the active driver's `epd_panel_info_t`, so a new
+panel family declares it once and cannot silently lose duotone.
+
+Atlases are **text only** — a 4bpp-gray strip of advance-width cells (`adv ==
+w`), blitted per character with the cursor advancing by `adv`, vertically centred
+on `ascent`/`descent`. Two roles: `l20` for labels (20 px/400) and `v28` for
+values (28 px/700). Value boxes are sized from the widest digit advance plus the
+suffix rather than the current string, so a slider's readout doesn't twitch
+between `9%` and `100%`.
+
+Icons render from a **bundled Phosphor weight** (`icon.name` → codepoint), not
+from the atlas. The firmware ships Phosphor **2.1.2 bold**
+([src/fonts/Phosphor-Bold.ttf](src/fonts/), MIT, 484 KB) plus `stb_truetype`,
+and resolves names through [include/phosphor_codepoints.h](include/) — a
+1530-entry table generated from that release's stylesheet by
+[tools/gen_phosphor_codepoints.py](tools/gen_phosphor_codepoints.py), which
+*requires* `--version` so an unpinned map can't ship by accident.
+
+That pin is verified rather than assumed: the server's own vendored
+`Phosphor-Bold.woff2` is **byte-identical** to official 2.1.0/2.1.1/2.1.2 (same
+SHA-256), and the codepoint maps match with zero conflicts — the bold font and
+its codepoints didn't change across the 2.1.x line, so both sides resolve every
+name to the same glyph. [tools/test_icons.sh](tools/test_icons.sh) enforces it
+in CI by checking all 1530 mapped names against the bundled font; a map
+regenerated from a different release fails there instead of silently drawing
+wrong pictures on a panel.
+
+Glyphs scale by **em box** (`stbtt_ScaleForMappingEmToPixels`), matching the CSS
+`font-size` the server preview renders at — scaling by ascent/descent would draw
+a visibly different size. Phosphor can rasterize a pixel over the em box, so the
+bitmap is centred in the reserved `px` cell and clipped; the contract guarantees
+glyph-identity, not pixel-identity. The font costs ~484 KB of flash and is
+enabled per-env (`-DT3_HAVE_ICON_FONT` plus the two embed declarations), so
+boards that don't render icons carry none of it; drop the flag and buttons lay
+out label-only with the `icons` capability unadvertised.
+
+A server that sends no `layout_digest` leaves v3 fully dormant and the
+protocol-v2 then v1 touch paths run unchanged. Pure logic (spec parse, hit
+test, snap/axis math, geometry, draw ops) lives in `touch3.c` and is host-tested
+by `tools/test_touch3.sh`; device orchestration is `touch3_run.c`. Bring-up:
+the `…-touch3test` env renders all four primitives from a synthetic spec and
+exercises every interaction with per-op timings on serial, then runs a 30 s
+live-tap orientation check — no networking, so it validates the panel and
+geometry before the server endpoints exist.
+
 ## Build
 
 Requires [PlatformIO Core](https://platformio.org/install). Build one target:

@@ -204,6 +204,13 @@ bool touch_int_asserted(void)
 esp_err_t touch_capture_stroke(touch_stroke_t *out,
                                uint32_t first_point_ms, uint32_t cap_ms)
 {
+    return touch_capture_stroke_cb(out, first_point_ms, cap_ms, NULL, NULL);
+}
+
+esp_err_t touch_capture_stroke_cb(touch_stroke_t *out,
+                                  uint32_t first_point_ms, uint32_t cap_ms,
+                                  touch_sample_cb_t cb, void *ctx)
+{
     out->valid = false;
     out->x0 = out->y0 = out->x1 = out->y1 = 0;
     out->ms = 0;
@@ -222,6 +229,7 @@ esp_err_t touch_capture_stroke(touch_stroke_t *out,
             out->y0 = out->y1 = fy;
             out->valid = true;
             t_first = esp_timer_get_time();
+            if (cb) cb(fx, fy, ctx);
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
@@ -236,6 +244,7 @@ esp_err_t touch_capture_stroke(touch_stroke_t *out,
             if (pressed) {
                 out->x1 = fx; out->y1 = fy;
                 misses = 0;
+                if (cb) cb(fx, fy, ctx);
             } else if (++misses >= 3) {
                 break;   /* three consecutive empty reads => finger lifted */
             }

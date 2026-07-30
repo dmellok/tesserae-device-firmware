@@ -54,6 +54,14 @@ jobs:
       - name: Overlay logic tests
         run: sh tools/test_overlay.sh
 
+      - name: Touch v3 logic tests
+        run: sh tools/test_touch3.sh
+
+      # Catches a codepoint map regenerated from a different Phosphor release
+      # than the bundled font -- otherwise only visible as wrong icons on glass.
+      - name: Touch v3 icon chain (map + font + rasterizer)
+        run: sh tools/test_icons.sh
+
 
   build:
     name: build ${{ matrix.env }}

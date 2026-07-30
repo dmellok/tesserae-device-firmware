@@ -14,7 +14,15 @@
 #include "button_report.h"
 #include "ota_report.h"
 #include "overlay.h"      /* OVERLAY_MAX_TARGETS (advertised capability cap) */
+#include "touch3_run.h"   /* BOARD_TOUCH3 */
 #include "wifi_manager.h"
+#if BOARD_TOUCH3
+#include "touch3.h"           /* T3_TOUCH_V, T3_MAX_PRIMS */
+#include "panel/epd_panel.h"  /* epd_active_driver()->info.bpp */
+#ifdef T3_HAVE_ICON_FONT
+#include "phosphor_codepoints.h"   /* T3_PHOSPHOR_VERSION (the pin) */
+#endif
+#endif
 
 #include "lwip/netdb.h"   /* getaddrinfo: IPv6-only server detection */
 #include "sht4x.h"
@@ -35,7 +43,13 @@ static const char *TAG = "rest";
 
 /* Sized for the largest JSON body we accept: a deck manifest (GET /deck) with
  * DECK_MAX_PAGES fully-linked pages runs to ~10 KB. Everything else is <4 KB. */
-#define REST_RX_MAX 16384
+/* Shared response buffer, and the REAL ceiling on any JSON body: small_get()
+ * copies out of here, so a caller's own buffer being larger buys nothing.
+ * Raised from 16 KB for touch-v3 specs: 46 primitives run ~12 KB on their own,
+ * and once the server ships the two glyph atlases their maps add ~3 KB each, so
+ * a full spec lands around 18-25 KB and would have been silently TRUNCATED
+ * (parse then fails, controls vanish, and the only clue is one WARN). */
+#define REST_RX_MAX 32768
 
 typedef struct { const char *name, *value; } rest_hdr_t;
 
@@ -352,6 +366,59 @@ static void add_proto_capability(cJSON *o)
     cJSON *p = cJSON_AddObjectToObject(o, "proto");
     if (p) cJSON_AddNumberToObject(p, "v", 2);
 }
+
+#if BOARD_TOUCH3
+/* Touch v3 capability (contract §3 / firmware-spec §14). Advertised alongside
+ * proto v2 -- the server picks the highest version it can serve, and v3 stays
+ * dormant on a server that ignores it.
+ *
+ * "icons" is advertised only when a Phosphor weight is actually bundled
+ * (T3_HAVE_ICON_FONT). Claiming it without the font would tell the server the
+ * device can render icons by name when it cannot, and there is no atlas
+ * fallback left to catch that -- every icon would silently vanish. The version
+ * string is the PIN, taken straight from the generated codepoint map so the
+ * advertised value and the glyphs actually bundled can never drift apart. */
+static void add_touch3_capability(cJSON *o)
+{
+    cJSON *t = cJSON_AddObjectToObject(o, "touch");
+    if (t) {
+        cJSON_AddNumberToObject(t, "v", T3_TOUCH_V);
+        cJSON *prims = cJSON_AddArrayToObject(t, "primitives");
+        if (prims) {
+            cJSON_AddItemToArray(prims, cJSON_CreateString("button"));
+            cJSON_AddItemToArray(prims, cJSON_CreateString("switch"));
+            cJSON_AddItemToArray(prims, cJSON_CreateString("slider"));
+            cJSON_AddItemToArray(prims, cJSON_CreateString("stepper"));
+        }
+        cJSON_AddNumberToObject(t, "max_primitives", T3_MAX_PRIMS);
+    }
+    cJSON_AddBoolToObject(o, "partial_refresh", true);
+    /* A hardware fact, not a state: this device CAN run without deep sleep, so
+     * the server may offer it interactive controls. Whether it actually stays
+     * awake is server config (`config.always_on` on the /status response), NOT
+     * something the device derives -- so always_on is deliberately not
+     * advertised here. */
+    cJSON_AddBoolToObject(o, "can_stay_awake", true);
+
+    cJSON *p = cJSON_AddObjectToObject(o, "panel");
+    if (p) {
+        /* Both straight from the active driver's info, so a new panel family
+         * declares its own capability once and cannot be missed here. */
+        const epd_panel_info_t *pi = &epd_active_driver()->info;
+        cJSON_AddNumberToObject(p, "depth_bpp", pi->bpp);
+        cJSON_AddBoolToObject(p, "grayscale", pi->grayscale);
+    }
+
+#ifdef T3_HAVE_ICON_FONT
+    cJSON *ic = cJSON_AddObjectToObject(o, "icons");
+    if (ic) {
+        cJSON_AddStringToObject(ic, "font", "phosphor");
+        cJSON_AddStringToObject(ic, "version", T3_PHOSPHOR_VERSION);
+        cJSON_AddStringToObject(ic, "weight", "bold");
+    }
+#endif
+}
+#endif /* BOARD_TOUCH3 */
 #endif
 
 /* Identity body shared by /discover and /register. Caller frees. */
@@ -377,6 +444,9 @@ static char *identity_body(uint16_t panel_w, uint16_t panel_h,
 #if BOARD_OVERLAY_PARTIAL
     if (advertise_ota) add_overlay_capability(o);
     if (advertise_ota) add_proto_capability(o);
+#if BOARD_TOUCH3
+    if (advertise_ota) add_touch3_capability(o);
+#endif
 #endif
     char *body = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
@@ -529,6 +599,16 @@ rest_status_t rest_get_frame(rest_frame_out_t *out, uint32_t timeout_ms)
         json_get_str(man, "url", out->manifest_url, sizeof out->manifest_url);
         out->has_manifest = out->manifest_digest[0] != '\0';
     }
+    /* Touch v3: layout_digest, top-level or nested under "touch". Its absence
+     * means this frame carries no v3 spec (touch3.h). */
+    json_get_str(r, "layout_digest", out->layout_digest,
+                 sizeof out->layout_digest);
+    if (!out->layout_digest[0]) {
+        cJSON *tv = cJSON_GetObjectItemCaseSensitive(r, "touch");
+        if (cJSON_IsObject(tv))
+            json_get_str(tv, "layout_digest", out->layout_digest,
+                         sizeof out->layout_digest);
+    }
     cJSON_Delete(r);
     return out->url[0] ? REST_OK : REST_HTTP_ERR;
 }
@@ -610,6 +690,84 @@ rest_status_t rest_get_manifest(const char *digest, char *buf, size_t cap,
     snprintf(url, sizeof url, "%s/api/v1/device/%s/frame/manifest?digest=%s",
              rest_config_get()->server_url, rest_config_device_id(), digest);
     return small_get(url, buf, cap, out_len, timeout_ms);
+}
+
+rest_status_t rest_get_frame_spec(const char *layout_digest, char *buf,
+                                  size_t cap, size_t *out_len,
+                                  uint32_t timeout_ms)
+{
+    char url[300];
+    /* Omit the query string entirely when there is no digest to advertise --
+     * a bare "?layout=" is not the same request as no param, and the param is
+     * advisory anyway (see touch3_run.c). */
+    if (layout_digest && layout_digest[0])
+        snprintf(url, sizeof url, "%s/api/v1/device/%s/frame/spec?layout=%s",
+                 rest_config_get()->server_url, rest_config_device_id(),
+                 layout_digest);
+    else
+        snprintf(url, sizeof url, "%s/api/v1/device/%s/frame/spec",
+                 rest_config_get()->server_url, rest_config_device_id());
+    return small_get(url, buf, cap, out_len, timeout_ms);
+}
+
+rest_status_t rest_post_interact(const char *primitive_id,
+                                 const char *interaction,
+                                 bool has_value, float value,
+                                 const char *layout_digest, uint64_t event_id,
+                                 rest_interact_out_t *out,
+                                 uint32_t timeout_ms)
+{
+    if (out) memset(out, 0, sizeof *out);
+    char url[300];
+    snprintf(url, sizeof url, "%s/api/v1/device/%s/interact",
+             rest_config_get()->server_url, rest_config_device_id());
+
+    cJSON *o = cJSON_CreateObject();
+    if (!o) return REST_NET_ERR;
+    cJSON_AddStringToObject(o, "primitive_id", primitive_id);
+    cJSON_AddStringToObject(o, "interaction", interaction);
+    if (has_value) cJSON_AddNumberToObject(o, "value", (double)value);
+    cJSON_AddStringToObject(o, "layout_digest", layout_digest);
+    /* uint64 as a JSON number: ids stay <= 2^53 so the double round-trip is
+     * exact (see button_report.h). */
+    cJSON_AddNumberToObject(o, "event_id", (double)event_id);
+    char *body = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (!body) return REST_NET_ERR;
+
+    char auth[300];
+    snprintf(auth, sizeof auth, "Bearer %s", rest_config_get()->device_token);
+    rest_hdr_t hdrs[] = { { "Authorization", auth } };
+    const char *rbody = NULL;
+    rest_status_t st = do_request(HTTP_METHOD_POST, url, hdrs, 1, body, &rbody,
+                                  timeout_ms);
+    free(body);
+    if (st != REST_OK || !out) return st;
+
+    cJSON *r = cJSON_Parse(rbody);
+    if (!r) return REST_OK;      /* no body / unparseable: keep optimistic */
+    json_get_str(r, "outcome", out->outcome, sizeof out->outcome);
+    /* Confirmed state may sit at the top level or under "confirmed"/"state".
+     * Read liberally: the contract only promises "may carry confirmed state
+     * for stateful primitives" (contract §6), and the server does not send any
+     * yet -- absent means "unconfirmed", not "unchanged". */
+    cJSON *scope = cJSON_GetObjectItemCaseSensitive(r, "confirmed");
+    if (!cJSON_IsObject(scope)) scope = r;
+    cJSON *stv = cJSON_GetObjectItemCaseSensitive(scope, "state");
+    if (cJSON_IsString(stv)) {
+        out->have_state = true;
+        out->state = strcmp(stv->valuestring, "on") == 0;
+    } else if (cJSON_IsBool(stv)) {
+        out->have_state = true;
+        out->state = cJSON_IsTrue(stv);
+    }
+    cJSON *vv = cJSON_GetObjectItemCaseSensitive(scope, "value");
+    if (cJSON_IsNumber(vv)) {
+        out->have_value = true;
+        out->value = (float)vv->valuedouble;
+    }
+    cJSON_Delete(r);
+    return REST_OK;
 }
 
 rest_status_t rest_get_bundle(char *buf, size_t cap, size_t *out_len,
@@ -738,6 +896,9 @@ rest_status_t rest_post_status(int rssi, const char *ip,
 #if BOARD_OVERLAY_PARTIAL
     add_overlay_capability(o);
     add_proto_capability(o);
+#if BOARD_TOUCH3
+    add_touch3_capability(o);   /* every beat: always_on can flip mid-session */
+#endif
 #endif
     /* proto2 status contract: tz rides every beat (server-config sourced;
      * empty until the server delivers one). */
@@ -783,9 +944,18 @@ rest_status_t rest_post_status(int rssi, const char *ip,
             rest_config_set_tz(tz);
             rest_config_save();
         }
+        /* always_on is SERVER CONFIG, on the same channel as sleep_interval_s:
+         * true = run without deep sleep (kiosk: GT911 stays hot and the SSE
+         * state stream is held), false = the normal sleep cycle. Read every
+         * poll and obey the latest value, so a mid-session change takes effect
+         * on the next poll with no reboot. Accepts a bool or 0/1, matching
+         * touch_enabled above. */
         cJSON *ao = cJSON_GetObjectItemCaseSensitive(cfg, "always_on");
-        if (cJSON_IsBool(ao) && cJSON_IsTrue(ao) != c->always_on) {
-            rest_config_set_always_on(cJSON_IsTrue(ao));
+        int ao_v = -1;
+        if (cJSON_IsBool(ao))        ao_v = cJSON_IsTrue(ao) ? 1 : 0;
+        else if (cJSON_IsNumber(ao)) ao_v = ao->valueint ? 1 : 0;
+        if (ao_v >= 0 && (ao_v != 0) != c->always_on) {
+            rest_config_set_always_on(ao_v != 0);
             rest_config_save();
         }
     }

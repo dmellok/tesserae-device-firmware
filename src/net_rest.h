@@ -64,6 +64,13 @@ typedef struct {
     bool     has_manifest;
     char     manifest_digest[17];
     char     manifest_url[160];
+    /* Touch v3: the frame's LAYOUT digest, stable across data-only redraws (a
+     * clock tick does not invalidate it). Accepted top-level or inside a "touch"
+     * block. The server does not send it yet, so "" is the normal case and is
+     * NOT a v3-off signal -- only a 404/204 from /frame/spec is. When present it
+     * is purely an optimisation: matching the held digest lets touch3 skip the
+     * spec pull for a data-only redraw (touch3.h). */
+    char     layout_digest[33];
 } rest_frame_out_t;
 
 typedef struct {
@@ -194,6 +201,53 @@ rest_status_t rest_get_manifest(const char *digest, char *buf, size_t cap,
  * REST_NO_CONTENT = no bundle; all nav is tier 2. */
 rest_status_t rest_get_bundle(char *buf, size_t cap, size_t *out_len,
                               uint32_t timeout_ms);
+
+/* ---- touch v3 (touch3.h; device-owned touch primitives) ---- */
+
+/* GET /api/v1/device/<id>/frame/spec?layout=<layout_digest>. REST_OK copies the
+ * touch spec JSON into buf (NUL-terminated): { layout_digest, primitives[] },
+ * with atlases[] absent until the server's atlas pipeline lands.
+ *
+ * The ?layout= param is ADVISORY -- the server returns the spec for the device's
+ * CURRENT frame whatever is passed -- so the caller detects a layout change by
+ * comparing the RETURNED layout_digest against what it holds, not by trusting
+ * the query. REST_NOT_FOUND / REST_NO_CONTENT = "no touch for this frame":
+ * render the image only (touch-v3 firmware-spec §5). */
+rest_status_t rest_get_frame_spec(const char *layout_digest, char *buf,
+                                  size_t cap, size_t *out_len,
+                                  uint32_t timeout_ms);
+
+/* What an /interact reply carries.
+ *
+ * `outcome` is always present on a 200 (ha_dispatched, dispatched, fetched,
+ * webhook_dispatched, noop, no_target, no_frame, deduped). It is for LOGGING
+ * ONLY -- never branch on it: the device already drew local feedback before the
+ * request went out, so there is nothing for an outcome to change.
+ *
+ * The confirmed-state fields are plumbing for a server capability that does NOT
+ * exist yet (as of the 2026-07-27 server sync the reply is only
+ * {outcome, primitive_id}); confirmed switch/slider state is to arrive on the
+ * SSE values channel instead. They stay false until then, which the caller must
+ * read as "still optimistic", NOT as "confirmed unchanged". */
+typedef struct {
+    char  outcome[24];     /* "" when the reply carried none */
+    bool  have_state;      /* switch: confirmed on/off */
+    bool  state;
+    bool  have_value;      /* slider/stepper: confirmed value */
+    float value;
+} rest_interact_out_t;
+
+/* POST /api/v1/device/<id>/interact -- the v3 semantic event report:
+ *   { primitive_id, interaction: "tap"|"set", value?, layout_digest, event_id }
+ * value is passed only when has_value (steppers/sliders). Fire-and-forget for
+ * feedback purposes: local feedback is already on glass before this runs.
+ * out may be NULL when the caller does not reconcile. */
+rest_status_t rest_post_interact(const char *primitive_id,
+                                 const char *interaction,
+                                 bool has_value, float value,
+                                 const char *layout_digest, uint64_t event_id,
+                                 rest_interact_out_t *out,
+                                 uint32_t timeout_ms);
 
 /* POST /api/v1/device/<id>/tap: the v2 action report. gesture is a
  * p2_gesture_name() string; value is 0-100 for slides, -1 to omit; digest is

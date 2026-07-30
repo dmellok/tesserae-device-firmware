@@ -35,8 +35,10 @@
 #include "deck_run.h"       /* SD deck cache: local nav + sync (no-op w/o card) */
 #include "overlay_run.h"    /* local overlay render mode (no-op w/o partial panel) */
 #include "proto2_run.h"     /* protocol v2: device-owned touch (no-op w/o touch) */
+#include "touch3_run.h"     /* touch v3: device-drawn primitives (no-op w/o touch) */
 #include "sse_client.h"     /* proto2 push transport (kiosk mode only) */
 #include "overlay.h"        /* pure overlay engine (used by OVERLAY_SELFTEST) */
+#include "touch3.h"         /* pure touch-v3 engine (used by TOUCH3_SELFTEST) */
 #include "deck_cache.h"     /* + sdcard.h/deck.h: DECK_SD_SELFTEST round trip */
 #include "sdcard.h"
 #include "sdmmc_cmd.h"      /* raw-sector benchmark in DECK_SD_SELFTEST */
@@ -189,6 +191,9 @@ static void kiosk_loop(void)
     int64_t next_beat_us = 0;
     for (;;) {
         const rest_config_t *c = rest_config_get();
+        /* Server config, re-read every loop: the heartbeat below adopts the
+         * latest config.always_on, so turning it off takes effect on the next
+         * poll with no reboot. */
         if (!c->always_on) { ESP_LOGI(TAG, "kiosk off (config)"); break; }
         int mv = battery_read_mv();
         if (battery_pct(mv) < 15 && !usb_serial_jtag_is_connected()) {
@@ -199,11 +204,18 @@ static void kiosk_loop(void)
 
         if (touch_int_asserted()) {
             touch_stroke_t st;
-            touch_capture_stroke(&st, TOUCH_FIRST_POINT_MS, TOUCH_CAP_MS);
+            /* The sample callback tracks a v3 slider live while the finger is
+             * down; it is a no-op for every other primitive and when no v3
+             * spec is held. */
+            touch_capture_stroke_cb(&st, TOUCH_FIRST_POINT_MS, TOUCH_CAP_MS,
+                                    touch3_stroke_sample, NULL);
             if (st.valid) {
                 bool p2_poll = false;
-                if (proto2_try_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
+                if (touch3_try_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
                                      &p2_poll)) {
+                    if (p2_poll) fetch_and_paint_current(c->server_url);
+                } else if (proto2_try_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
+                                            &p2_poll)) {
                     if (p2_poll && fetch_and_paint_current(c->server_url)) {}
                 } else {
                     overlay_try_echo(st.x1, st.y1);
@@ -220,6 +232,7 @@ static void kiosk_loop(void)
         sse_pump(150);
         if (!sse_connected()) overlay_linger_poll();   /* polling fallback */
         proto2_flush_reports();
+        touch3_flush_reports();
         proto2_linger_tick();
         if (overlay_take_refetch()) {
             rest_config_set_frame_etag("");
@@ -241,6 +254,8 @@ static void kiosk_loop(void)
                     overlay_ingest_values(so.overlay_values,
                                           strlen(so.overlay_values));
                     proto2_ingest_values(so.overlay_values,
+                                         strlen(so.overlay_values));
+                    touch3_ingest_values(so.overlay_values,
                                          strlen(so.overlay_values));
                 }
                 if (so.overlay_patches[0])
@@ -265,8 +280,9 @@ static void kiosk_loop(void)
 static void sleep_forever_or_until_timer(void)
 {
 #if defined(BOARD_OVERLAY_PARTIAL) && defined(BOARD_HAS_TOUCH)
-    /* Kiosk power policy: the admin opted this device out of deep sleep.
-     * Runs until config or low battery says otherwise, then sleeps. */
+    /* Kiosk power policy: server config opted this device out of deep sleep
+     * (config.always_on, read on every /status poll). Runs until config or low
+     * battery says otherwise, then sleeps. */
     if (rest_config_get()->always_on) kiosk_loop();
 #endif
 
@@ -520,8 +536,12 @@ static bool fetch_and_paint_current(const char *server_url)
     if (!frame) return false;
     overlay_frame_downloaded(fo.etag);   /* refresh spec for the new digest */
     proto2_frame_downloaded(fo.etag, fo.manifest_digest, fo.manifest_url);
+    touch3_frame_downloaded(fo.etag, fo.layout_digest);
     ESP_ERROR_CHECK(epd_port_init());
     epd_init();
+    /* v3 draws its controls INTO the frame the server left blank there, so one
+     * refresh shows image + controls together (touch-v3 firmware-spec §4). */
+    touch3_compose(frame);
     epd_display(frame);
     epd_sleep();
     if (fo.etag[0]) rest_config_set_frame_etag(fo.etag);
@@ -530,6 +550,7 @@ static bool fetch_and_paint_current(const char *server_url)
      * frame actually on glass (frame freed only after the copy). */
     overlay_after_paint(frame, fo.etag);
     proto2_frame_painted(fo.etag);   /* server-wins: clears the ledger */
+    touch3_after_paint(fo.etag);     /* note the layout on glass, reset hygiene */
     free(frame);
     return true;
 }
@@ -877,6 +898,431 @@ void app_main(void)
     while (1) vTaskDelay(pdMS_TO_TICKS(1000));
 #endif
 
+#if defined(TOUCH3_SELFTEST) && defined(BOARD_HAS_TOUCH) && \
+    defined(BOARD_OVERLAY_PARTIAL)
+    /* Touch-v3 bring-up (E1003): render all four primitives from a synthetic
+     * spec onto a blank frame, then exercise each interaction offline with DU
+     * partial refreshes and per-op timings on serial. This is the on-hardware
+     * validator for the geometry + feedback paths while the server's Phase-1
+     * endpoints (/frame/spec, /interact, /frame/stream) do not exist yet, so
+     * there is nothing to fetch. No networking.
+     *
+     * What to check on the glass, against the server's canvas preview:
+     *   - button: rounded frame, 2 px stroke, radius 12; press inverts the rect
+     *   - switch: pill track, thumb parked left (off) / right (on), mid fill on
+     *   - slider: 8 px track inset 20, 36 px paper thumb, mid active fill,
+     *             value_text tracking the thumb
+     *   - stepper: rounded frame, soft dividers at the thirds, minus bar and
+     *              plus cross, value centred
+     * Latency target is <= ~500 ms per DU rect (firmware-spec §12). */
+    ESP_LOGW(TAG, "TOUCH3_SELFTEST: primitive render + feedback (no networking)");
+    {
+        /* One atlas: digits + '%' at 28/700, the contract's "value" role. The
+         * strip is INK scale (0 = paper .. 15 = ink) like a real v3 atlas, NOT
+         * the panel's white-scale -- t3_draw_text inverts on the way out. */
+        enum { AW = 220, AH = 32, GW = 20 };
+        char *spec_json = malloc(4096);
+        t3_spec_t *sp = malloc(sizeof *sp);
+        uint8_t *base = heap_caps_malloc(EPD_BUF_BYTES,
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        uint8_t *atlas = heap_caps_malloc(AW / 2 * AH,
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        int sj = 0;
+        if (spec_json)
+            sj = snprintf(spec_json, 4096,
+              "{\"layout_digest\":\"5e1f7e57\","
+              "\"atlases\":[{\"id\":\"v28\",\"digest\":\"selftest\","
+              " \"url\":\"-\",\"format\":\"gray4\",\"px\":28,\"weight\":700,"
+              " \"strip_w\":%d,\"strip_h\":%d,\"ascent\":26,\"descent\":6,"
+              " \"space_adv\":10,\"glyphs\":{"
+              "  \"0\":{\"x\":0,\"w\":18,\"adv\":20},"
+              "  \"1\":{\"x\":20,\"w\":18,\"adv\":20},"
+              "  \"2\":{\"x\":40,\"w\":18,\"adv\":20},"
+              "  \"3\":{\"x\":60,\"w\":18,\"adv\":20},"
+              "  \"4\":{\"x\":80,\"w\":18,\"adv\":20},"
+              "  \"5\":{\"x\":100,\"w\":18,\"adv\":20},"
+              "  \"6\":{\"x\":120,\"w\":18,\"adv\":20},"
+              "  \"7\":{\"x\":140,\"w\":18,\"adv\":20},"
+              "  \"8\":{\"x\":160,\"w\":18,\"adv\":20},"
+              "  \"9\":{\"x\":180,\"w\":18,\"adv\":20},"
+              "  \"%%\":{\"x\":200,\"w\":18,\"adv\":20}}}],"
+              "\"primitives\":["
+              /* Icon + label exercises the bundled Phosphor path; with no font
+               * built in it degrades to label-only, which is also worth
+               * seeing on the glass. */
+              " {\"id\":\"btn_scene\",\"type\":\"button\","
+              "  \"rect\":{\"x\":120,\"y\":160,\"w\":320,\"h\":120},"
+              "  \"icon\":{\"name\":\"lightbulb\",\"weight\":\"bold\",\"px\":48},"
+              "  \"action\":{\"tier\":1,\"type\":\"ha\"}},"
+              " {\"id\":\"sw_desk\",\"type\":\"switch\","
+              "  \"rect\":{\"x\":520,\"y\":160,\"w\":320,\"h\":120},"
+              "  \"value_key\":\"ha:light.desk\",\"state\":\"off\","
+              "  \"action\":{\"tier\":1,\"type\":\"ha\"}},"
+              " {\"id\":\"sl_bri\",\"type\":\"slider\","
+              "  \"rect\":{\"x\":120,\"y\":360,\"w\":720,\"h\":140},"
+              "  \"axis\":\"x\",\"min\":0,\"max\":100,\"step\":5,\"value\":40,"
+              "  \"value_text\":{\"atlas\":\"v28\",\"align\":\"center\","
+              "                  \"suffix\":\"%%\",\"max_chars\":4},"
+              "  \"action\":{\"tier\":1,\"type\":\"ha\"}},"
+              " {\"id\":\"st_vol\",\"type\":\"stepper\","
+              "  \"rect\":{\"x\":120,\"y\":560,\"w\":360,\"h\":120},"
+              "  \"min\":0,\"max\":30,\"step\":1,\"value\":12,"
+              "  \"value_text\":{\"atlas\":\"v28\",\"align\":\"center\","
+              "                  \"max_chars\":2},"
+              "  \"action\":{\"tier\":1,\"type\":\"ha\"}}]}",
+              AW, AH);
+
+        if (!spec_json || !sp || !base || !atlas ||
+            !t3_spec_parse(spec_json, (size_t)sj, EPD_WIDTH, EPD_HEIGHT, sp)) {
+            ESP_LOGE(TAG, "TOUCH3_SELFTEST: setup failed");
+        } else {
+            /* Seven-segment digits + a '%' block, drawn in INK scale. */
+            memset(atlas, 0x00, AW / 2 * AH);          /* 0x0 = paper */
+            static const uint8_t SEG[10] = {0x3F,0x06,0x5B,0x4F,0x66,
+                                            0x6D,0x7D,0x07,0x7F,0x6F};
+            for (int d = 0; d < 11; d++) {
+                for (int yy = 0; yy < AH; yy++) {
+                    for (int xx = 2; xx < GW - 2; xx++) {
+                        bool on;
+                        if (d == 10) {                  /* '%': two blobs + bar */
+                            on = (yy < 10 && xx < 8) || (yy >= AH - 10 && xx >= GW - 10) ||
+                                 (xx + yy > GW - 4 && xx + yy < GW + 2);
+                        } else {
+                            uint8_t sgs = SEG[d];
+                            bool topH = yy < 4, midH = yy >= 14 && yy < 18;
+                            bool botH = yy >= AH - 4;
+                            bool lftV = xx < 6, rgtV = xx >= GW - 8;
+                            on = (topH && (sgs & 0x01)) || (botH && (sgs & 0x08)) ||
+                                 (midH && (sgs & 0x40)) ||
+                                 (lftV && ((yy < 16 && (sgs & 0x20)) ||
+                                           (yy >= 16 && (sgs & 0x10)))) ||
+                                 (rgtV && ((yy < 16 && (sgs & 0x02)) ||
+                                           (yy >= 16 && (sgs & 0x04))));
+                        }
+                        if (!on) continue;
+                        int ax = d * GW + xx;
+                        if (ax >= AW) continue;
+                        uint8_t *b = &atlas[(size_t)yy * (AW / 2) + ax / 2];
+                        /* 0xF = full ink in the atlas's own scale. */
+                        *b = (ax & 1) ? (uint8_t)(*b | 0x0F)
+                                      : (uint8_t)(*b | 0xF0);
+                    }
+                }
+            }
+            sp->atlases[0].bits = atlas;
+
+            /* Blank paper frame: this stands in for the server's image with
+             * the control rects left blank. Panel scale, so 0xF = white. */
+            memset(base, 0xFF, EPD_BUF_BYTES);
+
+            ESP_ERROR_CHECK(epd_port_init());
+            epd_init();
+            int64_t t0 = esp_timer_get_time();
+            for (int i = 0; i < sp->n_prims; i++)
+                t3_draw_primitive(base, EPD_WIDTH, EPD_HEIGHT, 4, sp,
+                                  &sp->prims[i]);
+            ESP_LOGW(TAG, "TOUCH3_SELFTEST: composed %d primitives in %lld us",
+                     sp->n_prims, esp_timer_get_time() - t0);
+            {   /* Report the icon path's state explicitly: a missing font is a
+                 * silent label-only degrade otherwise. */
+                t3_icon_ref_t probe = { .present = true, .px = 48 };
+                snprintf(probe.name, sizeof probe.name, "lightbulb");
+                int iw = t3_icon_width(&probe);
+                ESP_LOGW(TAG, "TOUCH3_SELFTEST: icon 'lightbulb' -> %s",
+                         iw ? "rendered from bundled Phosphor"
+                            : "NO FONT (buttons are label-only)");
+            }
+            ESP_LOGW(TAG, "TOUCH3_SELFTEST: painting base (GC16 full)...");
+            epd_display(base);
+
+            /* Hit-test cost: a miss walks the whole primitive list. */
+            t0 = esp_timer_get_time();
+            volatile int hits = 0;
+            for (int i = 0; i < 10000; i++)
+                if (t3_hit(sp, (i * 37) % EPD_WIDTH,
+                           (i * 53) % EPD_HEIGHT) >= 0) hits++;
+            ESP_LOGW(TAG, "TOUCH3_SELFTEST: 10000 hit-tests in %lld us (%d hits)",
+                     esp_timer_get_time() - t0, hits);
+
+            /* 0. Waveform sweep. Mode numbers index the waveform table in the
+             * PANEL's flash, so which index is A2 is a hardware fact, not a
+             * constant -- measure rather than assume (DU's real 1.07 s already
+             * disproved this driver's "~300 ms" comment). Same rect each time,
+             * inverted between passes so every mode has real work to do. */
+            {
+                extern int it8951_bench_wave(const uint8_t *, int, int, int,
+                                             int, int);
+                t3_prim_t *bench = t3_prim_by_id(sp, "sw_desk");
+                t3_rect_t br = t3_feedback_rect(sp, bench);
+                ESP_LOGW(TAG, "TOUCH3_SELFTEST: waveform sweep on %dx%d rect",
+                         br.w, br.h);
+                for (int mode = 1; mode <= 7; mode++) {
+                    overlay_invert_rect(base, EPD_WIDTH, EPD_HEIGHT, 4,
+                                        br.x, br.y, br.w, br.h);
+                    int ms = it8951_bench_wave(base, br.x, br.y, br.w, br.h,
+                                               mode);
+                    ESP_LOGW(TAG, "TOUCH3_SELFTEST:   mode %d -> %d ms", mode,
+                             ms);
+                    vTaskDelay(pdMS_TO_TICKS(250));
+                }
+                /* Leave the rect as it started (7 inversions = inverted). */
+                overlay_invert_rect(base, EPD_WIDTH, EPD_HEIGHT, 4,
+                                    br.x, br.y, br.w, br.h);
+                epd_display(base);
+            }
+
+            /* 1. Button press: invert the rect, then restore. */
+            t3_prim_t *bp = t3_prim_by_id(sp, "btn_scene");
+            for (int i = 0; i < 2; i++) {
+                t0 = esp_timer_get_time();
+                if (i == 0)
+                    overlay_invert_rect(base, EPD_WIDTH, EPD_HEIGHT, 4,
+                                        bp->rect.x, bp->rect.y,
+                                        bp->rect.w, bp->rect.h);
+                else
+                    t3_draw_primitive(base, EPD_WIDTH, EPD_HEIGHT, 4, sp, bp);
+                epd_display_partial_mode(base, bp->rect.x, bp->rect.y,
+                                         bp->rect.w, bp->rect.h, EPD_RF_DU);
+                ESP_LOGW(TAG, "TOUCH3_SELFTEST: button %s in %lld ms",
+                         i == 0 ? "press" : "release",
+                         (esp_timer_get_time() - t0) / 1000);
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+
+            /* 2. Switch: toggle twice, refreshing only the track. */
+            t3_prim_t *wp = t3_prim_by_id(sp, "sw_desk");
+            for (int i = 0; i < 2; i++) {
+                wp->state = !wp->state;
+                t3_rect_t tr = t3_feedback_rect(sp, wp);
+                t0 = esp_timer_get_time();
+                t3_draw_primitive(base, EPD_WIDTH, EPD_HEIGHT, 4, sp, wp);
+                epd_display_partial_mode(base, tr.x, tr.y, tr.w, tr.h,
+                                         EPD_RF_DU);
+                ESP_LOGW(TAG, "TOUCH3_SELFTEST: switch -> %s in %lld ms "
+                              "(track %dx%d)", wp->state ? "on" : "off",
+                         (esp_timer_get_time() - t0) / 1000, tr.w, tr.h);
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+
+            /* 3. Slider: sweep by simulating drag points across the track,
+             * verifying the value math and the live thumb + value_text repaint. */
+            t3_prim_t *slp = t3_prim_by_id(sp, "sl_bri");
+            int origin = 0, len = 0;
+            t3_slider_track(slp, &origin, &len);
+            for (int i = 0; i <= 4; i++) {
+                int fx = origin + (len * i) / 4;
+                float v = t3_slider_value_at(slp, fx, slp->rect.y + slp->rect.h / 2);
+                slp->value = v;
+                t3_rect_t fr = t3_feedback_rect(sp, slp);
+                t0 = esp_timer_get_time();
+                t3_draw_primitive(base, EPD_WIDTH, EPD_HEIGHT, 4, sp, slp);
+                epd_display_partial_mode(base, fr.x, fr.y, fr.w, fr.h,
+                                         EPD_RF_DU);
+                ESP_LOGW(TAG, "TOUCH3_SELFTEST: slider x=%d -> %d%% in %lld ms",
+                         fx, (int)v, (esp_timer_get_time() - t0) / 1000);
+                vTaskDelay(pdMS_TO_TICKS(400));
+            }
+
+            /* 4. Stepper: plus three times, then minus once. */
+            t3_prim_t *stp = t3_prim_by_id(sp, "st_vol");
+            for (int i = 0; i < 4; i++) {
+                int zone = (i < 3) ? 1 : -1;
+                stp->value = t3_snap(stp, stp->value +
+                                     (zone > 0 ? stp->vstep : -stp->vstep));
+                t0 = esp_timer_get_time();
+                t3_draw_primitive(base, EPD_WIDTH, EPD_HEIGHT, 4, sp, stp);
+                epd_display_partial_mode(base, stp->rect.x, stp->rect.y,
+                                         stp->rect.w, stp->rect.h, EPD_RF_DU);
+                ESP_LOGW(TAG, "TOUCH3_SELFTEST: stepper %s -> %d in %lld ms",
+                         zone > 0 ? "+" : "-", (int)stp->value,
+                         (esp_timer_get_time() - t0) / 1000);
+                vTaskDelay(pdMS_TO_TICKS(400));
+            }
+
+            /* 4b. Waveform A/B. The timing sweep above cannot answer the two
+             * questions that actually decide which waveform ships, so judge
+             * them by eye here:
+             *
+             *   1. Does the switch's ON track render as GRAY? primitives.json
+             *      fills it with `mid` (level 8 of 15). A 2-LEVEL waveform --
+             *      both DU and A2 -- has no middle level and thresholds it to
+             *      solid black, which also swallows the ink thumb sitting on
+             *      top. Only a grayscale waveform can show it as intended.
+             *   2. How badly does it ghost over repeated toggles?
+             *
+             * Mode 1 (DU) runs first as the baseline you already know. Each
+             * candidate starts from a GC16 full clear so the previous mode's
+             * ghosting cannot contaminate the next one's verdict, and the
+             * STEPPER displays the mode number currently under test.
+             *
+             * OPT-IN (-DTOUCH3_WAVEFORM_AB): it costs ~110 s before the
+             * interactive phase, which is pure friction now that mode 5 is
+             * settled. Turn it back on when bringing up a new panel, whose
+             * waveform table will differ again. */
+#ifdef TOUCH3_WAVEFORM_AB
+            {
+                extern int it8951_bench_wave(const uint8_t *, int, int, int,
+                                             int, int);
+                static const int CAND[] = { 1, 3, 5, 7 };
+                t3_prim_t *wp2 = t3_prim_by_id(sp, "sw_desk");
+                t3_prim_t *sp2 = t3_prim_by_id(sp, "st_vol");
+                t3_rect_t wr = t3_feedback_rect(sp, wp2);
+
+                for (unsigned c = 0; c < sizeof CAND / sizeof CAND[0]; c++) {
+                    int m = CAND[c];
+                    /* Clean slate + label the panel with the mode number. */
+                    wp2->state = false;
+                    t3_draw_primitive(base, EPD_WIDTH, EPD_HEIGHT, 4, sp, wp2);
+                    sp2->value = (float)m;
+                    t3_draw_primitive(base, EPD_WIDTH, EPD_HEIGHT, 4, sp, sp2);
+                    epd_display(base);
+                    ESP_LOGW(TAG, "TOUCH3_SELFTEST: === waveform %d (stepper "
+                                  "shows %d) ===", m, m);
+                    vTaskDelay(pdMS_TO_TICKS(1200));
+
+                    /* Toggle repeatedly so ghosting has a chance to build. */
+                    for (int i = 0; i < 6; i++) {
+                        wp2->state = !wp2->state;
+                        t3_draw_primitive(base, EPD_WIDTH, EPD_HEIGHT, 4, sp,
+                                          wp2);
+                        int ms = it8951_bench_wave(base, wr.x, wr.y, wr.w,
+                                                   wr.h, m);
+                        ESP_LOGW(TAG, "TOUCH3_SELFTEST:   mode %d toggle %d "
+                                      "-> %s in %d ms", m, i + 1,
+                                 wp2->state ? "on" : "off", ms);
+                        vTaskDelay(pdMS_TO_TICKS(600));
+                    }
+
+                    /* Leave it ON and hold, so the mid-gray track fill is on
+                     * the glass to be judged. */
+                    wp2->state = true;
+                    t3_draw_primitive(base, EPD_WIDTH, EPD_HEIGHT, 4, sp, wp2);
+                    it8951_bench_wave(base, wr.x, wr.y, wr.w, wr.h, m);
+                    ESP_LOGW(TAG, "TOUCH3_SELFTEST:   mode %d: LOOK NOW -- is "
+                                  "the ON track grey (not solid black), and is "
+                                  "the thumb visible? ghosting?", m);
+                    vTaskDelay(pdMS_TO_TICKS(5000));
+                }
+                /* Restore a clean panel for the interactive phase. */
+                wp2->state = false;
+                sp2->value = 14;
+                t3_draw_primitive(base, EPD_WIDTH, EPD_HEIGHT, 4, sp, wp2);
+                t3_draw_primitive(base, EPD_WIDTH, EPD_HEIGHT, 4, sp, sp2);
+                epd_display(base);
+                ESP_LOGW(TAG, "TOUCH3_SELFTEST: waveform A/B done");
+            }
+#endif /* TOUCH3_WAVEFORM_AB */
+
+            /* 5. INTERACTIVE: drive the controls with a real finger. Runs the
+             * same engine calls the production tier engine uses (hit-test ->
+             * classify -> mutate -> redraw -> A2 partial), just without the
+             * server report, so the controls behave exactly as they will in
+             * the field and the whole thing works offline. Also confirms
+             * orientation for free: a tap must change the control you touched
+             * (firmware-spec §2 -- rects are already in framebuffer space).
+             *
+             * Loops until RESET rather than timing out, so the panel stays
+             * usable for as long as you want to poke at it. */
+            if (touch_init() == ESP_OK) {
+                ESP_LOGW(TAG, "TOUCH3_SELFTEST: INTERACTIVE -- tap the button, "
+                              "switch and stepper zones, drag the slider. "
+                              "Press RESET to exit.");
+                int partials = 0;
+                for (;;) {
+                    if (!touch_int_asserted()) {
+                        vTaskDelay(pdMS_TO_TICKS(20));
+                        continue;
+                    }
+                    touch_stroke_t st;
+                    touch_capture_stroke(&st, TOUCH_FIRST_POINT_MS,
+                                         TOUCH_CAP_MS);
+                    if (!st.valid) continue;
+
+                    int idx = t3_hit(sp, st.x0, st.y0);
+                    if (idx < 0) {
+                        ESP_LOGW(TAG, "TOUCH3_SELFTEST: tap (%d,%d) -> (miss)",
+                                 st.x0, st.y0);
+                        continue;
+                    }
+                    t3_prim_t *p = &sp->prims[idx];
+                    t3_rect_t fr = t3_feedback_rect(sp, p);
+                    char what[32] = "";
+                    int64_t tt = esp_timer_get_time();
+
+                    switch (p->type) {
+                    case T3_BUTTON:
+                        /* Momentary: invert, hold so the press registers, then
+                         * restore. The hold is 400 ms rather than a token
+                         * 120 ms because production has a /interact round trip
+                         * in the same gap -- this keeps the two paths' timing
+                         * comparable, and gives the panel time to settle before
+                         * the same rect is refreshed again. */
+                        overlay_invert_rect(base, EPD_WIDTH, EPD_HEIGHT, 4,
+                                            p->rect.x, p->rect.y,
+                                            p->rect.w, p->rect.h);
+                        epd_display_partial_mode(base, p->rect.x, p->rect.y,
+                                                 p->rect.w, p->rect.h,
+                                                 EPD_RF_DU);
+                        vTaskDelay(pdMS_TO_TICKS(400));
+                        t3_draw_primitive(base, EPD_WIDTH, EPD_HEIGHT, 4, sp, p);
+                        snprintf(what, sizeof what, "pressed");
+                        partials++;   /* the invert above is its own partial;
+                                       * the restore below counts separately */
+                        break;
+                    case T3_SWITCH:
+                        p->state = !p->state;
+                        t3_draw_primitive(base, EPD_WIDTH, EPD_HEIGHT, 4, sp, p);
+                        snprintf(what, sizeof what, "-> %s",
+                                 p->state ? "on" : "off");
+                        break;
+                    case T3_SLIDER:
+                        /* Settle on the LIFT point, so a drag lands where the
+                         * finger left the glass. */
+                        p->value = t3_slider_value_at(p, st.x1, st.y1);
+                        t3_draw_primitive(base, EPD_WIDTH, EPD_HEIGHT, 4, sp, p);
+                        snprintf(what, sizeof what, "-> %d", (int)p->value);
+                        break;
+                    case T3_STEPPER: {
+                        int zone = t3_stepper_zone(p, st.x0, st.y0);
+                        if (zone == 0) {      /* centre third is inert */
+                            ESP_LOGW(TAG, "TOUCH3_SELFTEST: '%s' value zone "
+                                          "(no change)", p->id);
+                            continue;
+                        }
+                        p->value = t3_snap(p, p->value + (zone > 0 ? p->vstep
+                                                                  : -p->vstep));
+                        t3_draw_primitive(base, EPD_WIDTH, EPD_HEIGHT, 4, sp, p);
+                        snprintf(what, sizeof what, "%s -> %d",
+                                 zone > 0 ? "+" : "-", (int)p->value);
+                        break;
+                    }
+                    }
+
+                    /* Ghosting hygiene, same rule as the tier engine: a full
+                     * GC16 every T3_HYGIENE_N partials. A2 ghosts more than
+                     * DU, so this is what keeps the panel clean -- watch for
+                     * the flash and judge whether N=8 is right. */
+                    if (++partials >= T3_HYGIENE_N) {
+                        partials = 0;
+                        ESP_LOGW(TAG, "TOUCH3_SELFTEST: hygiene GC16");
+                        epd_display(base);
+                    } else {
+                        epd_display_partial_mode(base, fr.x, fr.y, fr.w, fr.h,
+                                                 EPD_RF_DU);
+                    }
+                    ESP_LOGW(TAG, "TOUCH3_SELFTEST: %s '%s' %s in %lld ms",
+                             t3_ptype_name(p->type), p->id, what,
+                             (esp_timer_get_time() - tt) / 1000);
+                }
+            }
+
+            epd_sleep();
+            ESP_LOGW(TAG, "TOUCH3_SELFTEST: done; halting. Press RESET to repeat.");
+        }
+    }
+    while (1) vTaskDelay(pdMS_TO_TICKS(1000));
+#endif
+
 #ifdef DECK_SD_SELFTEST
     /* Deck-cache bring-up: mount the card, run one frame-sized write ->
      * read-back -> digest-verify round trip through the REAL cache path
@@ -983,6 +1429,7 @@ void app_main(void)
      * frame so a wake tap can echo before any network round trip. */
     overlay_boot();
     proto2_boot();     /* manifest for the frame on glass, from SD */
+    touch3_boot();     /* v3 spec + atlases for the layout on glass, from SD */
 
     /* Local deck nav: a button wake whose press matches a cached link on the
      * current page paints from SD (1-2 s) and never brings the radio up. Any
@@ -1036,7 +1483,8 @@ void app_main(void)
                      (unsigned)g_touch_wake_capture.status, (int)have_stub);
 #endif
 
-            touch_capture_stroke(&touch_st, TOUCH_FIRST_POINT_MS, TOUCH_CAP_MS);
+            touch_capture_stroke_cb(&touch_st, TOUCH_FIRST_POINT_MS,
+                                    TOUCH_CAP_MS, touch3_stroke_sample, NULL);
             if (!touch_st.valid && have_stub) {
                 /* Quick tap: finger gone before the ~1 s boot let us read a live
                  * point, but the stub caught it. Dispatch it as a zero-length tap. */
@@ -1053,12 +1501,18 @@ void app_main(void)
                 ESP_LOGI(TAG, "touch (%d,%d)->(%d,%d) %ums",
                          touch_st.x0, touch_st.y0, touch_st.x1, touch_st.y1,
                          (unsigned)touch_st.ms);
-                /* Protocol v2 first: with a manifest held for the frame on
-                 * glass the device owns hit-testing + feedback; the /tap
-                 * report queues until the radio is up (flushed post-status).
-                 * Without one, today's v1 chain runs unchanged. */
+                /* Touch v3 first: with a spec held for the layout on glass the
+                 * device drew the controls and owns hit-testing + feedback;
+                 * the /interact report queues until the radio is up. Then
+                 * protocol v2 (interaction manifest), then today's v1 chain --
+                 * each falls through only when the newer one holds nothing for
+                 * the frame on glass. */
                 bool p2_poll = false;
-                if (proto2_try_touch(touch_st.x0, touch_st.y0,
+                if (touch3_try_touch(touch_st.x0, touch_st.y0,
+                                     touch_st.x1, touch_st.y1,
+                                     touch_st.ms, &p2_poll)) {
+                    /* wake continues: frame GET + status deliver the result */
+                } else if (proto2_try_touch(touch_st.x0, touch_st.y0,
                                      touch_st.x1, touch_st.y1,
                                      touch_st.ms, &p2_poll)) {
                     /* wake continues: frame GET + status deliver the result */
@@ -1268,6 +1722,7 @@ void app_main(void)
                 overlay_frame_downloaded(new_etag);
                 proto2_frame_downloaded(new_etag, fo.manifest_digest,
                                         fo.manifest_url);
+                touch3_frame_downloaded(new_etag, fo.layout_digest);
             }
         } else {
             ESP_LOGE(TAG, "frame fetch failed for %s", fullurl);
@@ -1275,6 +1730,22 @@ void app_main(void)
     } else if (fs == REST_NOT_MODIFIED) {
         ESP_LOGI(TAG, "frame unchanged (304); skipping paint");
         skip_paint = true;
+        /* The touch spec normally rides a frame download, so a page whose image
+         * never changes would never be re-checked: turning controls on
+         * server-side would go unnoticed forever. Re-ask while we hold none.
+         * Gaining controls means the frame on glass was composed without them,
+         * so drop the cached ETag to force a 200 + repaint on the next poll. */
+        if (!touch3_active()) {
+            touch3_poll_spec();
+            if (touch3_take_repaint()) {
+                ESP_LOGI(TAG, "touch spec gained controls; forcing a repaint");
+                rest_config_set_frame_etag("");
+                cfg_dirty = true;
+                if (fetch_and_paint_current(rest_config_get()->server_url)) {
+                    skip_paint = true;   /* that call already painted */
+                }
+            }
+        }
     } else if (fs == REST_NO_CONTENT) {
         ESP_LOGI(TAG, "no frame rendered yet (204); skipping paint");
         skip_paint = true;
@@ -1332,6 +1803,9 @@ void app_main(void)
             if (so.overlay_values[0]) {
                 overlay_ingest_values(so.overlay_values, strlen(so.overlay_values));
                 proto2_ingest_values(so.overlay_values, strlen(so.overlay_values));
+                /* v3 reconcile also rides the polled envelope, so a battery
+                 * device (no SSE) still corrects its drawn state on each wake. */
+                touch3_ingest_values(so.overlay_values, strlen(so.overlay_values));
             }
             proto2_note_clock(so.server_time, so.local_hh, so.local_mm);
             if (so.sync_obj[0])
@@ -1339,6 +1813,11 @@ void app_main(void)
             if (so.overlay_patches[0])
                 snprintf(pending_patches, sizeof pending_patches, "%s",
                          so.overlay_patches);
+            /* A touch wake hit-tests and feeds back before the radio is up, so
+             * its /interact report queued. The radio is up now: drain it here
+             * rather than relying on a linger window existing (battery mode has
+             * none -- firmware-spec §11 wake -> report -> sleep). */
+            touch3_flush_reports();
 #endif
             /* Deck resync signal: decided here, executed at the tail of the
              * wake (after painting + reporting, radio still up). */
@@ -1421,12 +1900,14 @@ void app_main(void)
         ESP_LOGI(TAG, "painting downloaded frame (~30 s)...");
         ESP_ERROR_CHECK(epd_port_init());
         epd_init();
+        touch3_compose(frame);   /* draw v3 controls into their blank rects */
         epd_display(frame);
         epd_sleep();
         if (new_etag[0]) { rest_config_set_frame_etag(new_etag); cfg_dirty = true; }
         rest_config_set_ui_state(UI_CONNECTED);   /* a real frame is up now */
         overlay_after_paint(frame, new_etag);      /* keep base copy + SD patches */
         proto2_frame_painted(new_etag);   /* server-wins: full frame clears the ledger */
+        touch3_after_paint(new_etag);
         free(frame);   /* AFTER after_paint: it memcpys the frame into its buffers */
         deck_network_painted();   /* SD-paint report no longer describes the display */
     } else if (just_onboarded) {
@@ -1491,6 +1972,7 @@ void app_main(void)
                  * one normal /frame poll (the contract's only fallback). */
                 overlay_linger_poll();
                 proto2_flush_reports();
+                touch3_flush_reports();
                 proto2_linger_tick();   /* local:clock minute re-blit */
                 if (overlay_take_refetch()) {
                     /* The digest never changes under schema 2, so the forced
@@ -1511,10 +1993,18 @@ void app_main(void)
                 continue;
             }
             touch_stroke_t st;
-            touch_capture_stroke(&st, TOUCH_FIRST_POINT_MS, TOUCH_CAP_MS);
+            touch_capture_stroke_cb(&st, TOUCH_FIRST_POINT_MS, TOUCH_CAP_MS,
+                                    touch3_stroke_sample, NULL);
             if (!st.valid) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
             bool p2_poll = false;
-            if (proto2_try_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
+            if (touch3_try_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
+                                 &p2_poll)) {
+                /* v3 owned it: feedback is already on glass and the report is
+                 * sent. Only a tier-2/nav action needs a fresh frame. */
+                if (p2_poll &&
+                    fetch_and_paint_current(rest_config_get()->server_url))
+                    cfg_dirty = true;
+            } else if (proto2_try_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
                                  &p2_poll)) {
                 /* v2 owned it. Tier 0/1 results ride the 1 s patch polls;
                  * nav/refresh/tier-2 want an actual frame poll. */

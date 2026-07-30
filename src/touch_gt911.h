@@ -70,6 +70,18 @@ void touch_translate_raw(int rx, int ry, int *fx, int *fy);
 esp_err_t touch_capture_stroke(touch_stroke_t *out,
                                uint32_t first_point_ms, uint32_t cap_ms);
 
+/* Per-sample observer for a live stroke, in frame-pixel space. */
+typedef void (*touch_sample_cb_t)(int fx, int fy, void *ctx);
+
+/* touch_capture_stroke() plus a callback on every sampled point while the
+ * finger is down, including the first. Touch v3 uses this to track a slider
+ * thumb live instead of jumping to the value on release (touch3_run.h); the
+ * callback must be cheap or self-rate-limited, since it runs inside the
+ * sampling loop. cb == NULL behaves exactly like touch_capture_stroke(). */
+esp_err_t touch_capture_stroke_cb(touch_stroke_t *out,
+                                  uint32_t first_point_ms, uint32_t cap_ms,
+                                  touch_sample_cb_t cb, void *ctx);
+
 /* True if the INT line is currently asserted (a touch is waiting). Cheap GPIO
  * read used to poll during the linger window without hammering I2C. */
 bool touch_int_asserted(void);

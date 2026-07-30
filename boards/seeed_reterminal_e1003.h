@@ -135,5 +135,16 @@
  * locally. Spectra boards never define this (no useful partial refresh). */
 #define BOARD_OVERLAY_PARTIAL 1
 
+/* Touch v3 (touch3.h): the device draws the interactive primitives itself into
+ * rects the server leaves blank, owns hit-testing, and reports semantic events.
+ * Gated by BOARD_OVERLAY_PARTIAL && BOARD_HAS_TOUCH, both set above, so this
+ * board gets it with no extra switch.
+ *
+ * The board advertises can_stay_awake (a hardware fact: it has the panel and
+ * digitizer to run without deep sleep). Whether it ACTUALLY stays awake is
+ * server config -- config.always_on on the /status response, adopted on every
+ * poll -- not a device-derived flag, so there is no always-on GPIO here.
+ */
+
 /* Selected panel driver: Family D, IT8951 grayscale over SPI. */
 #define PANEL_DRIVER_IT8951_GRAY 1

@@ -15,6 +15,7 @@
 #include "overlay_run.h"
 #include "proto2_run.h"
 #include "rest_config.h"
+#include "touch3_run.h"
 
 static const char *TAG = "sse";
 
@@ -65,6 +66,10 @@ static void dispatch_event(void)
     if (strcmp(s_event, "values") == 0) {
         overlay_ingest_values(s_data, (size_t)s_data_len);
         proto2_ingest_values(s_data, (size_t)s_data_len);
+        /* Touch v3 shares this envelope: values are keyed by value_key, and v3
+         * maps them onto its primitives. It is v3's ONLY reconcile path --
+         * /interact replies carry no confirmed state. */
+        touch3_ingest_values(s_data, (size_t)s_data_len);
     } else if (strcmp(s_event, "patches") == 0) {
         overlay_ingest_patches(s_data, (size_t)s_data_len);
     } else if (strcmp(s_event, "sync") == 0) {
@@ -102,11 +107,20 @@ static void feed_line(const char *line)
     /* other fields (id:, retry:): ignored */
 }
 
+/* Set once a v3 /frame/stream attempt came back 404: that server serves the
+ * legacy /stream only, and there is no point re-probing every reconnect. */
+static bool s_v3_absent;
+
 static bool sse_open_stream(void)
 {
+    /* Touch v3 pins the stream at /frame/stream (contract §7); the v2 push
+     * transport used /stream. Prefer the v3 path while a v3 spec is live and
+     * fall back permanently on a 404, so one connection serves both. */
+    bool try_v3 = touch3_active() && !s_v3_absent;
     char url[300];
-    snprintf(url, sizeof url, "%s/api/v1/device/%s/stream",
-             rest_config_get()->server_url, rest_config_device_id());
+    snprintf(url, sizeof url, "%s/api/v1/device/%s/%s",
+             rest_config_get()->server_url, rest_config_device_id(),
+             try_v3 ? "frame/stream" : "stream");
     char auth[300];
     snprintf(auth, sizeof auth, "Bearer %s",
              rest_config_get()->device_token);
@@ -128,13 +142,17 @@ static bool sse_open_stream(void)
     int status = esp_http_client_get_status_code(s_cli);
     if (hdr < 0 || status != 200) {
         ESP_LOGI(TAG, "stream open failed (http %d)", status);
+        if (try_v3 && status == 404) {
+            ESP_LOGI(TAG, "no /frame/stream; using legacy /stream");
+            s_v3_absent = true;      /* the next attempt takes the v2 path */
+        }
         sse_close();
         return false;
     }
     s_open = true;
     s_last_rx_us = esp_timer_get_time();
     s_backoff_s = SSE_BACKOFF_MIN_S;
-    ESP_LOGI(TAG, "stream connected");
+    ESP_LOGI(TAG, "stream connected (%s)", try_v3 ? "v3" : "legacy");
     return true;
 }
 
