@@ -469,6 +469,7 @@ const epd_driver_t spectra6_t133a01_dual_driver = {
         .height    = EPD_HEIGHT,
         .bpp       = 4,
         .buf_bytes = EPD_BUF_BYTES,
+        .grayscale = false,    /* nibbles are indices into 6 fixed colours */
     },
     .port_init          = t133_port_init,
     .init               = t133_init,

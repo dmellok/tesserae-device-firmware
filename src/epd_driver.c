@@ -31,3 +31,15 @@ void epd_display_partial(const uint8_t *image, int x, int y, int w, int h,
     const epd_driver_t *d = epd_active_driver();
     if (d->display_partial) d->display_partial(image, x, y, w, h, fast);
 }
+
+void epd_display_partial_mode(const uint8_t *image, int x, int y, int w, int h,
+                              epd_refresh_t mode)
+{
+    const epd_driver_t *d = epd_active_driver();
+    if (d->display_partial_mode) {
+        d->display_partial_mode(image, x, y, w, h, mode);
+    } else if (d->display_partial) {
+        /* Driver has no waveform choice: A2 degrades to its fast path. */
+        d->display_partial(image, x, y, w, h, mode != EPD_RF_GC16);
+    }
+}

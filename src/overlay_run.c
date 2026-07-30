@@ -624,6 +624,29 @@ void overlay_partial_refresh(int x, int y, int w, int h, bool fast)
     hygiene_or_partial(x, y, w, h, fast);
 }
 
+void overlay_partial_refresh_mode(int x, int y, int w, int h,
+                                  epd_refresh_t mode)
+{
+    if (!s_work) return;
+    if (epd_port_init() != ESP_OK) return;
+    epd_init();
+    /* Share the hygiene counter with the DU callers: A2 ghosts MORE, so it
+     * must not get its own budget -- one counter over both keeps the forced
+     * GC16 honest whichever waveform painted the partials. */
+    if (overlay_hygiene_tick(&s_hygiene)) {
+        if (!s_sparse && s_work) {
+            ESP_LOGI(TAG, "hygiene: full-quality repaint");
+            epd_display(s_work);
+            overlay_hygiene_reset(&s_hygiene);
+            return;
+        }
+        rest_config_set_frame_etag("");
+        rest_config_save();
+        overlay_hygiene_reset(&s_hygiene);
+    }
+    epd_display_partial_mode(s_work, x, y, w, h, mode);
+}
+
 void overlay_linger_poll(void)
 {
     static int64_t s_last_poll;

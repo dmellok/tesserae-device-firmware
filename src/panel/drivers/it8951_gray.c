@@ -30,6 +30,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
+#include "esp_timer.h"          /* it8951_bench_wave timing */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -406,14 +407,22 @@ static void it8951_display(const uint8_t *image)
 }
 
 /* Partial refresh (overlay feature): reload only the rect from the frame and
- * refresh it with DU (fast, ~300 ms, mono-ish) or GC16 (hygiene). The rect
+ * refresh it with DU (fast, mono-ish) or GC16 (hygiene). MEASURED on E1003
+ * hardware (2026-07-27): DU costs ~1.07-1.17 s, not the ~300 ms this comment
+ * used to claim. It is nearly INDEPENDENT of rect area -- 320x44 = 1065 ms,
+ * 320x120 = 1067, 360x120 = 1170, 720x140 = 1169, so 7x the pixels costs 10%
+ * more time -- and tracks rect WIDTH rather than area. The cost is the DU
+ * waveform inside wait_display_done(), not the SPI load. Consequence for
+ * callers: shrinking a refresh rect buys ghosting hygiene, NOT latency. The
+ * lever that does move it is the waveform, which is why callers can ask for A2
+ * (see it8951_display_partial_mode). The rect
  * arrives in FRAME coordinates; the ED103TC2's software MIRROR_X maps it to
  * controller x' = W - x - w, and within the window the bytes stream reversed
  * + nibble-swapped exactly like the full-frame path. x/w are widened to a
  * multiple of 4 px (whole bytes at 4bpp, and the IT8951 prefers 4-px
  * alignment for area operations). */
-static void it8951_display_partial(const uint8_t *fb, int x, int y, int w,
-                                   int h, bool fast)
+static void it8951_partial_wave(const uint8_t *fb, int x, int y, int w,
+                                int h, int wave)
 {
     /* Clamp to the panel, then widen to 4-px x-alignment. */
     if (x < 0) { w += x; x = 0; }
@@ -453,12 +462,74 @@ static void it8951_display_partial(const uint8_t *fb, int x, int y, int w,
     write_cmd(LD_IMG_END);
 
     uint16_t dargs[5] = { (uint16_t)cx, (uint16_t)y, (uint16_t)aw, (uint16_t)h,
-                          fast ? MODE_DU : MODE_GC16 };
+                          (uint16_t)wave };
     send_cmd_args(DPY_AREA, dargs, 5);
     wait_display_done();
     write_cmd(STANDBY);
     free(scratch);
-    ESP_LOGI(TAG, "partial %s (%d,%d %dx%d)", fast ? "DU" : "GC16", x0, y, aw, h);
+    ESP_LOGI(TAG, "partial mode %d (%d,%d %dx%d)", wave, x0, y, aw, h);
+}
+
+/* Waveform-mode numbers are indices into the waveform table in the PANEL's
+ * flash, not fixed constants, so a wrong guess silently paints with some other
+ * waveform. Overridable per board for exactly that reason.
+ *
+ * MEASURED on the E1003's ED103TC2 (selftest mode sweep, 320x44 rect,
+ * 2026-07-27) -- note none of these match the canonical IT8951 datasheet
+ * timings, which is why they were swept rather than assumed:
+ *
+ *     mode 1 (DU)    1330 ms      mode 5   641 ms
+ *     mode 2 (GC16)  1564 ms      mode 6    220 ms   <- A2, selected
+ *     mode 3          641 ms      mode 7   642 ms
+ *     mode 4          220 ms
+ *
+ * Modes 4 and 6 tie at 220 ms; 6 is the conventional A2 index, so it wins on
+ * convention alone -- if A2 ever renders wrong on a panel batch, try 4 next.
+ *
+ * DO NOT pick a waveform from this table on timing alone. A2 (6) was shipped
+ * for touch-v3 feedback on exactly that reasoning and REVERTED the same day:
+ * at 220 ms it is 5x faster than DU, but it GHOSTS TOO HEAVILY on this panel
+ * to be usable, judged on real glass. Speed here is bought with fidelity, and
+ * the table cannot show you that half. Modes 3/5/7 (~641 ms, grayscale rather
+ * than 2-level) are the untested middle ground. */
+#ifndef EPD_IT8951_A2_MODE
+#define EPD_IT8951_A2_MODE 6
+#endif
+
+/* The fast GRAYSCALE partial -- the interactive default. Modes 3, 5 and 7 were
+ * A/B'd on hardware (2026-07-27): all three ran 435-436 ms on a 320x44 rect
+ * versus DU's 960 ms, all rendered the switch's mid-grey ON track correctly
+ * with the thumb visible, and none ghosted objectionably. They are empirically
+ * interchangeable here, so 5 is a tiebreak, not a finding -- if it ever
+ * misbehaves on a panel batch, 3 and 7 are verified drop-in equals. */
+#ifndef EPD_IT8951_GRAY_MODE
+#define EPD_IT8951_GRAY_MODE 5
+#endif
+
+static void it8951_display_partial(const uint8_t *fb, int x, int y, int w,
+                                   int h, bool fast)
+{
+    /* Unchanged semantics for the existing overlay/proto2 callers. */
+    it8951_partial_wave(fb, x, y, w, h, fast ? MODE_DU : MODE_GC16);
+}
+
+static void it8951_display_partial_mode(const uint8_t *fb, int x, int y, int w,
+                                        int h, epd_refresh_t mode)
+{
+    int wave = MODE_DU;
+    if (mode == EPD_RF_A2)        wave = EPD_IT8951_A2_MODE;
+    else if (mode == EPD_RF_GRAY) wave = EPD_IT8951_GRAY_MODE;
+    else if (mode == EPD_RF_GC16) wave = MODE_GC16;
+    it8951_partial_wave(fb, x, y, w, h, wave);
+}
+
+/* Diagnostic: time one raw waveform index on a rect (selftest mode sweep).
+ * Returns the elapsed milliseconds. Not part of the vtable. */
+int it8951_bench_wave(const uint8_t *fb, int x, int y, int w, int h, int wave)
+{
+    int64_t t0 = esp_timer_get_time();
+    it8951_partial_wave(fb, x, y, w, h, wave);
+    return (int)((esp_timer_get_time() - t0) / 1000);
 }
 
 /* Fill the whole panel with one gray level (nibble). */
@@ -540,6 +611,7 @@ const epd_driver_t it8951_gray_driver = {
         .height    = EPD_HEIGHT,
         .bpp       = 4,
         .buf_bytes = EPD_BUF_BYTES,
+        .grayscale = true,     /* 16 true gray levels: duotone is renderable */
     },
     .port_init          = it8951_port_init,
     .init               = it8951_init,
@@ -548,7 +620,8 @@ const epd_driver_t it8951_gray_driver = {
     .show_color_bars    = it8951_show_color_bars,
     .show_palette_sweep = it8951_show_palette_sweep,
     .sleep              = it8951_sleep,
-    .display_partial    = it8951_display_partial,
+    .display_partial      = it8951_display_partial,
+    .display_partial_mode = it8951_display_partial_mode,
 };
 
 #endif /* PANEL_DRIVER_IT8951_GRAY */

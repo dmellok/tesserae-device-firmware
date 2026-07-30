@@ -23,7 +23,38 @@ typedef struct {
     uint16_t    height;
     uint8_t     bpp;      /* bits per pixel of the panel-native frame */
     size_t      buf_bytes;/* full-frame buffer size the driver expects */
+    /* True only when the nibbles are GRAY LEVELS the panel can render as
+     * intermediate tones. bpp alone cannot answer this: the Spectra drivers are
+     * also 4bpp, but their nibbles are palette indices into 6 fixed colours, and
+     * a 1bpp mono panel has no intermediate level at all. Advertised to the
+     * server as panel.grayscale, where it gates duotone icons (which need a
+     * second ink level) -- see net_rest.c and the touch-v3 contract §5. */
+    bool        grayscale;
 } epd_panel_info_t;
+
+/* Partial-refresh waveform, fastest to best. All e-paper waveforms trade
+ * speed against fidelity and ghosting; naming the intent here lets a caller
+ * pick rather than inferring it from a bool.
+ *
+ *   A2    2-level, fastest, most ghosting. Rejected for touch-v3 feedback on
+ *         the E1003: fast but visibly filthy, and it could not drive an
+ *         inverted rect back to white.
+ *   DU    2-level, fast -- the long-standing overlay/proto2 echo waveform.
+ *   GRAY  grayscale, fast, low ghosting -- the interactive default. The only
+ *         tier that renders INTERMEDIATE levels in a partial refresh, which
+ *         matters because primitives.json fills a switch's ON track and a
+ *         slider's active span with `mid`: under any 2-level waveform that
+ *         collapses to solid black and swallows the thumb drawn on top.
+ *   GC16  16 levels, slowest -- full-quality frames and hygiene passes.
+ *
+ * A2 and DU are BOTH 2-level, so choosing A2 over DU costs ghosting and buys
+ * nothing in gray depth. Ordered by speed; nothing persists these values. */
+typedef enum {
+    EPD_RF_A2 = 0,
+    EPD_RF_DU,
+    EPD_RF_GRAY,
+    EPD_RF_GC16,
+} epd_refresh_t;
 
 /* Concrete driver vtable. Semantics mirror the original epd_driver.h API
  * one-to-one so the facade is a pure forward. */
@@ -53,6 +84,16 @@ typedef struct epd_driver {
      * advertises itself only on boards whose driver provides this. */
     void (*display_partial)(const uint8_t *image, int x, int y, int w, int h,
                             bool fast);
+
+    /* OPTIONAL (NULL = fall back to display_partial): the same repaint with an
+     * explicit waveform, for callers that care which trade-off they take.
+     * Added for touch v3, whose feedback path is latency-bound: DU measured
+     * ~1.07-1.17 s per rect on the E1003, which is 2x its contract target, and
+     * shrinking the rect does not help (the cost is the waveform, not the
+     * pixels). Existing overlay/proto2 callers keep using display_partial and
+     * are unaffected. */
+    void (*display_partial_mode)(const uint8_t *image, int x, int y, int w,
+                                 int h, epd_refresh_t mode);
 } epd_driver_t;
 
 /* The single driver selected for this board at build time. Never NULL --

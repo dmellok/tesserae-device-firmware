@@ -423,6 +423,7 @@ const epd_driver_t spectra6_spi_dual_driver = {
         .height    = EPD_HEIGHT,
         .bpp       = 4,
         .buf_bytes = EPD_BUF_BYTES,
+        .grayscale = false,    /* nibbles are indices into 6 fixed colours */
     },
     .port_init          = s6d_port_init,
     .init               = s6d_init,

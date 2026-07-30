@@ -16,6 +16,7 @@
 #include <stdint.h>
 
 #include "app_config.h"   /* boards/board.h: BOARD_OVERLAY_PARTIAL */
+#include "panel/epd_panel.h"   /* epd_refresh_t */
 
 #if defined(BOARD_OVERLAY_PARTIAL)
 
@@ -78,6 +79,12 @@ uint8_t *overlay_base_fb(void);
  * counter (DU when fast). Initialises the panel port on demand. */
 void overlay_partial_refresh(int x, int y, int w, int h, bool fast);
 
+/* As above with an explicit waveform (touch v3 uses EPD_RF_A2 for feedback,
+ * where latency is what the user feels). Shares the SAME hygiene counter, so
+ * A2's heavier ghosting cannot buy itself a longer leash. */
+void overlay_partial_refresh_mode(int x, int y, int w, int h,
+                                  epd_refresh_t mode);
+
 #else /* !BOARD_OVERLAY_PARTIAL */
 
 static inline void overlay_boot(void) { }
@@ -92,5 +99,8 @@ static inline uint8_t *overlay_work_fb(bool *full) { if (full) *full = false; re
 static inline uint8_t *overlay_base_fb(void) { return (uint8_t *)0; }
 static inline void overlay_partial_refresh(int x, int y, int w, int h, bool fast)
 { (void)x; (void)y; (void)w; (void)h; (void)fast; }
+static inline void overlay_partial_refresh_mode(int x, int y, int w, int h,
+                                                epd_refresh_t mode)
+{ (void)x; (void)y; (void)w; (void)h; (void)mode; }
 
 #endif /* BOARD_OVERLAY_PARTIAL */

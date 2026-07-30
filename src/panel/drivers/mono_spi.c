@@ -619,12 +619,15 @@ const epd_driver_t mono_spi_driver = {
 #if defined(EPD_BWR)
         .name      = "BWR 7.5\" (800x480, 2bpp, red)",
         .bpp       = 2,
+        .grayscale = false,    /* black/white/red: a palette, not gray levels */
 #elif defined(EPD_GRAY4)
         .name      = "Mono 7.5\" (800x480, 4-gray 2bpp)",
         .bpp       = 2,
+        .grayscale = true,     /* 4 true gray levels */
 #else
         .name      = "Mono 7.5\" (800x480, 1bpp)",
         .bpp       = 1,
+        .grayscale = false,    /* no intermediate level exists at 1bpp */
 #endif
         .width     = EPD_WIDTH,
         .height    = EPD_HEIGHT,

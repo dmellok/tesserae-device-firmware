@@ -53,6 +53,13 @@ void epd_sleep(void);
  * quality. No-op on drivers without support -- check epd_supports_partial().
  */
 #include <stdbool.h>
+#include "panel/epd_panel.h"   /* epd_refresh_t */
 bool epd_supports_partial(void);
 void epd_display_partial(const uint8_t *image, int x, int y, int w, int h,
                          bool fast);
+
+/* As above, with an explicit waveform (epd_refresh_t). Falls back to the
+ * fast/quality bool on drivers that offer no choice. Touch v3's feedback path
+ * uses EPD_RF_A2, where latency is what the user feels. */
+void epd_display_partial_mode(const uint8_t *image, int x, int y, int w, int h,
+                              epd_refresh_t mode);
