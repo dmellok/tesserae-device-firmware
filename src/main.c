@@ -1735,6 +1735,11 @@ void app_main(void)
          * server-side would go unnoticed forever. Re-ask while we hold none.
          * Gaining controls means the frame on glass was composed without them,
          * so drop the cached ETag to force a 200 + repaint on the next poll. */
+        /* BOARD_TOUCH3, not just the touch3_active() runtime check: this calls
+         * fetch_and_paint_current(), which only exists under
+         * BOARD_HAS_TOUCH || BOARD_HAS_BUTTONS, and a board with neither still
+         * has to COMPILE this block even though it is dead there. */
+#if BOARD_TOUCH3
         if (!touch3_active()) {
             touch3_poll_spec();
             if (touch3_take_repaint()) {
@@ -1746,6 +1751,7 @@ void app_main(void)
                 }
             }
         }
+#endif
     } else if (fs == REST_NO_CONTENT) {
         ESP_LOGI(TAG, "no frame rendered yet (204); skipping paint");
         skip_paint = true;
