@@ -103,3 +103,29 @@ void relay_commit_frame(void);
  * failure only costs the Devices UI a stale last-seen. */
 bool relay_post_status(int rssi, const char *ip, uint16_t panel_w,
                        uint16_t panel_h, const char *fw_version);
+
+/* Adopt the device config the home instance published to the config mailbox
+ * (docs/relay/contract.md, "Device config" + firmware responsibility 6).
+ *
+ * Settings edited on the home instance reach a LOCAL device through its next
+ * REST poll; a relay panel has no such channel, so without this it would keep
+ * its pairing-time sleep interval and button window forever.
+ *
+ * Call AFTER relay_post_status() on the same wake: that response advertises the
+ * current config etag, which lets this skip its request entirely when nothing
+ * changed. It is still correct (just less frugal) when status was not posted --
+ * it falls back to a conditional GET, which is what keeps config current on
+ * wakes that skip telemetry.
+ *
+ * The document is sealed with the same frame key as a frame and is applied only
+ * once it decrypts, authenticates and parses; the etag is stored last, so any
+ * failure is retried next wake instead of being skipped by a 304 forever.
+ * Every failure is non-fatal -- the last-known config simply stays in force. */
+typedef enum {
+    RELAY_CFG_UNCHANGED = 0,  /* 304, or status advertised the etag we hold */
+    RELAY_CFG_APPLIED,        /* 200: decrypted, parsed and applied */
+    RELAY_CFG_NONE,           /* 204: nothing published yet */
+    RELAY_CFG_ERROR,          /* network, auth, or a failed tag; config kept */
+} relay_config_result_t;
+
+relay_config_result_t relay_sync_config(void);

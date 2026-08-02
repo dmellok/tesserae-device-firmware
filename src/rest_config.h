@@ -56,6 +56,11 @@ typedef struct {
     char    relay_device[64];     /* relay-side device id (path segment) */
     char    relay_token[256];     /* device token, minted by home, via the relay */
     char    relay_etag[80];       /* If-None-Match across wakes (relay frames) */
+    char    relay_config_etag[80];/* If-None-Match for the config mailbox. Kept
+                                   * apart from relay_etag: frames and config
+                                   * are independent documents with their own
+                                   * etags, and sharing one would make each
+                                   * refetch the other. */
     /* Secrets. relay_key is the derived AES-256-GCM frame key and is the only
      * long-lived one; relay_priv is the panel's X25519 private key, kept ONLY
      * while pairing spans wakes and wiped once the key exists. */
@@ -112,6 +117,12 @@ void rest_config_set_relay_paired(const char *install_id, const char *device_id,
 /* Cached ETag for the relay frame mailbox (separate from last_frame_etag so a
  * device that has talked to both never crosses the two streams). */
 void rest_config_set_relay_etag(const char *etag);
+
+/* Cached ETag for the relay CONFIG mailbox (docs/relay/contract.md, "Device
+ * config"). Stored only after a config document has been decrypted, parsed and
+ * applied, so a failure mid-way is retried next wake rather than skipped by a
+ * 304 forever. */
+void rest_config_set_relay_config_etag(const char *etag);
 
 /* Forget everything relay-side (failed/expired pairing, or an operator reset). */
 void rest_config_clear_relay(void);

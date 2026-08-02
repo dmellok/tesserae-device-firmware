@@ -351,6 +351,84 @@ static void test_pair_body(void)
     CHECK(tiny[0] == '\0');
 }
 
+/* ---- device config (contract: "Device config") --------------------------- */
+
+static void test_parse_config_etag(void)
+{
+    char e[80];
+
+    CHECK(relay_parse_config_etag("{\"config_etag\":\"abc123\"}", 24, e, sizeof e));
+    CHECK(strcmp(e, "abc123") == 0);
+
+    /* No config published yet: an empty object is valid, just uninformative.
+     * Must NOT read as an etag of "" -- that would be indistinguishable from a
+     * real one and could suppress the conditional GET. */
+    CHECK(!relay_parse_config_etag("{}", 2, e, sizeof e));
+    CHECK(e[0] == '\0');
+
+    /* Wrong types and junk are "no etag advertised", never a partial read. */
+    CHECK(!relay_parse_config_etag("{\"config_etag\":123}", 18, e, sizeof e));
+    CHECK(!relay_parse_config_etag("{\"config_etag\":\"\"}", 18, e, sizeof e));
+    CHECK(!relay_parse_config_etag("not json", 8, e, sizeof e));
+    CHECK(!relay_parse_config_etag(NULL, 0, e, sizeof e));
+
+    /* An etag too long to hold is refused rather than truncated: a truncated
+     * etag would 200 every wake and re-apply the same document forever. */
+    char tiny[4];
+    CHECK(!relay_parse_config_etag("{\"config_etag\":\"abcdef\"}", 24,
+                                   tiny, sizeof tiny));
+    CHECK(tiny[0] == '\0');
+}
+
+static void test_parse_config(void)
+{
+    relay_devcfg_t c;
+
+    const char *full = "{\"sleep_interval_s\":300,\"button_wake_s\":45,"
+                       "\"always_on\":true}";
+    CHECK(relay_parse_config(full, strlen(full), &c));
+    CHECK(c.sleep_interval_s == 300);
+    CHECK(c.button_wake_s == 45);
+    CHECK(c.always_on == 1);
+
+    /* Absent means KEEP, so every field must come back as its sentinel -- not
+     * 0, which is a legitimate button_wake_s and would disable the window. */
+    CHECK(relay_parse_config("{}", 2, &c));
+    CHECK(c.sleep_interval_s == -1);
+    CHECK(c.button_wake_s == -1);
+    CHECK(c.always_on == -1);
+
+    /* Unknown keys are ignored, per the contract. */
+    const char *extra = "{\"sleep_interval_s\":60,\"tz\":\"Australia/Sydney\","
+                        "\"future_key\":{\"nested\":1}}";
+    CHECK(relay_parse_config(extra, strlen(extra), &c));
+    CHECK(c.sleep_interval_s == 60);
+    CHECK(c.button_wake_s == -1);
+
+    /* always_on accepts 0/1 as well as a bool (same latitude as REST). */
+    CHECK(relay_parse_config("{\"always_on\":0}", 15, &c));
+    CHECK(c.always_on == 0);
+    CHECK(relay_parse_config("{\"always_on\":1}", 15, &c));
+    CHECK(c.always_on == 1);
+    CHECK(relay_parse_config("{\"always_on\":false}", 19, &c));
+    CHECK(c.always_on == 0);
+
+    /* button_wake_s of 0 is a real value ("no window"), distinct from absent. */
+    CHECK(relay_parse_config("{\"button_wake_s\":0}", 19, &c));
+    CHECK(c.button_wake_s == 0);
+
+    /* A wrong-typed value is treated as not sent, so a bad edit cannot make a
+     * panel sleep for a nonsense interval. */
+    CHECK(relay_parse_config("{\"sleep_interval_s\":\"300\"}", 26, &c));
+    CHECK(c.sleep_interval_s == -1);
+
+    /* Not an object / not JSON -> refused, and sentinels left safe. */
+    CHECK(!relay_parse_config("[1,2,3]", 7, &c));
+    CHECK(!relay_parse_config("not json", 8, &c));
+    CHECK(!relay_parse_config(NULL, 0, &c));
+    CHECK(c.sleep_interval_s == -1 && c.button_wake_s == -1 && c.always_on == -1);
+}
+
 int main(void)
 {
     test_public_keys();
@@ -361,6 +439,8 @@ int main(void)
     test_parse_ready();
     test_mailbox_url();
     test_pair_body();
+    test_parse_config_etag();
+    test_parse_config();
     printf("%s: %d checks, %d failures\n", fails ? "FAIL" : "ok", tests, fails);
     return fails ? 1 : 0;
 }

@@ -1759,6 +1759,28 @@ void app_main(void)
             char ip[16] = {0};
             wifi_manager_get_sta_ip(ip, sizeof ip);
             relay_post_status(current_rssi(), ip, pw, ph, FW_VERSION);
+
+            /* Adopt any settings edited on the home instance. A local device
+             * picks these up from its next /status poll; a relay panel has no
+             * such channel, so without this it would keep its pairing-time
+             * sleep interval and button window forever. Ordered after the
+             * status post because that response advertises the config etag,
+             * which lets an unchanged config cost no request at all. The new
+             * sleep interval applies to THIS wake's sleep below. */
+            switch (relay_sync_config()) {
+            case RELAY_CFG_APPLIED:
+                break;                  /* already logged with the values */
+            case RELAY_CFG_NONE:
+                ESP_LOGI(TAG, "relay has no config published yet (204)");
+                break;
+            case RELAY_CFG_ERROR:
+                /* Non-fatal by contract: keep the last-known config and try
+                 * again next wake. */
+                ESP_LOGW(TAG, "relay config sync failed; keeping current config");
+                break;
+            default:
+                break;                  /* unchanged: nothing worth a line */
+            }
         }
 
         if (cfg_dirty) rest_config_save();

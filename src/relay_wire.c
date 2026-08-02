@@ -92,6 +92,54 @@ bool relay_build_pair_body(char *out, size_t cap,
     return true;
 }
 
+bool relay_parse_config_etag(const char *json, size_t len,
+                             char *out, size_t cap)
+{
+    if (!out || !cap) return false;
+    out[0] = '\0';
+    if (!json || !len) return false;
+
+    cJSON *r = cJSON_ParseWithLength(json, len);
+    if (!r) return false;
+    bool ok = copy_field(out, cap,
+                         cJSON_GetObjectItemCaseSensitive(r, "config_etag"));
+    cJSON_Delete(r);
+    if (!ok) out[0] = '\0';
+    return ok;
+}
+
+/* Read an optional int. Returns `absent` when the key is missing or not a
+ * number, so a malformed value is treated as "not sent" rather than adopted. */
+static int32_t opt_int(const cJSON *o, const char *key, int32_t absent)
+{
+    const cJSON *v = cJSON_GetObjectItemCaseSensitive(o, key);
+    return cJSON_IsNumber(v) ? (int32_t)v->valuedouble : absent;
+}
+
+bool relay_parse_config(const char *json, size_t len, relay_devcfg_t *out)
+{
+    if (!out) return false;
+    out->sleep_interval_s = -1;
+    out->button_wake_s    = -1;
+    out->always_on        = -1;
+    if (!json || !len) return false;
+
+    cJSON *r = cJSON_ParseWithLength(json, len);
+    if (!r) return false;
+    if (!cJSON_IsObject(r)) { cJSON_Delete(r); return false; }
+
+    out->sleep_interval_s = opt_int(r, "sleep_interval_s", -1);
+    out->button_wake_s    = opt_int(r, "button_wake_s", -1);
+
+    /* Bool or 0/1, the same latitude the REST path allows for this field. */
+    const cJSON *ao = cJSON_GetObjectItemCaseSensitive(r, "always_on");
+    if (cJSON_IsBool(ao))        out->always_on = cJSON_IsTrue(ao) ? 1 : 0;
+    else if (cJSON_IsNumber(ao)) out->always_on = ao->valueint ? 1 : 0;
+
+    cJSON_Delete(r);
+    return true;
+}
+
 bool relay_mailbox_url(char *out, size_t cap, const char *base,
                        const char *install_id, const char *device_id,
                        const char *leaf)

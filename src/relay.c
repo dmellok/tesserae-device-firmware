@@ -24,6 +24,13 @@ static const char *TAG = "relay";
  * wake instead of being skipped by a 304 forever. */
 static char s_pending_etag[80];
 
+/* config_etag advertised by THIS wake's status response, if it carried one.
+ * Lets relay_sync_config() skip its request when the advertised value matches
+ * what we already hold. Deliberately RAM-only and per-wake: a stale hint from a
+ * previous boot could suppress a fetch that is genuinely due. */
+static char s_advertised_cfg_etag[80];
+static bool s_have_advertised_cfg;
+
 #define RELAY_JSON_MAX   2048    /* pairing + status replies are small */
 #define RELAY_HTTP_MS    10000
 
@@ -335,12 +342,120 @@ bool relay_post_status(int rssi, const char *ip, uint16_t panel_w,
         free(body);
         return false;
     }
-    int st = relay_json(url, "POST", body, c->relay_token, NULL, 0);
+    char resp[RELAY_JSON_MAX];
+    int st = relay_json(url, "POST", body, c->relay_token, resp, sizeof resp);
     free(body);
 
     if (st < 200 || st >= 300) {
         ESP_LOGW(TAG, "status post -> %d", st);
         return false;
     }
+
+    /* The response carries the current config etag when a config document
+     * exists, so posting status doubles as the change notification and
+     * relay_sync_config() can skip its request entirely when nothing moved.
+     * Absent ({} before anything was published) simply leaves no hint. */
+    s_advertised_cfg_etag[0] = '\0';
+    s_have_advertised_cfg = relay_parse_config_etag(resp, strlen(resp),
+                                                    s_advertised_cfg_etag,
+                                                    sizeof s_advertised_cfg_etag);
     return true;
+}
+
+/* ---- device config ------------------------------------------------------- */
+
+relay_config_result_t relay_sync_config(void)
+{
+    if (!rest_config_relay_ready()) return RELAY_CFG_ERROR;
+    const rest_config_t *c = rest_config_get();
+
+    /* Cheapest path: this wake's status response advertised exactly the etag we
+     * already hold, so the document cannot have changed and we skip the request
+     * altogether. When status was not posted, or advertised nothing, fall
+     * through to a conditional GET -- If-None-Match makes that nearly free and
+     * it is what keeps config current on wakes with no status (contract,
+     * firmware responsibility 6). */
+    if (s_have_advertised_cfg && c->relay_config_etag[0] &&
+        strcmp(s_advertised_cfg_etag, c->relay_config_etag) == 0)
+        return RELAY_CFG_UNCHANGED;
+
+    char url[320];
+    if (!relay_mailbox_url(url, sizeof url, c->relay_url, c->relay_install,
+                           c->relay_device, "config")) {
+        ESP_LOGE(TAG, "cannot build the config URL from stored ids");
+        return RELAY_CFG_ERROR;
+    }
+
+    /* Same conditional-GET plumbing as frames: a config document is sealed
+     * identically, just far smaller. */
+    fetched_image_t doc;
+    char etag[80];
+    int status = 0;
+    esp_err_t err = image_fetch_conditional(url, c->relay_token,
+                                            c->relay_config_etag,
+                                            etag, sizeof etag, &status, &doc);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "config fetch failed (http %d): %s", status,
+                 esp_err_to_name(err));
+        return RELAY_CFG_ERROR;      /* non-fatal: keep the last-known config */
+    }
+    if (status == 304) return RELAY_CFG_UNCHANGED;
+    if (status == 204) return RELAY_CFG_NONE;   /* none published yet */
+    if (!doc.data || doc.len == 0) return RELAY_CFG_ERROR;
+
+    uint8_t *plain = NULL;
+    size_t plain_len = 0;
+    if (!relay_unseal(doc.data, doc.len, c->relay_key, &plain, &plain_len)) {
+        /* Same rule as a frame: a failed tag means the mailbox does not match
+         * our key, so the contents are not ours to act on. Drop the cached etag
+         * so the next wake refetches instead of 304-ing onto the same bad blob. */
+        ESP_LOGE(TAG, "sealed config failed authentication (%u bytes); dropping",
+                 (unsigned)doc.len);
+        free(doc.data);
+        rest_config_set_relay_config_etag("");
+        rest_config_save();
+        return RELAY_CFG_ERROR;
+    }
+
+    relay_devcfg_t cfg;
+    bool parsed = relay_parse_config((const char *)plain, plain_len, &cfg);
+    free(doc.data);                  /* plain points INTO this allocation */
+    if (!parsed) {
+        ESP_LOGW(TAG, "config document is not a JSON object; ignoring");
+        return RELAY_CFG_ERROR;
+    }
+
+    /* Absent fields mean "keep what we have", so each is guarded by its own
+     * sentinel rather than written unconditionally. */
+    bool changed = false;
+    if (cfg.sleep_interval_s > 0 &&
+        cfg.sleep_interval_s != rest_config_get()->sleep_s) {
+        rest_config_set_sleep_s(cfg.sleep_interval_s);
+        changed = true;
+    }
+    if (cfg.button_wake_s >= 0 &&
+        cfg.button_wake_s != rest_config_get()->button_wake_s) {
+        rest_config_set_button_wake_s(cfg.button_wake_s);
+        changed = true;
+    }
+    if (cfg.always_on >= 0 &&
+        (cfg.always_on != 0) != rest_config_get()->always_on) {
+        rest_config_set_always_on(cfg.always_on != 0);
+        changed = true;
+    }
+
+    /* Store the etag only now: everything above succeeded, so a 304 next wake
+     * genuinely means "you already have this". Always persisted, even when no
+     * value moved, so an unchanged document is not re-fetched every wake. */
+    rest_config_set_relay_config_etag(etag);
+    rest_config_save();
+
+    ESP_LOGI(TAG, "config applied (etag %s): sleep=%lds button_wake=%lds "
+                  "always_on=%d%s",
+             etag[0] ? etag : "(none)",
+             (long)rest_config_get()->sleep_s,
+             (long)rest_config_get()->button_wake_s,
+             rest_config_get()->always_on ? 1 : 0,
+             changed ? "" : " (no change)");
+    return RELAY_CFG_APPLIED;
 }

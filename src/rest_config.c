@@ -33,6 +33,7 @@ static const char *TAG = "rest_cfg";
 #define NVS_KEY_RLY_DEV    "rly_dev"
 #define NVS_KEY_RLY_TOK    "rly_tok"
 #define NVS_KEY_RLY_ETAG   "rly_etag"
+#define NVS_KEY_RLY_CETAG  "rly_cetag"   /* config doc, separate from frames */
 #define NVS_KEY_RLY_KEY    "rly_key"     /* blob: derived frame key */
 #define NVS_KEY_RLY_PRIV   "rly_priv"    /* blob: panel X25519 priv, pairing only */
 #if BOARD_HAS_TOUCH
@@ -110,6 +111,8 @@ void rest_config_load(void)
         load_str(h, NVS_KEY_RLY_DEV,  s_cfg.relay_device,  sizeof s_cfg.relay_device);
         load_str(h, NVS_KEY_RLY_TOK,  s_cfg.relay_token,   sizeof s_cfg.relay_token);
         load_str(h, NVS_KEY_RLY_ETAG, s_cfg.relay_etag,    sizeof s_cfg.relay_etag);
+        load_str(h, NVS_KEY_RLY_CETAG, s_cfg.relay_config_etag,
+                 sizeof s_cfg.relay_config_etag);
         size_t blen = sizeof s_cfg.relay_key;
         s_cfg.relay_have_key =
             nvs_get_blob(h, NVS_KEY_RLY_KEY, s_cfg.relay_key, &blen) == ESP_OK &&
@@ -188,6 +191,8 @@ esp_err_t rest_config_save(void)
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_RLY_DEV,  s_cfg.relay_device);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_RLY_TOK,  s_cfg.relay_token);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_RLY_ETAG, s_cfg.relay_etag);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_RLY_CETAG,
+                                         s_cfg.relay_config_etag);
     /* Secrets are blobs, and are ERASED rather than written empty when absent
      * so a wiped key never lingers as stale bytes in flash. */
     if (err == ESP_OK) {
@@ -364,6 +369,12 @@ void rest_config_set_relay_etag(const char *etag)
     set_str(s_cfg.relay_etag, sizeof s_cfg.relay_etag, etag ? etag : "");
 }
 
+void rest_config_set_relay_config_etag(const char *etag)
+{
+    set_str(s_cfg.relay_config_etag, sizeof s_cfg.relay_config_etag,
+            etag ? etag : "");
+}
+
 void rest_config_clear_relay(void)
 {
     s_cfg.relay_code[0] = '\0';
@@ -371,6 +382,10 @@ void rest_config_clear_relay(void)
     s_cfg.relay_device[0] = '\0';
     s_cfg.relay_token[0] = '\0';
     s_cfg.relay_etag[0] = '\0';
+    /* The config doc is sealed with the OLD frame key, so its etag is
+     * meaningless against a new pairing: keeping it would make the first
+     * post-repair sync 304 and silently skip adopting the real config. */
+    s_cfg.relay_config_etag[0] = '\0';
     memset(s_cfg.relay_key, 0, sizeof s_cfg.relay_key);
     s_cfg.relay_have_key = false;
     rest_config_set_relay_priv(NULL);

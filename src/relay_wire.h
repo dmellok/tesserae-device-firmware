@@ -70,6 +70,39 @@ bool relay_build_pair_body(char *out, size_t cap,
                            int panel_w, int panel_h,
                            const char *model, const char *gamut);
 
+/* ---- device config (docs/relay/contract.md, "Device config") -------------
+ *
+ * Settings edited on the home instance reach a local device through its next
+ * REST poll; a relay panel gets the same document from a config mailbox, sealed
+ * with the same frame key. These two parsers are the pure half of that path.
+ */
+
+/* Read "config_etag" from a POST .../status response body.
+ *
+ * The status response carries the current config etag when a config document
+ * exists, so a firmware that posts status learns about a config change without
+ * spending an extra request. Absent (`{}`) before anything was ever published,
+ * which is not an error -- false simply means "no etag advertised". */
+bool relay_parse_config_etag(const char *json, size_t len,
+                             char *out, size_t cap);
+
+/* A decrypted config document. Every field is OPTIONAL: the contract says this
+ * is the same object a local REST device receives in the `config` block of its
+ * status response, and unknown keys are ignored. Absent is therefore "keep what
+ * we have", NOT "reset to a default" -- a sentinel rather than a zero, because
+ * 0 is a legitimate value for button_wake_s. */
+typedef struct {
+    int32_t sleep_interval_s;   /* -1 when absent */
+    int32_t button_wake_s;      /* -1 when absent */
+    int8_t  always_on;          /* -1 when absent, else 0/1 */
+} relay_devcfg_t;
+
+/* Parse a decrypted config document. False only if the body is not a JSON
+ * object at all; a valid object with no recognised keys parses fine and leaves
+ * every field at its absent sentinel. always_on accepts a bool or 0/1, matching
+ * how the REST path reads the same field. */
+bool relay_parse_config(const char *json, size_t len, relay_devcfg_t *out);
+
 /* Build "<base>/v1/i/<install>/d/<device>/<leaf>" (leaf: "frame" or "status").
  * False if any part is empty or the result would not fit, so a truncated URL
  * can never be silently requested. */
