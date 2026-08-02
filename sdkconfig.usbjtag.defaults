@@ -42,6 +42,12 @@ CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
 CONFIG_ESP_TLS_USING_MBEDTLS=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# HKDF-SHA256 for the cloud relay's frame-key derivation (relay_crypto.c).
+# Off by default in ESP-IDF; ~1 KB of code. Mirrors sdkconfig.defaults -- this
+# file is a PARALLEL base (console on USB-JTAG), not an overlay, so anything
+# non-console added there must be added here too or the XIAO-class boards fail
+# to link.
+CONFIG_MBEDTLS_HKDF_C=y
 
 # --- MQTT ---
 CONFIG_MQTT_PROTOCOL_311=y

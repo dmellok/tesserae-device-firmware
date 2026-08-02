@@ -47,6 +47,19 @@
  * raw 4bpp Spectra-6/E6, EPD_WIDTH*EPD_HEIGHT/2 bytes). */
 #define TESSERAE_DEVICE_KIND   "waveshare_133e6"
 
+/* Cloud-relay self-report (docs/relay/contract.md, POST /v1/pair).
+ * Values come from this board's entry in the Tesserae hardware
+ * catalog (hardware/<vendor>/waveshare_133e6.json): "protocol" is the
+ * device KIND that selects the renderer/.bin packer, and
+ * "panel.gamut" is the palette the server quantizes to. Both are
+ * hardware facts, so the panel reports them at pairing and the
+ * operator no longer has to pre-enter them.
+ *
+ * NOTE the kind is NOT the catalog id above -- that is a hardware id, not a
+ * device kind. Getting this wrong silently mis-packs every frame. */
+#define TESSERAE_RELAY_MODEL   "esp32_client"
+#define TESSERAE_RELAY_GAMUT   "waveshare_e6"
+
 /* Battery sense (Waveshare 01_ADC_Test reference): 1:3 divider into GPIO8 =
  * ADC1 channel 7. Enables battery_mv/battery_pct in the status heartbeat. */
 #define BOARD_BATTERY_ADC_CHANNEL  ADC_CHANNEL_7

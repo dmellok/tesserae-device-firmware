@@ -1,5 +1,6 @@
 #include "provisioning.h"
 #include "app_config.h"
+#include "relay.h"       /* RELAY_DEFAULT_URL */
 #include "rest_config.h"
 #include "wifi_manager.h"
 
@@ -173,6 +174,29 @@ static const char k_head[] =
 "background:#fafaf9;padding:1px 5px;border-radius:3px;border:1px solid var(--border);font-size:11px}"
 ".err{background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;"
 "padding:12px 14px;border-radius:var(--radius);margin-bottom:14px;font-size:14px}"
+"/* Local vs Relay: a segmented control of two radios. Works with no JS at"
+"   all (the radios still post `mode`); JS only adds the show/hide. Themed"
+"   off the accent rather than raw greys -- the track is the soft tint and"
+"   the selected segment lifts out of it as a white tile, echoing the"
+"   mosaic brand mark without competing with the solid-accent submit."
+"   .modes is position:relative because the radios are absolutely"
+"   positioned and would otherwise escape to the nearest positioned"
+"   ancestor. */"
+".modes{position:relative;display:flex;gap:4px;margin:0 0 14px;padding:4px;"
+"background:var(--accent-soft);border:1px solid #cfe7e3;"
+"border-radius:var(--radius)}"
+".modes input{position:absolute;opacity:0;pointer-events:none}"
+".modes label{flex:1;display:flex;align-items:center;justify-content:center;"
+"gap:7px;margin:0;padding:9px 8px;font-size:14px;font-weight:600;"
+"color:var(--accent-hover);border-radius:7px;cursor:pointer;"
+"user-select:none;-webkit-user-select:none;"
+"transition:background .14s,color .14s,box-shadow .14s}"
+".modes label svg{width:14px;height:14px;flex:none;opacity:.6;"
+"transition:opacity .14s}"
+".modes input:checked+label{background:var(--surface);color:var(--accent);"
+"box-shadow:0 1px 3px rgba(13,140,126,.20)}"
+".modes input:checked+label svg{opacity:1}"
+".modes input:focus-visible+label{box-shadow:0 0 0 3px rgba(13,140,126,.30)}"
 "button.submit{width:100%;padding:12px 16px;border:0;border-radius:8px;"
 "background:var(--accent);color:#fff;font:inherit;font-size:15px;"
 "font-weight:600;cursor:pointer;margin-top:4px;"
@@ -217,12 +241,42 @@ static const char k_form_wifi_fmt[] =
 "</div>"
 "</section>";
 
+/* Local vs Relay switch, in three chunks so the `checked` attributes can be
+ * spliced in without a stack buffer (the markup outgrew one, and render_form
+ * is already tight on stack -- see the task-stack note below).
+ *
+ * The glyphs are filled rather than stroked because they render at 14 px, where
+ * a 2 px stroke turns to mush. Local is the four-tile mosaic from the brand
+ * mark ("these tiles, right here"); remote is a cloud. */
+static const char k_form_modes_a[] =
+"<div class=\"modes\" role=\"radiogroup\" aria-label=\"Connection\">"
+"<input type=\"radio\" id=\"mode-local\" name=\"mode\" value=\"local\"";
+
+static const char k_form_modes_b[] =
+">"
+"<label for=\"mode-local\">"
+"<svg viewBox=\"0 0 16 16\" fill=\"currentColor\" aria-hidden=\"true\">"
+"<rect x=\"1\" y=\"1\" width=\"6\" height=\"6\" rx=\"1.4\"/>"
+"<rect x=\"9\" y=\"1\" width=\"6\" height=\"6\" rx=\"1.4\"/>"
+"<rect x=\"1\" y=\"9\" width=\"6\" height=\"6\" rx=\"1.4\"/>"
+"<rect x=\"9\" y=\"9\" width=\"6\" height=\"6\" rx=\"1.4\"/>"
+"</svg>Local</label>"
+"<input type=\"radio\" id=\"mode-relay\" name=\"mode\" value=\"relay\"";
+
+static const char k_form_modes_c[] =
+">"
+"<label for=\"mode-relay\">"
+"<svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\">"
+"<path d=\"M6.8 19.5h10.7a4.6 4.6 0 0 0 .5-9.17A6.6 6.6 0 0 0 6 8.2a5.65 5.65 0 0 0 .8 11.3Z\"/>"
+"</svg>Remote</label>"
+"</div>";
+
 /* Tesserae server card; %s x1 = (server_url) */
 static const char k_form_server_fmt[] =
-"<section class=\"card\"><h2>Tesserae server</h2>"
+"<section class=\"card\" id=\"card-local\"><h2>Tesserae server</h2>"
 "<div class=\"field\">"
 "<label for=\"server_url\">Server URL *</label>"
-"<input id=\"server_url\" name=\"server_url\" required maxlength=\"159\" "
+"<input id=\"server_url\" name=\"server_url\" maxlength=\"159\" "
 "inputmode=\"url\" autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" "
 "autocomplete=\"off\" value=\"%s\" placeholder=\"http://tesserae.local:8765\">"
 "<p class=\"hint\">Base URL of your Tesserae server. The device registers over "
@@ -233,6 +287,30 @@ static const char k_form_server_fmt[] =
 "<input id=\"pairing_code\" name=\"pairing_code\" maxlength=\"15\" autocomplete=\"off\">"
 "<p class=\"hint\">Leave blank for zero-touch (approve in the UI). Set a code "
 "only if your server requires admin-gated pairing.</p>"
+"</div>"
+"</section>";
+
+/* Cloud-relay card; %s x2 = (relay_url, relay status line).
+ * A remote panel never reaches the home instance, so it fills THIS card
+ * instead of the server one: relay URL + the pairing code shown by
+ * Settings -> Cloud relay -> Add a remote panel. */
+static const char k_form_relay_fmt[] =
+"<section class=\"card\" id=\"card-relay\"><h2>Remote panel (cloud relay)</h2>"
+"<p class=\"hint\">For a panel that is NOT on the same network as your "
+"Tesserae server. It reaches the dashboard through an encrypted relay "
+"mailbox and never needs the server's address.</p>"
+"<div class=\"field\">"
+"<label for=\"relay_url\">Relay URL</label>"
+"<input id=\"relay_url\" name=\"relay_url\" maxlength=\"159\" "
+"inputmode=\"url\" autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" "
+"autocomplete=\"off\" value=\"%s\" placeholder=\"" RELAY_DEFAULT_URL "\">"
+"</div>"
+"<div class=\"field\">"
+"<label for=\"relay_code\">Pairing code</label>"
+"<input id=\"relay_code\" name=\"relay_code\" maxlength=\"23\" "
+"autocapitalize=\"characters\" autocomplete=\"off\">"
+"<p class=\"hint\">From <code>Settings &rarr; Cloud relay &rarr; Add a remote "
+"panel</code>. Codes are single-use and expire in about 10 minutes. %s</p>"
 "</div>"
 "</section>"
 "<button class=\"submit\" type=\"submit\">Save &amp; restart</button>"
@@ -255,6 +333,21 @@ static const char k_tail[] =
 "if(e.target.value){document.getElementById('ssid').value=e.target.value;"
 "document.getElementById('wifi-pw').focus();}"
 "});}"
+/* Local vs Relay: show one card, and move the `required` attribute onto the
+   field that mode actually needs. Without this the browser refused to submit a
+   relay-only setup because the server URL was permanently required. */
+"function tessMode(){"
+"var relay=document.getElementById('mode-relay').checked;"
+"var L=document.getElementById('card-local'),R=document.getElementById('card-relay');"
+"if(L)L.style.display=relay?'none':'';"
+"if(R)R.style.display=relay?'':'none';"
+"var s=document.getElementById('server_url'),c=document.getElementById('relay_code');"
+"if(s){s.required=!relay;}"
+"if(c){c.required=relay;}"
+"}"
+"document.querySelectorAll('.modes input').forEach(function(r){"
+"r.addEventListener('change',tessMode);});"
+"tessMode();"
 /* Prepend http:// on submit when the scheme is omitted (server also enforces). */
 "var f=document.querySelector('form');"
 "if(f){f.addEventListener('submit',function(){"
@@ -345,6 +438,23 @@ static bool form_field(const char *body, const char *key, char *dst, size_t dst_
 
 /* ---------- HTTP handlers ---------- */
 
+/* Send one chunk, treating "" as nothing to send.
+ *
+ * NOT a micro-optimisation -- it is a correctness guard. A zero-length chunk is
+ * how HTTP chunked encoding signals END OF RESPONSE ("0\r\n\r\n"), and
+ * httpd_resp_send_chunk() emits exactly that for buf_len == 0. So
+ * httpd_resp_sendstr_chunk(req, "") silently TRUNCATES the page at that point:
+ * everything after it is written to a connection the browser has already
+ * stopped reading. That is how the Local/Remote switch shipped with its Remote
+ * half, both server cards and the Save button missing -- the conditional
+ * `checked` splice passed "" for the segment that was not selected.
+ *
+ * Any optional/conditional fragment must go through this, never the raw call. */
+static void send_chunk(httpd_req_t *req, const char *s)
+{
+    if (s && s[0]) httpd_resp_sendstr_chunk(req, s);
+}
+
 /* Render the settings form with live NVS values pre-filled and an optional
  * error banner. Sent chunked so we don't need a multi-KB stack buffer. */
 static esp_err_t render_form(httpd_req_t *req, const char *error)
@@ -362,6 +472,13 @@ static esp_err_t render_form(httpd_req_t *req, const char *error)
     html_escape(rest_config_device_id(), e_devid,  sizeof e_devid);
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
+    /* Never cache the setup page. It is regenerated per request -- current
+     * config, fresh scan results, live status -- so a cached copy is always
+     * stale, and after a firmware update the browser will happily keep
+     * showing the OLD form until the user finds a hard refresh. Captive
+     * portals get cached aggressively, so say so explicitly. */
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, must-revalidate");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
     httpd_resp_sendstr_chunk(req, k_head);
 
     if (error && *error) {
@@ -414,8 +531,33 @@ static esp_err_t render_form(httpd_req_t *req, const char *error)
     httpd_resp_sendstr_chunk(req, form_wifi);
 
     char form_server[1400];
+    {
+        /* Preselect the mode this device is actually in, so the form opens on
+         * the card the operator is most likely to want. */
+        bool relay_mode = rest_config_relay_ready() || cfg->relay_code[0];
+        httpd_resp_sendstr_chunk(req, k_form_modes_a);
+        send_chunk(req, relay_mode ? "" : " checked");
+        httpd_resp_sendstr_chunk(req, k_form_modes_b);
+        send_chunk(req, relay_mode ? " checked" : "");
+        httpd_resp_sendstr_chunk(req, k_form_modes_c);
+    }
+
     snprintf(form_server, sizeof form_server, k_form_server_fmt, e_server);
     httpd_resp_sendstr_chunk(req, form_server);
+
+    {
+        /* Reuse form_server's buffer: the two cards are rendered one after the
+         * other and render_form is already tight on stack (see the task-stack
+         * note below). */
+        char e_relay[640];
+        html_escape(cfg->relay_url[0] ? cfg->relay_url : RELAY_DEFAULT_URL,
+                    e_relay, sizeof e_relay);
+        snprintf(form_server, sizeof form_server, k_form_relay_fmt, e_relay,
+                 rest_config_relay_ready() ? "This panel is already paired; "
+                                             "entering a new code re-pairs it."
+                                           : "");
+        httpd_resp_sendstr_chunk(req, form_server);
+    }
 
     httpd_resp_sendstr_chunk(req, k_tail);
     httpd_resp_sendstr_chunk(req, NULL);   /* terminate chunked response */
@@ -440,24 +582,54 @@ static esp_err_t h_save(httpd_req_t *req)
 
     char ssid[33] = {0}, wpa_pass[65] = {0};
     char server_url[160] = {0}, pairing[16] = {0};
+    char relay_url[160] = {0}, relay_code[24] = {0};
 
     bool have_ssid    = form_field(body, "ssid",         ssid,       sizeof ssid)       && ssid[0];
     bool have_pass    = form_field(body, "pass",         wpa_pass,   sizeof wpa_pass)   && wpa_pass[0];
     bool have_server  = form_field(body, "server_url",   server_url, sizeof server_url) && server_url[0];
     bool have_pairing = form_field(body, "pairing_code", pairing,    sizeof pairing)    && pairing[0];
+    bool have_rurl    = form_field(body, "relay_url",    relay_url,  sizeof relay_url)  && relay_url[0];
+    bool have_rcode   = form_field(body, "relay_code",   relay_code, sizeof relay_code) && relay_code[0];
 
-    if (!have_ssid)   return render_form(req, "WiFi network name (SSID) is required.");
-    if (!have_server) return render_form(req, "Tesserae server URL is required.");
+    /* Which form the operator submitted. The switch posts it; default to local
+     * so a client with no JS (or an older cached page) behaves as before. */
+    char mode[8] = {0};
+    form_field(body, "mode", mode, sizeof mode);
+    bool relay_mode = strcmp(mode, "relay") == 0;
+
+    if (!have_ssid) return render_form(req, "WiFi network name (SSID) is required.");
+    /* Each mode requires only its own field. A relay panel has NO home server
+     * URL -- it only ever talks to the relay -- and a local panel needs no
+     * pairing code. Enforced here as well as by the browser, since the form's
+     * `required` attributes are set by JS and a client without it would
+     * otherwise submit an empty setup. */
+    if (relay_mode) {
+        if (!have_rcode)
+            return render_form(req, "A cloud-relay pairing code is required for "
+                                    "a remote panel. Get one from Settings "
+                                    "&rarr; Cloud relay &rarr; Add a remote panel.");
+    } else if (!have_server) {
+        return render_form(req, "Tesserae server URL is required.");
+    }
     /* Be forgiving about the scheme: default to http:// when it's omitted
      * (mirrors the client-side normalization). */
-    if (strncmp(server_url, "http://", 7) != 0 && strncmp(server_url, "https://", 8) != 0) {
+    if (have_server &&
+        strncmp(server_url, "http://", 7) != 0 && strncmp(server_url, "https://", 8) != 0) {
         char with_scheme[167];
         snprintf(with_scheme, sizeof with_scheme, "http://%s", server_url);
         snprintf(server_url, sizeof server_url, "%s", with_scheme);
     }
+    /* The relay is public and always TLS; anything else would ship the pairing
+     * handshake in the clear. */
+    if (relay_mode && have_rurl && strncmp(relay_url, "https://", 8) != 0)
+        return render_form(req, "The relay URL must start with https://.");
 
-    ESP_LOGI(TAG, "saving ssid='%s' server='%s'%s", ssid, server_url,
-             have_pairing ? " (with pairing code)" : "");
+    if (relay_mode)
+        ESP_LOGI(TAG, "saving ssid='%s' relay='%s' (pairing code set)", ssid,
+                 have_rurl ? relay_url : RELAY_DEFAULT_URL);
+    else
+        ESP_LOGI(TAG, "saving ssid='%s' server='%s'%s", ssid, server_url,
+                 have_pairing ? " (with pairing code)" : "");
 
     /* Blank WiFi password means "keep what's stored" (NULL), so editing just the
      * server via the always-on portal doesn't wipe creds. */
@@ -468,9 +640,29 @@ static esp_err_t h_save(httpd_req_t *req)
     /* Changing the server (or supplying a pairing code) invalidates any token
      * bound to the old server: clear token + cached ETag so the device
      * re-onboards cleanly against the new endpoint. */
-    bool server_changed = strcmp(rest_config_get()->server_url, server_url) != 0;
-    rest_config_set_server(server_url);
-    if (have_pairing) rest_config_set_pairing(pairing);
+    bool server_changed = false;
+    if (relay_mode) {
+        /* A new relay code re-pairs from scratch: the old mailbox identity,
+         * token and frame key are all bound to the previous pairing and would
+         * only produce failed GCM tags against a new one. */
+        rest_config_clear_relay();
+        rest_config_set_relay(have_rurl ? relay_url : RELAY_DEFAULT_URL,
+                              relay_code);
+        /* Drop any home-server binding: a relay panel must not also try to
+         * reach a server it cannot see, or every wake burns a timeout first. */
+        rest_config_set_server("");
+        rest_config_set_device_token("");
+        rest_config_set_frame_etag("");
+        rest_config_set_ui_state(0);
+    } else {
+        server_changed = have_server &&
+                         strcmp(rest_config_get()->server_url, server_url) != 0;
+        if (have_server) rest_config_set_server(server_url);
+        if (have_pairing) rest_config_set_pairing(pairing);
+        /* Leaving relay mode: forget the mailbox so the two transports cannot
+         * both look ready. relay_url survives as operator configuration. */
+        rest_config_clear_relay();
+    }
     if (server_changed || have_pairing) {
         rest_config_set_device_token("");
         rest_config_set_frame_etag("");
@@ -481,6 +673,13 @@ static esp_err_t h_save(httpd_req_t *req)
     }
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
+    /* Never cache the setup page. It is regenerated per request -- current
+     * config, fresh scan results, live status -- so a cached copy is always
+     * stale, and after a firmware update the browser will happily keep
+     * showing the OLD form until the user finds a hard refresh. Captive
+     * portals get cached aggressively, so say so explicitly. */
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, must-revalidate");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
     httpd_resp_send(req, k_thanks_html, HTTPD_RESP_USE_STRLEN);
     xEventGroupSetBits(s_done, BIT_CREDS_SAVED);
     return ESP_OK;

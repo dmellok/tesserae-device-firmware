@@ -44,6 +44,25 @@ typedef struct {
                                    * this device; SSE push viable). Admin choice
                                    * -- the firmware adds only a low-battery
                                    * escape hatch. */
+    /* ---- cloud relay (docs/relay/contract.md) ----
+     * A relay panel never reaches the home instance: it polls a per-device
+     * mailbox on a Worker and decrypts frames locally. These coexist with the
+     * direct-REST fields above rather than replacing them -- a device is either
+     * paired to a relay or talking to a home server, and relay_ready() decides.
+     */
+    char    relay_url[160];       /* base origin, e.g. https://relay.tesserae.ink */
+    char    relay_code[24];       /* one-shot pairing code; cleared once paired */
+    char    relay_install[64];    /* install_id (path segment for the mailbox) */
+    char    relay_device[64];     /* relay-side device id (path segment) */
+    char    relay_token[256];     /* device token, minted by home, via the relay */
+    char    relay_etag[80];       /* If-None-Match across wakes (relay frames) */
+    /* Secrets. relay_key is the derived AES-256-GCM frame key and is the only
+     * long-lived one; relay_priv is the panel's X25519 private key, kept ONLY
+     * while pairing spans wakes and wiped once the key exists. */
+    uint8_t relay_key[32];
+    bool    relay_have_key;
+    uint8_t relay_priv[32];
+    bool    relay_have_priv;
 } rest_config_t;
 
 /* Load config from NVS into the RAM cache. Never fails; missing keys default
@@ -73,6 +92,32 @@ bool rest_config_has_server(void);
  * Call rest_config_save() to persist. */
 void rest_config_set_server(const char *url);
 void rest_config_set_pairing(const char *code);
+
+/* ---- cloud relay mutators (see relay.h for the state machine) ---- */
+
+/* Operator input: where to pair and with which code. Either may be NULL to
+ * leave it alone; setting a code is what arms pairing on the next wake. */
+void rest_config_set_relay(const char *url, const char *code);
+
+/* Pairing in progress: remember the panel's X25519 private key so the poll can
+ * span deep sleeps. */
+void rest_config_set_relay_priv(const uint8_t priv[32]);
+
+/* Pairing complete: adopt the mailbox identity + token and the derived frame
+ * key, clear the one-shot code, and wipe the private key (the frame key is the
+ * only secret worth keeping). */
+void rest_config_set_relay_paired(const char *install_id, const char *device_id,
+                                  const char *token, const uint8_t key[32]);
+
+/* Cached ETag for the relay frame mailbox (separate from last_frame_etag so a
+ * device that has talked to both never crosses the two streams). */
+void rest_config_set_relay_etag(const char *etag);
+
+/* Forget everything relay-side (failed/expired pairing, or an operator reset). */
+void rest_config_clear_relay(void);
+
+/* True once the device can poll its mailbox: URL, ids, token and key present. */
+bool rest_config_relay_ready(void);
 void rest_config_set_device_id(const char *id);
 void rest_config_set_device_token(const char *token);
 void rest_config_set_frame_etag(const char *etag);

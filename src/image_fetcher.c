@@ -13,7 +13,23 @@ typedef struct {
     fetched_image_t *out;
     size_t cap;          /* current buffer capacity */
     bool   oom;          /* set if any realloc fails */
+    char  *etag;         /* optional: response ETag, quotes stripped */
+    size_t etag_cap;
 } dl_ctx_t;
+
+/* Copy an ETag header value, dropping the surrounding quotes and any weak
+ * validator prefix, so callers can round-trip it into If-None-Match without
+ * caring how the origin formatted it. */
+static void copy_etag(dl_ctx_t *ctx, const char *value)
+{
+    if (!ctx->etag || !ctx->etag_cap || !value) return;
+    if (strncasecmp(value, "W/", 2) == 0) value += 2;
+    size_t n = strlen(value);
+    if (n >= 2 && value[0] == '"' && value[n - 1] == '"') { value++; n -= 2; }
+    if (n >= ctx->etag_cap) n = ctx->etag_cap - 1;
+    memcpy(ctx->etag, value, n);
+    ctx->etag[n] = '\0';
+}
 
 static esp_err_t on_http(esp_http_client_event_t *e)
 {
@@ -24,6 +40,8 @@ static esp_err_t on_http(esp_http_client_event_t *e)
         if (strcasecmp(e->header_key, "Content-Type") == 0) {
             strncpy(ctx->out->content_type, e->header_value,
                     sizeof(ctx->out->content_type) - 1);
+        } else if (strcasecmp(e->header_key, "ETag") == 0) {
+            copy_etag(ctx, e->header_value);
         }
         break;
 
@@ -61,6 +79,77 @@ static esp_err_t on_http(esp_http_client_event_t *e)
     default:
         break;
     }
+    return ESP_OK;
+}
+
+esp_err_t image_fetch_conditional(const char *url, const char *bearer_token,
+                                  const char *etag_in,
+                                  char *etag_out, size_t etag_out_cap,
+                                  int *status_out, fetched_image_t *out)
+{
+    if (!url || !out) return ESP_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(*out));
+    if (etag_out && etag_out_cap) etag_out[0] = '\0';
+    if (status_out) *status_out = 0;
+
+    dl_ctx_t ctx = { .out = out, .cap = 0, .oom = false,
+                     .etag = etag_out, .etag_cap = etag_out_cap };
+
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .event_handler = on_http,
+        .user_data = &ctx,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 30000,
+        .buffer_size = 4096,
+        .buffer_size_tx = 1024,
+    };
+    esp_http_client_handle_t cli = esp_http_client_init(&cfg);
+    if (!cli) return ESP_FAIL;
+
+    if (bearer_token && bearer_token[0]) {
+        char auth[300];
+        snprintf(auth, sizeof auth, "Bearer %s", bearer_token);
+        esp_http_client_set_header(cli, "Authorization", auth);
+    }
+    if (etag_in && etag_in[0]) {
+        char inm[96];
+        snprintf(inm, sizeof inm, "\"%s\"", etag_in);
+        esp_http_client_set_header(cli, "If-None-Match", inm);
+    }
+
+    esp_err_t err = esp_http_client_perform(cli);
+    int status = esp_http_client_get_status_code(cli);
+    esp_http_client_cleanup(cli);
+    if (status_out) *status_out = status;
+
+    if (ctx.oom) {
+        free(out->data);
+        memset(out, 0, sizeof(*out));
+        return ESP_ERR_NO_MEM;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "perform failed: %s", esp_err_to_name(err));
+        free(out->data);
+        memset(out, 0, sizeof(*out));
+        return err;
+    }
+    /* 304/204 are normal relay outcomes ("unchanged" / "nothing yet"), not
+     * errors: report ESP_OK with an empty body and let the caller branch on
+     * the status code. */
+    if (status == 304 || status == 204) {
+        free(out->data);
+        memset(out, 0, sizeof(*out));
+        return ESP_OK;
+    }
+    if (status < 200 || status >= 300) {
+        ESP_LOGE(TAG, "http status %d", status);
+        free(out->data);
+        memset(out, 0, sizeof(*out));
+        return (status == 404) ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "downloaded %u bytes (type=%s)",
+             (unsigned)out->len, out->content_type[0] ? out->content_type : "?");
     return ESP_OK;
 }
 

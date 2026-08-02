@@ -57,6 +57,7 @@
 #include "ota_report.h"
 #include "ota_verify.h"
 #include "provisioning.h"
+#include "relay.h"        /* cloud relay: remote panels */
 #include "rest_config.h"
 #include "splash.h"
 #include "wifi_manager.h"
@@ -1557,12 +1558,25 @@ void app_main(void)
         maybe_show_splash(reset_reason, have_creds);
     }
 
-    /* The captive portal collects both WiFi and the Tesserae server URL, so a
-     * device missing either is not yet usable -- send it to provisioning. */
-    if (!have_creds || !rest_config_has_server()) {
+    /* The captive portal collects WiFi plus ONE transport, so a device missing
+     * either is not yet usable -- send it to provisioning.
+     *
+     * "One transport" is the important word: a relay panel deliberately has NO
+     * home server URL (the portal clears it, so the panel never burns a wake
+     * timing out on a server it cannot see). Gating purely on has_server()
+     * therefore bounced every relay-only panel straight back to the portal on
+     * each boot, and the relay cycle further down was unreachable -- pairing
+     * could never complete no matter how many times the code was entered.
+     * Mirrors the condition guarding that cycle. */
+    const rest_config_t *bc = rest_config_get();
+    bool relay_configured = bc->relay_url[0] &&
+                            (relay_ready() || relay_pairing_pending());
+    if (!have_creds || (!rest_config_has_server() && !relay_configured)) {
         if (have_creds) {
-            ESP_LOGW(TAG, "wifi set but no Tesserae server URL; opening portal");
-            run_provisioning_then_reboot("Add your Tesserae server URL");
+            ESP_LOGW(TAG, "wifi set but no Tesserae server URL and no relay "
+                          "pairing; opening portal");
+            run_provisioning_then_reboot("Add your Tesserae server URL, or pair "
+                                         "this panel with the cloud relay");
         } else {
             run_provisioning_then_reboot(NULL);
         }
@@ -1659,6 +1673,99 @@ void app_main(void)
      * bss zero-init gives the same per-wake semantics. */
     static char pending_patches[1536];
 #endif
+
+    /* 0. Cloud relay (docs/relay/contract.md). A remote panel never reaches the
+     * home instance: it pairs through a Worker, then polls a per-device mailbox
+     * and decrypts frames locally. That makes this a COMPLETE alternative to
+     * everything below -- no discover/register (the token is minted by home and
+     * handed over at pairing), and no overlay / deck / touch-spec features,
+     * which are all home-server surfaces the relay does not proxy. So it runs
+     * its own small cycle and goes straight to sleep. */
+    if (c->relay_url[0] && (relay_ready() || relay_pairing_pending())) {
+        if (relay_pairing_pending()) {
+            switch (relay_pair_step()) {
+            case RELAY_PAIR_DONE:
+                ESP_LOGI(TAG, "relay pairing complete");
+                splash_show_message("Paired", "Waiting for the first frame");
+                break;
+            case RELAY_PAIR_WAITING:
+                /* Home completes pairing on ITS poll cadence, so this normally
+                 * takes a few wakes. Nothing to paint; retry next wake. */
+                ESP_LOGI(TAG, "relay pairing pending; retrying next wake");
+                wifi_sta_stop();
+                sleep_forever_or_until_timer();
+                return;
+            case RELAY_PAIR_EXPIRED:
+                /* Single-use code, already cleared from NVS. Reopen the portal
+                 * so the operator can paste a fresh one rather than leaving the
+                 * panel silently dark forever. */
+                wifi_sta_stop();
+                run_provisioning_then_reboot("Relay pairing code expired");
+                return;   /* not reached */
+            default:
+                ESP_LOGW(TAG, "relay pairing step failed; retrying next wake");
+                wifi_sta_stop();
+                sleep_forever_or_until_timer();
+                return;
+            }
+            c = rest_config_get();
+        }
+
+        if (relay_ready()) {
+            /* A manual refresh must actually repaint. The mailbox only changes
+             * when home publishes, so without dropping the cached ETag the poll
+             * just 304s and the button appears dead -- the same reason the home
+             * path clears its ETag on a button wake. In RAM only: the next timer
+             * wake resumes normal 304 dedup. */
+            if (woke_by_button) rest_config_set_relay_etag("");
+
+            uint8_t *plain = NULL, *owned = NULL;
+            size_t plain_len = 0;
+            switch (relay_fetch_frame(&plain, &plain_len, &owned)) {
+            case RELAY_FRAME_NEW:
+                /* Validate the DECRYPTED length against this panel's geometry
+                 * before handing it to the driver: the metadata headers are
+                 * plaintext and therefore untrusted, whereas this length comes
+                 * from bytes that passed the GCM tag. */
+                if (plain_len == (size_t)EPD_BUF_BYTES) {
+                    ESP_LOGI(TAG, "relay frame %u bytes; painting (~30 s)...",
+                             (unsigned)plain_len);
+                    ESP_ERROR_CHECK(epd_port_init());
+                    epd_init();
+                    epd_display(plain);
+                    epd_sleep();
+                    rest_config_set_ui_state(UI_CONNECTED);
+                    relay_commit_frame();   /* only now is the ETag truthful */
+                } else {
+                    ESP_LOGE(TAG, "relay frame is %u bytes, panel expects %u; "
+                                  "not painting",
+                             (unsigned)plain_len, (unsigned)EPD_BUF_BYTES);
+                }
+                free(owned);
+                break;
+            case RELAY_FRAME_UNCHANGED:
+                ESP_LOGI(TAG, "relay frame unchanged (304); keeping the image");
+                break;
+            case RELAY_FRAME_NONE:
+                ESP_LOGI(TAG, "relay has no frame yet (204)");
+                break;
+            default:
+                ESP_LOGW(TAG, "relay frame fetch failed");
+                break;
+            }
+
+            /* Telemetry on the same wake, so the Devices UI shows battery /
+             * signal / firmware / last-seen for a panel it can never reach. */
+            char ip[16] = {0};
+            wifi_manager_get_sta_ip(ip, sizeof ip);
+            relay_post_status(current_rssi(), ip, pw, ph, FW_VERSION);
+        }
+
+        if (cfg_dirty) rest_config_save();
+        wifi_sta_stop();
+        sleep_forever_or_until_timer();
+        return;   /* not reached */
+    }
 
     /* 1. Bootstrap a device token (discover/claim, or register with a code). */
     if (c->device_token[0] == '\0') {

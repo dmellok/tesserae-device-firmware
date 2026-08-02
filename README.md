@@ -341,6 +341,43 @@ exercises every interaction with per-op timings on serial, then runs a 30 s
 live-tap orientation check — no networking, so it validates the panel and
 geometry before the server endpoints exist.
 
+### Cloud relay (remote panels)
+
+A panel can run somewhere the Tesserae server isn't reachable from — a different
+house, a phone hotspot, behind CGNAT — without exposing the home instance to the
+internet. Both ends talk **outbound** to a small Cloudflare Worker that acts as a
+per-device mailbox: home seals each rendered frame and `PUT`s it, the panel polls
+and decrypts it.
+
+The relay is **zero-knowledge**. At pairing the panel and the home instance
+exchange X25519 *public* keys through it and each derive the same AES-256-GCM
+frame key locally; the key is never transmitted. The relay only ever holds
+ciphertext, two public keys and a token hash, so it can validate a poll but
+never read a dashboard.
+
+Setup is one extra card in the captive portal: a relay URL (defaults to
+`https://relay.tesserae.ink`) and the single-use pairing code from
+`Settings → Cloud relay → Add a remote panel`. A relay panel needs **no**
+server URL — the portal accepts either. On the next wakes the device posts its
+public key, polls until the home instance completes the exchange, derives the
+frame key, and stores it in NVS; the private scalar is wiped once the key
+exists, since only the key is needed thereafter.
+
+In steady state each wake is one conditional `GET .../frame` with
+`If-None-Match` (304 keeps the current image, 204 means nothing published yet)
+plus a `POST .../status` carrying the same telemetry body a local device sends,
+so battery / signal / firmware / last-seen still populate the Devices UI. Frames
+decrypt **in place** — a 1.3 MB frame would otherwise need a second buffer — and
+a failed authentication tag is never painted: it means the mailbox doesn't match
+this panel's key.
+
+The wire contract is `docs/relay/contract.md` in the Tesserae repo, and it is
+authoritative for all three sides. Its golden vectors are checked in CI by
+[tools/test_relay_crypto.sh](tools/test_relay_crypto.sh), which compiles the real
+device crypto (Monocypher X25519 + ESP-IDF mbedTLS HKDF/AES-GCM) rather than a
+host stand-in — a derivation that is merely plausible produces a wrong key, and
+the only symptom in the field is that frames silently never appear.
+
 ## Build
 
 Requires [PlatformIO Core](https://platformio.org/install). Build one target:

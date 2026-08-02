@@ -44,6 +44,10 @@ CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
 CONFIG_ESP_TLS_USING_MBEDTLS=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# HKDF-SHA256 for the cloud relay's frame-key derivation (relay_crypto.c).
+# Off by default in ESP-IDF; ~1 KB of code. Using mbedTLS's vetted RFC 5869
+# implementation rather than hand-rolling it over HMAC.
+CONFIG_MBEDTLS_HKDF_C=y
 
 # --- MQTT (5 is overkill for our use case; 3.1.1 is rock solid) ---
 CONFIG_MQTT_PROTOCOL_311=y

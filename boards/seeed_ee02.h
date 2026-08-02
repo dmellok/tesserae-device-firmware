@@ -54,6 +54,19 @@
  * bytes) as the E1004, so the server maps this to the existing renderer. */
 #define TESSERAE_DEVICE_KIND   "seeed_ee02"
 
+/* Cloud-relay self-report (docs/relay/contract.md, POST /v1/pair).
+ * Values come from this board's entry in the Tesserae hardware
+ * catalog (hardware/<vendor>/seeed_ee02.json): "protocol" is the
+ * device KIND that selects the renderer/.bin packer, and
+ * "panel.gamut" is the palette the server quantizes to. Both are
+ * hardware facts, so the panel reports them at pairing and the
+ * operator no longer has to pre-enter them.
+ *
+ * NOTE the kind is NOT the catalog id above -- that is a hardware id, not a
+ * device kind. Getting this wrong silently mis-packs every frame. */
+#define TESSERAE_RELAY_MODEL   "esp32_client"
+#define TESSERAE_RELAY_GAMUT   "spectra_6"
+
 /* Battery sense: GPIO1 = ADC1 channel 0, 2:1 divider, gated by a load switch on
  * GPIO6 (active-high) -- the same XIAO ePaper driver-board circuit as the 7.5"
  * (mono) kit, which we isolated on hardware there (switch GPIO6, not the

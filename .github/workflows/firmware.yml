@@ -62,6 +62,22 @@ jobs:
       - name: Touch v3 icon chain (map + font + rasterizer)
         run: sh tools/test_icons.sh
 
+      # Cloud-relay crypto against the contract's golden vectors. A wrong
+      # derivation fails silently in the field: pairing "succeeds", every frame
+      # then fails its GCM tag, and the panel simply never updates.
+      - name: Cloud relay crypto (contract golden vectors)
+        env:
+          PIO_BIN: pio
+        run: sh tools/test_relay_crypto.sh
+
+      # A zero-length chunk is HTTP chunked encoding's end-of-response marker,
+      # so httpd_resp_sendstr_chunk(req, "") silently truncates the captive
+      # portal mid-page. That shipped once: the Local/Remote switch lost its
+      # Remote half, both server cards and the Save button, leaving no way to
+      # finish setup. Invisible to markup review -- only the framing is wrong.
+      - name: Captive portal chunk framing
+        run: python3 tools/check_portal_chunks.py
+
 
   build:
     name: build ${{ matrix.env }}

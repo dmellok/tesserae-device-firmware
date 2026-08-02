@@ -126,6 +126,19 @@
  * paths. Confirm this id and that a matching manifest exists in Tesserae. */
 #define TESSERAE_DEVICE_KIND   "seeed_reterminal_e1003"
 
+/* Cloud-relay self-report (docs/relay/contract.md, POST /v1/pair).
+ * Values come from this board's entry in the Tesserae hardware
+ * catalog (hardware/<vendor>/seeed_reterminal_e1003.json): "protocol" is the
+ * device KIND that selects the renderer/.bin packer, and
+ * "panel.gamut" is the palette the server quantizes to. Both are
+ * hardware facts, so the panel reports them at pairing and the
+ * operator no longer has to pre-enter them.
+ *
+ * NOTE the kind is NOT the catalog id above -- that is a hardware id, not a
+ * device kind. Getting this wrong silently mis-packs every frame. */
+#define TESSERAE_RELAY_MODEL   "esp32_client"
+#define TESSERAE_RELAY_GAMUT   "gray_16"
+
 /* MCU tier: ESP32-S3 + PSRAM (assumed octal; verify on hardware). */
 #define MCU_TIER_S3_OCTAL_PSRAM 1
 

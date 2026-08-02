@@ -31,3 +31,17 @@ esp_err_t image_fetch(const char *url, fetched_image_t *out);
  * the deck contract's "stale manifest, re-fetch it" signal. */
 esp_err_t image_fetch_auth(const char *url, const char *bearer_token,
                            fetched_image_t *out);
+
+/* As image_fetch_auth(), plus conditional-GET support for the cloud relay:
+ * sends If-None-Match when etag_in is non-empty, reports the raw HTTP status
+ * in *status, and copies the response ETag (quotes stripped) into etag_out.
+ *
+ * The relay leans on all three: 304 means "unchanged, keep the current image"
+ * and 204 "no frame yet", neither of which is an error, and the returned ETag
+ * is what the next poll sends back. Those statuses come back ESP_OK with
+ * out->data == NULL, so the caller branches on *status rather than on err.
+ * etag_out may be NULL if the caller does not track it. */
+esp_err_t image_fetch_conditional(const char *url, const char *bearer_token,
+                                  const char *etag_in,
+                                  char *etag_out, size_t etag_out_cap,
+                                  int *status, fetched_image_t *out);

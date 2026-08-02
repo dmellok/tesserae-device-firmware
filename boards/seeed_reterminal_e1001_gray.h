@@ -33,5 +33,23 @@
 #undef  TESSERAE_DEVICE_KIND
 #define TESSERAE_DEVICE_KIND  "seeed_reterminal_e1001_gray"
 
+/* Cloud-relay self-report (docs/relay/contract.md, POST /v1/pair).
+ * Values come from this board's entry in the Tesserae hardware
+ * catalog (hardware/<vendor>/seeed_reterminal_e1001_gray.json): "protocol" is the
+ * device KIND that selects the renderer/.bin packer, and
+ * "panel.gamut" is the palette the server quantizes to. Both are
+ * hardware facts, so the panel reports them at pairing and the
+ * operator no longer has to pre-enter them.
+ *
+ * NOTE the kind is NOT the catalog id above -- that is a hardware id, not a
+ * device kind. Getting this wrong silently mis-packs every frame. */
+/* The base header above already defined these for the mono panel; this
+ * variant has a different gamut, so undef first -- same pattern the
+ * file already uses for EPD_BUF_BYTES and TESSERAE_DEVICE_KIND. */
+#undef  TESSERAE_RELAY_MODEL
+#undef  TESSERAE_RELAY_GAMUT
+#define TESSERAE_RELAY_MODEL   "esp32_bw_client"
+#define TESSERAE_RELAY_GAMUT   "gray_4"
+
 /* Flip mono_spi into the dual-plane register-LUT grayscale mode. */
 #define EPD_GRAY4 1
