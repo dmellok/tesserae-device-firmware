@@ -24,6 +24,9 @@ static const char *TAG = "rest_cfg";
 #define NVS_KEY_DECK_SV    "deck_sv"    /* synced manifest version */
 #define NVS_KEY_DECK_RV    "deck_rv"    /* last server-announced version */
 #define NVS_KEY_DECK_SD    "deck_sd"    /* displayed frame came from SD */
+#define NVS_KEY_COL_ID     "col_id"
+#define NVS_KEY_COL_SV     "col_sv"     /* fully cached manifest version */
+#define NVS_KEY_COL_RV     "col_rv"     /* last server-announced version */
 #define NVS_KEY_TZ         "tz"         /* IANA timezone (proto2) */
 #define NVS_KEY_KIOSK      "kiosk"      /* always-on power policy */
 /* Cloud relay (docs/relay/contract.md). Short keys: NVS caps them at 15 chars. */
@@ -101,6 +104,12 @@ void rest_config_load(void)
         load_str(h, NVS_KEY_DECK_RV, s_cfg.deck_srv_ver,    sizeof s_cfg.deck_srv_ver);
         uint8_t dsd = 0;
         if (nvs_get_u8(h, NVS_KEY_DECK_SD, &dsd) == ESP_OK) s_cfg.deck_sd_painted = (dsd != 0);
+        load_str(h, NVS_KEY_COL_ID, s_cfg.collection_id,
+                 sizeof s_cfg.collection_id);
+        load_str(h, NVS_KEY_COL_SV, s_cfg.collection_synced_ver,
+                 sizeof s_cfg.collection_synced_ver);
+        load_str(h, NVS_KEY_COL_RV, s_cfg.collection_srv_ver,
+                 sizeof s_cfg.collection_srv_ver);
         load_str(h, NVS_KEY_TZ, s_cfg.tz, sizeof s_cfg.tz);
         uint8_t ko = 0;
         if (nvs_get_u8(h, NVS_KEY_KIOSK, &ko) == ESP_OK) s_cfg.always_on = (ko != 0);
@@ -183,6 +192,12 @@ esp_err_t rest_config_save(void)
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DECK_SV, s_cfg.deck_synced_ver);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DECK_RV, s_cfg.deck_srv_ver);
     if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_DECK_SD, s_cfg.deck_sd_painted ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_COL_ID,
+                                         s_cfg.collection_id);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_COL_SV,
+                                         s_cfg.collection_synced_ver);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_COL_RV,
+                                         s_cfg.collection_srv_ver);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_TZ, s_cfg.tz);
     if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_KIOSK, s_cfg.always_on ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_RLY_URL,  s_cfg.relay_url);
@@ -287,6 +302,22 @@ void rest_config_set_deck_srv_ver(const char *version)
 void rest_config_set_deck_sd_painted(bool painted)
 {
     s_cfg.deck_sd_painted = painted;
+}
+
+void rest_config_set_collection_id(const char *id)
+{
+    set_str(s_cfg.collection_id, sizeof s_cfg.collection_id, id);
+}
+
+void rest_config_set_collection_synced_ver(const char *version)
+{
+    set_str(s_cfg.collection_synced_ver,
+            sizeof s_cfg.collection_synced_ver, version);
+}
+
+void rest_config_set_collection_srv_ver(const char *version)
+{
+    set_str(s_cfg.collection_srv_ver, sizeof s_cfg.collection_srv_ver, version);
 }
 
 void rest_config_set_tz(const char *tz)

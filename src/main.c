@@ -33,6 +33,7 @@
 #include "nvs_flash.h"      /* factory-reset erase (20 s refresh-button hold) */
 #include "buttons.h"        /* front-button wake/report (header-only; no-op if none) */
 #include "deck_run.h"       /* SD deck cache: local nav + sync (no-op w/o card) */
+#include "collection_run.h" /* offline Album: SD playback + collection sync */
 #include "overlay_run.h"    /* local overlay render mode (no-op w/o partial panel) */
 #include "proto2_run.h"     /* protocol v2: device-owned touch (no-op w/o touch) */
 #include "touch3_run.h"     /* touch v3: device-drawn primitives (no-op w/o touch) */
@@ -328,6 +329,8 @@ static void sleep_forever_or_until_timer(void)
     }
 
     int interval = (s_sleep_override_s > 0) ? s_sleep_override_s : effective_sleep_s();
+    if (s_sleep_override_s <= 0)
+        interval = collection_next_sleep_s(interval);
     ESP_LOGI(TAG, "on battery; deep sleep for %d s%s",
              interval,
              s_sleep_override_s > 0 ? " (retry backoff)"
@@ -1425,6 +1428,16 @@ void app_main(void)
     /* Deck cache boot: probe the SD card, advertise the capability, restore
      * nav state. Everything degrades to a no-op without a card. */
     deck_boot();
+    collection_boot();
+
+    /* An Album-only timer wake can paint a due cached photo and return to
+     * sleep without starting WiFi. Manual/button/touch wakes always continue
+     * through the normal server cycle. */
+    if (!rest_config_get()->always_on && collection_try_local_cycle()) {
+        ESP_LOGI(TAG, "offline Album wake complete; back to sleep radio-off");
+        sleep_forever_or_until_timer();
+        return;   /* not reached */
+    }
 
     /* Overlay boot: restore the SD-cached overlay spec for the displayed
      * frame so a wake tap can echo before any network round trip. */
@@ -1662,6 +1675,10 @@ void app_main(void)
     char new_etag[80] = {0};
     bool deck_sync_needed = false;   /* status asked for a deck cache resync */
     char deck_srv_ver[DECK_VERSION_CAP] = {0};
+    bool collection_sync_needed = false;
+    char collection_id[FC_ID_CAP] = {0};
+    char collection_kind[FC_KIND_CAP] = {0};
+    char collection_srv_ver[FC_VERSION_CAP] = {0};
 #if BOARD_OVERLAY_PARTIAL
     /* Status-borne patch doc, held until AFTER the paint: on a wake that
      * downloads a frame, the overlay buffers only exist once
@@ -1960,6 +1977,18 @@ void app_main(void)
                 snprintf(deck_srv_ver, sizeof deck_srv_ver, "%s", so.deck_version);
                 deck_sync_needed = deck_sync_pending(true, deck_srv_ver);
             }
+            if (so.collection_present) {
+                snprintf(collection_id, sizeof collection_id, "%s",
+                         so.collection_id);
+                snprintf(collection_kind, sizeof collection_kind, "%s",
+                         so.collection_kind);
+                snprintf(collection_srv_ver, sizeof collection_srv_ver, "%s",
+                         so.collection_version);
+            }
+            collection_sync_needed = collection_sync_pending(
+                so.collection_present, collection_id, collection_kind,
+                collection_srv_ver);
+            collection_network_polled(effective_sleep_s());
 #if TESSERAE_OTA_CAPABILITY_ENABLED
             if (so.ota_present) {
                 if (so.ota_reason == OTA_VERIFY_OK) {
@@ -2028,7 +2057,8 @@ void app_main(void)
 #endif
     /* A pending deck sync keeps the radio up through the paint so the sync
      * tail can run afterwards (contract: sync after painting + reporting). */
-    if (!will_linger && !deck_sync_needed && !proto2_sync_pending())
+    if (!will_linger && !deck_sync_needed && !collection_sync_needed &&
+        !proto2_sync_pending())
         wifi_sta_stop();
 
     if (frame != NULL) {
@@ -2045,6 +2075,7 @@ void app_main(void)
         touch3_after_paint(new_etag);
         free(frame);   /* AFTER after_paint: it memcpys the frame into its buffers */
         deck_network_painted();   /* SD-paint report no longer describes the display */
+        collection_network_painted(new_etag); /* interrupt, then timed resume */
     } else if (just_onboarded) {
         /* Onboarding completed but the server has no frame ready yet -- confirm
          * the successful connect once, on the transition, so setup has clear
@@ -2076,6 +2107,12 @@ void app_main(void)
      * frames, delete orphans. Then finish the deferred radio-down. */
     if (deck_sync_needed) {
         deck_sync_tail(true, deck_srv_ver);
+        if (!will_linger && !collection_sync_needed && !proto2_sync_pending())
+            wifi_sta_stop();
+    }
+    if (collection_sync_needed) {
+        collection_sync_tail(true, collection_id, collection_kind,
+                             collection_srv_ver);
         if (!will_linger && !proto2_sync_pending()) wifi_sta_stop();
     }
     /* proto2 bundle resync (contract: after painting + reporting). */

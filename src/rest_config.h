@@ -18,6 +18,7 @@
 #include "esp_err.h"
 #include "app_config.h"   /* BOARD_HAS_TOUCH gates the touch config below */
 #include "deck.h"         /* DECK_ID_CAP / DECK_VERSION_CAP for nav state */
+#include "frame_collection.h"
 
 typedef struct {
     char    server_url[160];      /* e.g. http://tesserae.local:8765 (no trailing slash) */
@@ -39,6 +40,11 @@ typedef struct {
     char    deck_synced_ver[DECK_VERSION_CAP]; /* manifest version fully on card */
     char    deck_srv_ver[DECK_VERSION_CAP];    /* last server-announced version */
     bool    deck_sd_painted;      /* displayed frame came from the SD cache */
+    /* Producer-neutral frame collection state. Versions move independently:
+     * local playback is allowed only while synced_ver == srv_ver. */
+    char    collection_id[FC_ID_CAP];
+    char    collection_synced_ver[FC_VERSION_CAP];
+    char    collection_srv_ver[FC_VERSION_CAP];
     char    tz[40];               /* IANA timezone (server config; proto2 status body) */
     bool    always_on;            /* server config: kiosk mode (no deep sleep on
                                    * this device; SSE push viable). Admin choice
@@ -151,6 +157,12 @@ void rest_config_set_deck_nav(const char *deck_id, const char *page_id);
 void rest_config_set_deck_synced_ver(const char *version);
 void rest_config_set_deck_srv_ver(const char *version);
 void rest_config_set_deck_sd_painted(bool painted);
+
+/* Collection sync state. Persist only at assignment/version boundaries; the
+ * per-frame shuffle cursor lives in RTC RAM to avoid flash wear. */
+void rest_config_set_collection_id(const char *id);
+void rest_config_set_collection_synced_ver(const char *version);
+void rest_config_set_collection_srv_ver(const char *version);
 
 /* IANA timezone string from server config (proto2: echoed on every /status).
  * Cache mutator like the rest; persist with rest_config_save(). */

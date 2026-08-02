@@ -18,6 +18,7 @@
 
 #include "app_config.h"   /* BOARD_HAS_TOUCH gates the touch fields below */
 #include "deck.h"         /* DECK_VERSION_CAP (deck resync signal) */
+#include "frame_collection.h"
 #if TESSERAE_OTA_CAPABILITY_ENABLED
 #include "ota_manifest.h"
 #endif
@@ -90,6 +91,10 @@ typedef struct {
 #endif
     bool     deck_present;      /* response carried "deck": {"version"} */
     char     deck_version[DECK_VERSION_CAP];
+    bool     collection_present; /* response carried collection id/kind/version */
+    char     collection_id[FC_ID_CAP];
+    char     collection_kind[FC_KIND_CAP];
+    char     collection_version[FC_VERSION_CAP];
 #if BOARD_OVERLAY_PARTIAL
     /* Raw "overlay_values" object from the response, "" when absent. Same
      * semantics as the polled values document (overlay.h); newest seq wins. */
@@ -176,6 +181,21 @@ void rest_deck_frame_url(const char *digest, char *out, size_t cap);
 
 /* The raw bearer token (for image_fetch_auth on deck frame downloads). */
 const char *rest_bearer_token(void);
+
+/* ---- producer-neutral frame-cache collections (offline Albums) ---- */
+
+/* Advertise frame_cache beside deck_cache while usable SD storage is mounted. */
+void rest_set_frame_cache_capability(uint64_t capacity_bytes, uint16_t max_frames);
+
+/* Report truthful collection state on /status. NULL/empty id clears it. */
+void rest_set_collection_report(const char *id, const char *version,
+                                uint16_t cached, uint32_t total,
+                                const char *state);
+
+/* GET /api/v1/device/<id>/collection. REST_NO_CONTENT means unbound. */
+rest_status_t rest_get_collection_manifest(char *buf, size_t cap,
+                                           size_t *out_len,
+                                           uint32_t timeout_ms);
 
 /* ---- overlay render mode (overlay.h; boards with partial refresh) ---- */
 

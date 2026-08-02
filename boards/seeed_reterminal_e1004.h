@@ -103,6 +103,10 @@
  * From the Seeed reTerminal E10xx Arduino peripherals cookbook. */
 #define TESSERAE_SD_SLOT   1
 #define SD_SPI_SHARED_BUS  1
+/* The shipped card can mount and accept writes at the SDSPI default 20 MHz,
+ * yet time out on the first sustained read after deep-sleep wake. Match the
+ * panel bus clock: 10 MHz is stable for cached 960 KB frame reads. */
+#define SD_SPI_MAX_KHZ 10000
 #define SD_PIN_MISO   8
 #define SD_PIN_CS     14
 #define SD_PIN_DET    15
