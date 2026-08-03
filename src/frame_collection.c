@@ -105,7 +105,7 @@ static bool duplicate_frame(const fc_manifest_t *m, const fc_frame_t *f)
     for (int i = 0; i < m->n_frames; i++) {
         const fc_frame_t *p = &m->frames[i];
         if (strcmp(p->frame_id, f->frame_id) == 0 ||
-            p->position == f->position || strcmp(p->digest, f->digest) == 0)
+            p->position == f->position)
             return true;
     }
     return false;
@@ -211,20 +211,25 @@ int fc_sync_plan(const fc_manifest_t *m,
                  const char have[][FC_DIGEST_HEX + 1], int n_have,
                  char fetch[][FC_DIGEST_HEX + 1], int max_fetch,
                  char orphan[][FC_DIGEST_HEX + 1], int max_orphan,
-                 int *n_orphan)
+                 int *n_orphan, bool *truncated)
 {
     int nf = 0, no = 0;
+    bool clipped = false;
     for (int i = 0; m && i < m->n_frames; i++) {
         const char *d = m->frames[i].digest;
-        if (!digest_in(have, n_have, d) && nf < max_fetch &&
-            !digest_in((const char (*)[FC_DIGEST_HEX + 1])fetch, nf, d))
-            strcpy(fetch[nf++], d);
+        if (digest_in(have, n_have, d) ||
+            digest_in((const char (*)[FC_DIGEST_HEX + 1])fetch, nf, d))
+            continue;
+        if (nf < max_fetch) strcpy(fetch[nf++], d);
+        else clipped = true;
     }
     for (int i = 0; i < n_have; i++) {
-        if (!fc_find_digest(m, have[i]) && no < max_orphan)
-            strcpy(orphan[no++], have[i]);
+        if (fc_find_digest(m, have[i])) continue;
+        if (no < max_orphan) strcpy(orphan[no++], have[i]);
+        else clipped = true;
     }
     if (n_orphan) *n_orphan = no;
+    if (truncated) *truncated = clipped;
     return nf;
 }
 
@@ -254,7 +259,7 @@ void fc_play_reset(fc_play_state_t *s, const char *version, uint32_t seed)
     }
 }
 
-static int choose_clear_bit(uint32_t available, uint32_t pick)
+static int choose_set_bit(uint32_t available, uint32_t pick)
 {
     for (int i = 0; i < 32; i++) {
         if (!(available & (1u << i))) continue;
@@ -298,7 +303,7 @@ bool fc_play_next(const fc_manifest_t *m, fc_play_state_t *s, int *out_index)
         }
         uint32_t count = 0;
         for (uint32_t bits = available; bits; bits &= bits - 1u) count++;
-        next = choose_clear_bit(available, next_random(s) % count);
+        next = choose_set_bit(available, next_random(s) % count);
         if (next < 0) return false;
         s->used_mask |= 1u << next;
     }
@@ -316,4 +321,14 @@ int32_t fc_interval_clamp(int32_t requested_s, int32_t min_s,
     if (v < min_s) return min_s;
     if (v > max_s) return max_s;
     return v;
+}
+
+int64_t fc_interrupt_resume_at(int64_t scheduled_at, int64_t now,
+                               int32_t interval_s)
+{
+    /* An interruption must not slide an already scheduled Album deadline.
+     * Otherwise recurring network frames can postpone local playback forever. */
+    if (scheduled_at > 0) return scheduled_at;
+    if (now <= 0 || interval_s <= 0 || now > INT64_MAX - interval_s) return 0;
+    return now + interval_s;
 }

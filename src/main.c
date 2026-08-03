@@ -2075,7 +2075,14 @@ void app_main(void)
         touch3_after_paint(new_etag);
         free(frame);   /* AFTER after_paint: it memcpys the frame into its buffers */
         deck_network_painted();   /* SD-paint report no longer describes the display */
-        collection_network_painted(new_etag); /* interrupt, then timed resume */
+        /* Tesserae currently uses the 16-lower-hex frame content digest as its
+         * ETag. Only infer an Album slot while that equivalence is explicit;
+         * weak/quoted/future ETags still interrupt, but cannot corrupt shuffle
+         * bookkeeping through a silent format coupling. */
+        const char *album_digest = fc_digest_valid(new_etag) ? new_etag : NULL;
+        if (new_etag[0] && !album_digest)
+            ESP_LOGW(TAG, "frame ETag is not an Album digest; resuming without slot inference");
+        collection_network_painted(album_digest);
     } else if (just_onboarded) {
         /* Onboarding completed but the server has no frame ready yet -- confirm
          * the successful connect once, on the transition, so setup has clear

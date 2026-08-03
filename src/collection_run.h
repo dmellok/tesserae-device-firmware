@@ -30,8 +30,9 @@ void collection_sync_tail(bool present, const char *id, const char *kind,
 /* A successful status heartbeat resets only the network deadline. */
 void collection_network_polled(int32_t normal_poll_s);
 
-/* A direct network frame is an interruption: give it a full Album interval on
- * glass, then resume. digest may identify an Album frame, or may be NULL. */
+/* A direct network frame is an interruption until the next scheduled Album
+ * deadline. Repeated pushes do not postpone that deadline; repeat:once remains
+ * complete. digest may identify an Album frame, or may be NULL. */
 void collection_network_painted(const char *digest);
 
 /* Shorten the ordinary sleep to the next local frame/network deadline. */

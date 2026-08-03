@@ -146,6 +146,34 @@ int main(int argc, char **argv)
     }
     CHECK(!fc_manifest_parse(NULL, 0, &m));
 
+    /* Content-addressed frames may share a digest: frame_id and position are
+     * the slot identities. Duplicate identities remain malformed. */
+    {
+        char *json = sized_manifest(2, 2);
+        replace_once(json, "0000000000000001", "0000000000000000");
+        CHECK(json && fc_manifest_parse(json, strlen(json), &m));
+        CHECK(m.n_frames == 2 &&
+              strcmp(m.frames[0].digest, m.frames[1].digest) == 0);
+        char fetch[FC_MAX_FRAMES][FC_DIGEST_HEX + 1] = {{0}};
+        char orphan[FC_MAX_FRAMES][FC_DIGEST_HEX + 1] = {{0}};
+        int no = -1;
+        bool truncated = true;
+        CHECK(fc_sync_plan(&m, NULL, 0, fetch, FC_MAX_FRAMES,
+                           orphan, FC_MAX_FRAMES, &no, &truncated) == 1);
+        CHECK(!truncated && no == 0);
+        free(json);
+
+        json = sized_manifest(2, 2);
+        replace_once(json, "photo:1", "photo:0");
+        CHECK(json && !fc_manifest_parse(json, strlen(json), &m));
+        free(json);
+
+        json = sized_manifest(2, 2);
+        replace_once(json, "\"position\":1", "\"position\":0");
+        CHECK(json && !fc_manifest_parse(json, strlen(json), &m));
+        free(json);
+    }
+
     /* The advertised slice-1 boundary is exactly 32 retained frames. A larger
      * total is parseable only when overflow entries are cache:false. */
     {
@@ -170,10 +198,17 @@ int main(int argc, char **argv)
         char fetch[FC_MAX_FRAMES][FC_DIGEST_HEX + 1] = {{0}};
         char orphan[FC_MAX_FRAMES][FC_DIGEST_HEX + 1] = {{0}};
         int no = -1;
+        bool truncated = true;
         int nf = fc_sync_plan(&m, have, 2, fetch, FC_MAX_FRAMES,
-                              orphan, FC_MAX_FRAMES, &no);
+                              orphan, FC_MAX_FRAMES, &no, &truncated);
         CHECK(nf == 1 && strcmp(fetch[0], "1111111111111111") == 0);
         CHECK(no == 1 && strcmp(orphan[0], "eeeeeeeeeeeeeeee") == 0);
+        CHECK(!truncated);
+
+        truncated = false;
+        CHECK(fc_sync_plan(&m, have, 2, fetch, 0,
+                           orphan, FC_MAX_FRAMES, &no, &truncated) == 0);
+        CHECK(truncated);
     }
 
     /* Sequential loop and once. */
@@ -211,6 +246,15 @@ int main(int argc, char **argv)
     CHECK(fc_interval_clamp(90000, 30, 86400, 1800) == 86400);
     CHECK(fc_interval_clamp(600, 30, 86400, 1800) == 600);
     CHECK(fc_interval_clamp(0, 30, 86400, 1800) == 1800);
+
+    /* A network interruption schedules only a missing local deadline. Once a
+     * cadence exists, even a due/past deadline is retained to prevent a stream
+     * of Dashboard updates from starving the Album. */
+    CHECK(fc_interrupt_resume_at(0, 1000, 3600) == 4600);
+    CHECK(fc_interrupt_resume_at(4000, 1000, 3600) == 4000);
+    CHECK(fc_interrupt_resume_at(1000, 1000, 3600) == 1000);
+    CHECK(fc_interrupt_resume_at(900, 1000, 3600) == 900);
+    CHECK(fc_interrupt_resume_at(0, 0, 3600) == 0);
 
     printf("frame_collection: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;

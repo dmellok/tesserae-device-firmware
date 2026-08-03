@@ -291,11 +291,21 @@ void collection_sync_tail(bool present, const char *id, const char *kind,
     char fetch[FC_MAX_FRAMES][FC_DIGEST_HEX + 1];
     char orphan[FC_MAX_FRAMES][FC_DIGEST_HEX + 1];
     int n_orphan = 0;
+    bool plan_truncated = false;
     int n_have = collection_cache_list(m->collection_id, have, FC_MAX_FRAMES);
     int n_fetch = fc_sync_plan(m, have, n_have, fetch, FC_MAX_FRAMES,
-                               orphan, FC_MAX_FRAMES, &n_orphan);
+                               orphan, FC_MAX_FRAMES, &n_orphan,
+                               &plan_truncated);
     ESP_LOGI(TAG, "sync '%s' -> v%s: %d cached, %d fetch, %d orphan",
              m->collection_id, m->version, n_have, n_fetch, n_orphan);
+    if (plan_truncated) {
+        ESP_LOGE(TAG, "collection sync plan exceeds %d-frame buffers; refusing partial sync",
+                 FC_MAX_FRAMES);
+        free(json);
+        free(m);
+        report("error");
+        return;
+    }
 
     bool complete = true;
     for (int i = 0; i < n_fetch; i++) {
@@ -363,7 +373,7 @@ void collection_network_polled(int32_t normal_poll_s)
 void collection_network_painted(const char *digest)
 {
     if (!s_have_collection || !s_manifest) return;
-    if (digest && digest[0]) {
+    if (!s_play.done && digest && digest[0]) {
         const fc_frame_t *f = fc_find_digest(s_manifest, digest);
         if (f) {
             int index = (int)(f - s_manifest->frames);
@@ -372,9 +382,14 @@ void collection_network_painted(const char *digest)
                 s_play.used_mask |= 1u << index;
         }
     }
+    if (s_play.done) {
+        s_next_frame_at = 0;    /* repeat:once remains terminal after a push */
+        report("paused");
+        return;
+    }
     int64_t now = 0;
-    s_next_frame_at = wall_clock_now(&now) ? now + album_interval() : 0;
-    s_play.done = false;
+    s_next_frame_at = wall_clock_now(&now)
+        ? fc_interrupt_resume_at(s_next_frame_at, now, album_interval()) : 0;
     report("playing");
 }
 

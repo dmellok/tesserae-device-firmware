@@ -74,12 +74,14 @@ const fc_frame_t *fc_find_frame_id(const fc_manifest_t *m, const char *frame_id)
 const fc_frame_t *fc_find_digest(const fc_manifest_t *m, const char *digest);
 
 /* Cache differ over content digests. Emits missing manifest digests and cached
- * digests no longer referenced, truncating each output to its supplied cap. */
+ * digests no longer referenced. truncated is set when either supplied output
+ * cap is insufficient, so a caller cannot mistake an incomplete plan for a
+ * successful sync. */
 int fc_sync_plan(const fc_manifest_t *m,
                  const char have[][FC_DIGEST_HEX + 1], int n_have,
                  char fetch[][FC_DIGEST_HEX + 1], int max_fetch,
                  char orphan[][FC_DIGEST_HEX + 1], int max_orphan,
-                 int *n_orphan);
+                 int *n_orphan, bool *truncated);
 
 bool fc_digest_valid(const char *s);
 
@@ -105,3 +107,10 @@ bool fc_play_next(const fc_manifest_t *m, fc_play_state_t *s, int *out_index);
  * malformed caller bounds also fall back to default_s. */
 int32_t fc_interval_clamp(int32_t requested_s, int32_t min_s,
                           int32_t max_s, int32_t default_s);
+
+/* Preserve an existing Album playback deadline across a network interruption.
+ * When no deadline exists, schedule one interval from now. Returning a past
+ * deadline is intentional: the wake loop will repaint locally on its next
+ * minimum-delay wake rather than allowing network frames to starve the Album. */
+int64_t fc_interrupt_resume_at(int64_t scheduled_at, int64_t now,
+                               int32_t interval_s);

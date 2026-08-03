@@ -86,22 +86,28 @@ static bool bounce_write_fd(int fd, const uint8_t *src, size_t len)
     return ok;
 }
 
-static size_t bounce_read_fd(int fd, uint8_t *dst, size_t cap)
+static bool bounce_read_fd(int fd, uint8_t *dst, size_t cap, size_t *out_len)
 {
+    if (out_len) *out_len = 0;
     uint8_t *chunk = heap_caps_malloc(SD_BOUNCE_BYTES, MALLOC_CAP_DMA);
-    if (!chunk) return 0;
+    if (!chunk) return false;
     size_t total = 0;
+    bool ok = true;
     while (total < cap) {
         size_t want = cap - total > SD_BOUNCE_BYTES ? SD_BOUNCE_BYTES : cap - total;
         ssize_t n = read(fd, chunk, want);
         if (n > 0) {
             memcpy(dst + total, chunk, (size_t)n);
             total += (size_t)n;
+            continue;
         }
-        if (n < (ssize_t)want) break;
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) ok = false;
+        break;                  /* EOF or a real read error */
     }
     free(chunk);
-    return total;
+    if (out_len) *out_len = total;
+    return ok;
 }
 
 bool collection_cache_load_manifest(const char *collection_id,
@@ -169,9 +175,15 @@ bool collection_cache_read_frame(const char *collection_id, const char *digest,
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!buf) buf = malloc(expect_bytes + 1);
     if (!buf) { close(fd); return false; }
-    size_t n = bounce_read_fd(fd, buf, expect_bytes + 1);
+    size_t n = 0;
+    bool read_ok = bounce_read_fd(fd, buf, expect_bytes + 1, &n);
     close(fd);
 
+    if (!read_ok) {
+        ESP_LOGW(TAG, "cached frame %s read failed; keeping it for retry", digest);
+        free(buf);
+        return false;
+    }
     if (!deck_digest_check(buf, n, expect_bytes, digest)) {
         ESP_LOGW(TAG, "cached frame %s fails verification; deleting", digest);
         free(buf);
