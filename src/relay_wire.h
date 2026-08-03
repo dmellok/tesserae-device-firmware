@@ -70,6 +70,25 @@ bool relay_build_pair_body(char *out, size_t cap,
                            int panel_w, int panel_h,
                            const char *model, const char *gamut);
 
+/* Build the POST .../status body.
+ *
+ * Pure so the BUTTON contract is host-testable, which matters because both of
+ * its rules fail silently on real hardware: a `button` sent without a
+ * `button_event_id` is dropped by the server (its time-window dedup fallback is
+ * unreliable over a polled relay), and an id that changes between posts of one
+ * wake double-fires the press.
+ *
+ * Optional fields are omitted rather than zero-filled: ip/rssi/battery when
+ * unknown, and button/button_event_id when no press is pending. button and
+ * button_event_id are emitted TOGETHER or not at all -- a name with no id is
+ * exactly the malformed pair the server cannot use. */
+bool relay_build_status_body(char *out, size_t cap,
+                             const char *device_id, const char *fw_version,
+                             int panel_w, int panel_h,
+                             const char *ip, int rssi,
+                             int battery_mv, int battery_pct,
+                             const char *button, uint64_t button_event_id);
+
 /* ---- device config (docs/relay/contract.md, "Device config") -------------
  *
  * Settings edited on the home instance reach a local device through its next

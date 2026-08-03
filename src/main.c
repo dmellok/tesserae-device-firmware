@@ -704,6 +704,51 @@ static void maybe_factory_reset_hold(button_id_t woke_btn, bool first_boot)
 }
 #endif
 
+/* One conditional relay frame poll, painting only a frame that decrypted AND
+ * matches this panel's geometry. Returns true when the glass changed.
+ *
+ * Shared by the once-per-wake cycle and the post-button window, so both agree
+ * on the rules that matter: the length is validated against bytes that passed
+ * the GCM tag rather than a plaintext header the relay could have altered, and
+ * the ETag is committed only after the frame actually reaches the glass. */
+static bool relay_poll_and_paint(void)
+{
+    uint8_t *plain = NULL, *owned = NULL;
+    size_t plain_len = 0;
+    bool painted = false;
+
+    switch (relay_fetch_frame(&plain, &plain_len, &owned)) {
+    case RELAY_FRAME_NEW:
+        if (plain_len == (size_t)EPD_BUF_BYTES) {
+            ESP_LOGI(TAG, "relay frame %u bytes; painting (~30 s)...",
+                     (unsigned)plain_len);
+            ESP_ERROR_CHECK(epd_port_init());
+            epd_init();
+            epd_display(plain);
+            epd_sleep();
+            rest_config_set_ui_state(UI_CONNECTED);
+            relay_commit_frame();   /* only now is the ETag truthful */
+            painted = true;
+        } else {
+            ESP_LOGE(TAG, "relay frame is %u bytes, panel expects %u; "
+                          "not painting",
+                     (unsigned)plain_len, (unsigned)EPD_BUF_BYTES);
+        }
+        free(owned);
+        break;
+    case RELAY_FRAME_UNCHANGED:
+        ESP_LOGI(TAG, "relay frame unchanged (304); keeping the image");
+        break;
+    case RELAY_FRAME_NONE:
+        ESP_LOGI(TAG, "relay has no frame yet (204)");
+        break;
+    default:
+        ESP_LOGW(TAG, "relay frame fetch failed");
+        break;
+    }
+    return painted;
+}
+
 void app_main(void)
 {
     /* Park the SD card's chip-select before ANY code touches the shared SPI
@@ -1712,47 +1757,22 @@ void app_main(void)
         }
 
         if (relay_ready()) {
-            /* A manual refresh must actually repaint. The mailbox only changes
-             * when home publishes, so without dropping the cached ETag the poll
-             * just 304s and the button appears dead -- the same reason the home
-             * path clears its ETag on a button wake. In RAM only: the next timer
-             * wake resumes normal 304 dedup. */
+            /* A press is now DELIVERED (it rides the status body below) rather
+             * than merely forcing a local repaint, so the cached ETag stays:
+             * home renders the press and publishes a NEW frame, which the
+             * window below picks up as a 200. Clearing it here would instead
+             * re-download and repaint the CURRENT image -- ~30 s of e-paper
+             * that would consume most of the button window before the real
+             * answer arrived. Without buttons compiled in there is nothing to
+             * deliver, so keep the old force-repaint behaviour. */
+#ifdef BOARD_HAS_BUTTONS
+            if (woke_by_button && rest_config_get()->button_wake_s <= 0)
+                rest_config_set_relay_etag("");
+#else
             if (woke_by_button) rest_config_set_relay_etag("");
+#endif
 
-            uint8_t *plain = NULL, *owned = NULL;
-            size_t plain_len = 0;
-            switch (relay_fetch_frame(&plain, &plain_len, &owned)) {
-            case RELAY_FRAME_NEW:
-                /* Validate the DECRYPTED length against this panel's geometry
-                 * before handing it to the driver: the metadata headers are
-                 * plaintext and therefore untrusted, whereas this length comes
-                 * from bytes that passed the GCM tag. */
-                if (plain_len == (size_t)EPD_BUF_BYTES) {
-                    ESP_LOGI(TAG, "relay frame %u bytes; painting (~30 s)...",
-                             (unsigned)plain_len);
-                    ESP_ERROR_CHECK(epd_port_init());
-                    epd_init();
-                    epd_display(plain);
-                    epd_sleep();
-                    rest_config_set_ui_state(UI_CONNECTED);
-                    relay_commit_frame();   /* only now is the ETag truthful */
-                } else {
-                    ESP_LOGE(TAG, "relay frame is %u bytes, panel expects %u; "
-                                  "not painting",
-                             (unsigned)plain_len, (unsigned)EPD_BUF_BYTES);
-                }
-                free(owned);
-                break;
-            case RELAY_FRAME_UNCHANGED:
-                ESP_LOGI(TAG, "relay frame unchanged (304); keeping the image");
-                break;
-            case RELAY_FRAME_NONE:
-                ESP_LOGI(TAG, "relay has no frame yet (204)");
-                break;
-            default:
-                ESP_LOGW(TAG, "relay frame fetch failed");
-                break;
-            }
+            relay_poll_and_paint();
 
             /* Telemetry on the same wake, so the Devices UI shows battery /
              * signal / firmware / last-seen for a panel it can never reach. */
@@ -1781,8 +1801,75 @@ void app_main(void)
             default:
                 break;                  /* unchanged: nothing worth a line */
             }
+
+#ifdef BOARD_HAS_BUTTONS
+            /* Post-button window over the relay. Delivery is store-and-forward:
+             * home only learns of the press on its next relay poll (up to ~30 s
+             * for the first, then ~3 s for about a minute), renders, and uploads
+             * the frame. So the panel must STAY AWAKE and keep polling, or the
+             * answer to a press would not land until the next timer wake.
+             *
+             * The press is NOT resent just because no frame arrived yet -- it is
+             * already sitting in the latest-only status slot, and every status
+             * post this wake repeats it verbatim (see relay.c). Only a genuinely
+             * new press bumps the event id. */
+            if (woke_by_button && rest_config_get()->button_wake_s > 0 &&
+                !relay_pairing_revoked()) {
+                int32_t win_s = rest_config_get()->button_wake_s;
+                ESP_LOGI(TAG, "relay button window: up to %ld s awake, polling "
+                              "for the rendered frame", (long)win_s);
+                buttons_poll_init();
+                int64_t hard_cap = esp_timer_get_time() +
+                                   BUTTON_WINDOW_CAP_S * 1000000LL;
+                int64_t deadline = esp_timer_get_time() +
+                                   (int64_t)win_s * 1000000;
+                int64_t next_poll = 0;
+                while (esp_timer_get_time() < deadline &&
+                       esp_timer_get_time() < hard_cap &&
+                       !relay_pairing_revoked()) {
+                    button_id_t b = buttons_poll_pressed();
+                    if (b != BTN_NONE) {
+                        /* A NEW press: fresh id, and repost at once so home
+                         * sees it on its very next relay poll. */
+                        uint64_t ev = ++s_button_event_seq;
+                        ESP_LOGI(TAG, "window press '%s' (event %llu)",
+                                 button_name(b), (unsigned long long)ev);
+                        rest_set_button(button_name(b), ev);
+                        char wip[16] = {0};
+                        wifi_manager_get_sta_ip(wip, sizeof wip);
+                        relay_post_status(current_rssi(), wip, pw, ph,
+                                          FW_VERSION);
+                        win_s = rest_config_get()->button_wake_s;
+                        if (win_s <= 0) break;
+                        deadline = esp_timer_get_time() +
+                                   (int64_t)win_s * 1000000;
+                        next_poll = 0;          /* check for the render now */
+                    }
+                    if (esp_timer_get_time() >= next_poll) {
+                        if (relay_poll_and_paint()) cfg_dirty = true;
+                        next_poll = esp_timer_get_time() +
+                                    RELAY_BUTTON_POLL_MS * 1000LL;
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                }
+                ESP_LOGI(TAG, "relay button window closed");
+            }
+#endif
         }
 
+        /* A revoked pairing is terminal, not transient (see relay.h). Drop it,
+         * leave the last image on the glass, and reopen setup so a fresh code
+         * re-pairs cleanly -- polling a dead mailbox forever would otherwise
+         * look identical to "home has published nothing". */
+        if (relay_pairing_revoked()) {
+            relay_forget_revoked_pairing();
+            rest_set_button(NULL, 0);
+            wifi_sta_stop();
+            run_provisioning_then_reboot("Relay pairing was revoked");
+            return;   /* not reached */
+        }
+
+        rest_set_button(NULL, 0);   /* don't leak the press into a later wake */
         if (cfg_dirty) rest_config_save();
         wifi_sta_stop();
         sleep_forever_or_until_timer();

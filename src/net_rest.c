@@ -70,6 +70,14 @@ void rest_set_button(const char *name, uint64_t event_id)
     button_report_set(&s_button, name, event_id);
 }
 
+bool rest_pending_button(char *name, size_t cap, uint64_t *event_id)
+{
+    if (!button_report_pending(&s_button)) return false;
+    if (name && cap) snprintf(name, cap, "%s", s_button.name);
+    if (event_id) *event_id = s_button.event_id;
+    return true;
+}
+
 /* Deck cache capability + SD-paint report (sticky for this wake; see deck.h).
  * s_deck_capacity == 0 means no card mounted -> the capability object is
  * omitted entirely and a deck-unaware server sees exactly the old bodies. */

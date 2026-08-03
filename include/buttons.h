@@ -73,6 +73,17 @@ static inline const char *button_name(button_id_t b)
  * keep resetting the countdown, so this bounds the total. */
 #define BUTTON_WINDOW_CAP_S 300
 
+/* How often the post-button window re-polls the RELAY frame mailbox.
+ *
+ * A relay press is store-and-forward: home notices it on its next relay poll
+ * (up to ~30 s for the first press, then ~3 s for about a minute), renders,
+ * and uploads. Matching home's fast cadence keeps the panel's latency dominated
+ * by that pipeline rather than by our own polling gap, and each poll is a
+ * conditional GET that 304s cheaply until the new frame actually exists.
+ *
+ * The REST path needs no equivalent: it re-fetches synchronously per press. */
+#define RELAY_BUTTON_POLL_MS 3000
+
 /* Arm every defined button as an ext1 wake source (active-low; RTC pull-up so
  * the idle level is high and won't spuriously wake us). Call on the sleep path. */
 static inline void buttons_arm_ext1(void)

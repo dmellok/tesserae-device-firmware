@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
@@ -13,6 +14,7 @@
 #include "battery.h"
 #include "epd_driver.h"     /* EPD_WIDTH / EPD_HEIGHT via app_config */
 #include "image_fetcher.h"
+#include "net_rest.h"   /* the one pending button report */
 #include "relay_crypto.h"
 #include "relay_wire.h"
 #include "rest_config.h"
@@ -30,6 +32,60 @@ static char s_pending_etag[80];
  * previous boot could suppress a fetch that is genuinely due. */
 static char s_advertised_cfg_etag[80];
 static bool s_have_advertised_cfg;
+
+/* Consecutive wakes whose device-token requests were answered 401.
+ *
+ * Since server v0.240.0 a revoked or superseded pairing deletes the token
+ * record, so 401 from ANY device-token route unambiguously means "this pairing
+ * is gone" -- the old failure mode, where a revoked panel saw an empty-mailbox
+ * 204 forever, no longer exists. Unpairing is nonetheless costly and
+ * user-visible (it needs a fresh code typed in), so require the answer twice
+ * ACROSS WAKES before acting on it, which a flaky captive portal or middlebox
+ * injecting a single 401 cannot satisfy.
+ *
+ * RTC memory, not NVS: it survives deep sleep, which is all "across wakes"
+ * means, and it costs no flash write on a path that is meant to be rare. A
+ * power cycle resets it, which errs toward staying paired. */
+RTC_DATA_ATTR static uint32_t s_auth_fail_streak;
+
+/* One vote per wake. A wake makes up to THREE device-token requests (frame,
+ * status, config); without this, a single revoked wake would score 3 and unpair
+ * immediately, collapsing "two consecutive wakes" into "one wake" and handing
+ * a transient 401 the power to unpair on the spot. RAM, so it resets each
+ * boot -- which is exactly the wake boundary being counted. */
+static bool s_auth_noted_this_wake;
+
+/* Fold one device-token response into the revocation streak. 401 counts; any
+ * answer the relay could only give a VALID token clears it. Anything else
+ * (timeout, 5xx, DNS) is left alone -- it says nothing about the token. */
+static void note_auth(int status)
+{
+    if (status == 401) {
+        if (s_auth_noted_this_wake) return;
+        s_auth_noted_this_wake = true;
+        s_auth_fail_streak++;
+        ESP_LOGW(TAG, "relay answered 401 (streak %u); pairing may be revoked",
+                 (unsigned)s_auth_fail_streak);
+    } else if (status == 304 || (status >= 200 && status < 300)) {
+        /* The relay only serves these to a live token, so the pairing is good
+         * whatever an earlier request in this wake looked like. */
+        s_auth_fail_streak = 0;
+        s_auth_noted_this_wake = false;
+    }
+}
+
+bool relay_pairing_revoked(void)
+{
+    return s_auth_fail_streak >= 2;
+}
+
+void relay_forget_revoked_pairing(void)
+{
+    ESP_LOGW(TAG, "relay pairing revoked; clearing mailbox identity and key");
+    rest_config_clear_relay();
+    rest_config_save();
+    s_auth_fail_streak = 0;
+}
 
 #define RELAY_JSON_MAX   2048    /* pairing + status replies are small */
 #define RELAY_HTTP_MS    10000
@@ -263,6 +319,7 @@ relay_frame_result_t relay_fetch_frame(uint8_t **frame, size_t *len,
     esp_err_t err = image_fetch_conditional(url, c->relay_token,
                                             c->relay_etag, etag, sizeof etag,
                                             &status, &img);
+    note_auth(status);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "frame fetch failed (http %d): %s", status,
                  esp_err_to_name(err));
@@ -317,34 +374,43 @@ bool relay_post_status(int rssi, const char *ip, uint16_t panel_w,
     if (!rest_config_relay_ready()) return false;
     const rest_config_t *c = rest_config_get();
 
-    cJSON *o = cJSON_CreateObject();
-    if (!o) return false;
-    /* Same shape a REST client posts to a home /status endpoint, so the home
-     * instance can run it through its normal heartbeat pipeline unchanged. */
-    cJSON_AddStringToObject(o, "device_id", c->relay_device);
-    cJSON_AddStringToObject(o, "fw_version", fw_version ? fw_version : "");
-    cJSON_AddNumberToObject(o, "panel_w", panel_w);
-    cJSON_AddNumberToObject(o, "panel_h", panel_h);
-    if (ip && ip[0]) cJSON_AddStringToObject(o, "ip", ip);
-    if (rssi != 0) cJSON_AddNumberToObject(o, "rssi", rssi);
+    /* A relay panel's frame GET terminates at the relay, so the REST "?button="
+     * query never reaches home. The press rides the status body instead
+     * (docs/relay/contract.md, "Buttons over the relay").
+     *
+     * button_event_id is REQUIRED here, not optional as on REST: the server's
+     * time-window dedup fallback is unreliable over a polled transport.
+     *
+     * The relay's status slot is LATEST-ONLY, so reading the one pending report
+     * means every status post of this wake -- including a later idle heartbeat
+     * -- repeats the same name and id, and cannot overwrite a press home has
+     * not pulled yet. The id is what makes repeating safe: home dedups on it,
+     * so a repeat never double-fires, and only a NEW press bumps the counter. */
+    char btn[16] = {0};
+    uint64_t btn_ev = 0;
+    bool have_btn = rest_pending_button(btn, sizeof btn, &btn_ev);
+
     int mv = battery_read_mv();
-    if (mv > 0) {
-        cJSON_AddNumberToObject(o, "battery_mv", mv);
-        cJSON_AddNumberToObject(o, "battery_pct", battery_pct(mv));
+    char body[512];
+    if (!relay_build_status_body(body, sizeof body, c->relay_device,
+                                 fw_version, panel_w, panel_h, ip, rssi,
+                                 mv, mv > 0 ? battery_pct(mv) : 0,
+                                 have_btn ? btn : NULL, btn_ev)) {
+        ESP_LOGE(TAG, "could not build the status body");
+        return false;
     }
-    char *body = cJSON_PrintUnformatted(o);
-    cJSON_Delete(o);
-    if (!body) return false;
+    if (have_btn)
+        ESP_LOGI(TAG, "reporting button '%s' (event %llu) over the relay",
+                 btn, (unsigned long long)btn_ev);
 
     char url[320];
     if (!relay_mailbox_url(url, sizeof url, c->relay_url, c->relay_install,
                            c->relay_device, "status")) {
-        free(body);
         return false;
     }
     char resp[RELAY_JSON_MAX];
     int st = relay_json(url, "POST", body, c->relay_token, resp, sizeof resp);
-    free(body);
+    note_auth(st);
 
     if (st < 200 || st >= 300) {
         ESP_LOGW(TAG, "status post -> %d", st);
@@ -394,6 +460,7 @@ relay_config_result_t relay_sync_config(void)
     esp_err_t err = image_fetch_conditional(url, c->relay_token,
                                             c->relay_config_etag,
                                             etag, sizeof etag, &status, &doc);
+    note_auth(status);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "config fetch failed (http %d): %s", status,
                  esp_err_to_name(err));

@@ -127,6 +127,17 @@ rest_status_t rest_register(uint16_t panel_w, uint16_t panel_h,
  * body can deliver {"button","button_event_id"} as a fallback. */
 void rest_set_button(const char *name, uint64_t event_id);
 
+/* Read the press still pending delivery, if any.
+ *
+ * Exists so the RELAY transport can report the same press with the same event
+ * id as the REST path would. A relay panel's frame GET terminates at the relay,
+ * so the ?button= query contract cannot reach home; the press rides the status
+ * body instead (docs/relay/contract.md, "Buttons over the relay"). Reading the
+ * one pending report -- rather than relay.c keeping its own -- is what makes
+ * "same counter, and the id never changes within a wake" true by construction
+ * instead of by convention. */
+bool rest_pending_button(char *name, size_t cap, uint64_t *event_id);
+
 #if BOARD_HAS_TOUCH
 /* Report a touch stroke with the subsequent frame GET (v1 fallback path).
  * Coordinates are in the served frame's pixel space; x1/y1 is the stroke end

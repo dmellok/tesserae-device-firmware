@@ -92,6 +92,49 @@ bool relay_build_pair_body(char *out, size_t cap,
     return true;
 }
 
+bool relay_build_status_body(char *out, size_t cap,
+                             const char *device_id, const char *fw_version,
+                             int panel_w, int panel_h,
+                             const char *ip, int rssi,
+                             int battery_mv, int battery_pct,
+                             const char *button, uint64_t button_event_id)
+{
+    if (!out || !cap) return false;
+    out[0] = '\0';
+
+    cJSON *o = cJSON_CreateObject();
+    if (!o) return false;
+    /* Same shape a REST client posts to a home /status endpoint, so home can
+     * run it through its normal heartbeat pipeline unchanged. */
+    bool ok = cJSON_AddStringToObject(o, "device_id", device_id ? device_id : "") &&
+              cJSON_AddStringToObject(o, "fw_version", fw_version ? fw_version : "");
+    if (ok && panel_w > 0) ok = cJSON_AddNumberToObject(o, "panel_w", panel_w);
+    if (ok && panel_h > 0) ok = cJSON_AddNumberToObject(o, "panel_h", panel_h);
+    if (ok && ip && ip[0]) ok = cJSON_AddStringToObject(o, "ip", ip);
+    if (ok && rssi != 0)   ok = cJSON_AddNumberToObject(o, "rssi", rssi);
+    if (ok && battery_mv > 0) {
+        ok = cJSON_AddNumberToObject(o, "battery_mv", battery_mv) &&
+             cJSON_AddNumberToObject(o, "battery_pct", battery_pct);
+    }
+    /* Both or neither -- see the header. The id travels as a JSON number and
+     * the seeder keeps it under 2^53, so the double round-trip is exact. */
+    if (ok && button && button[0]) {
+        ok = cJSON_AddStringToObject(o, "button", button) &&
+             cJSON_AddNumberToObject(o, "button_event_id",
+                                     (double)button_event_id);
+    }
+
+    char *body = ok ? cJSON_PrintUnformatted(o) : NULL;
+    cJSON_Delete(o);
+    if (!body) return false;
+
+    size_t n = strlen(body);
+    if (n >= cap) { cJSON_free(body); return false; }
+    memcpy(out, body, n + 1);
+    cJSON_free(body);
+    return true;
+}
+
 bool relay_parse_config_etag(const char *json, size_t len,
                              char *out, size_t cap)
 {

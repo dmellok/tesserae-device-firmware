@@ -96,6 +96,27 @@ relay_frame_result_t relay_fetch_frame(uint8_t **frame, size_t *len,
  * wake rather than skipped by a 304. */
 void relay_commit_frame(void);
 
+/* True once the relay has answered a device-token route (frame GET, config GET
+ * or status POST) with 401 on two consecutive wakes.
+ *
+ * Since server v0.240.0, revoking a panel -- from the Cloud relay page or by
+ * deleting the device -- deletes its token record on the relay, and re-pairing
+ * invalidates the previous token. So 401 is now unambiguous: this pairing is
+ * gone. It is NOT transient and must never be retried. (204 on the frame GET
+ * still means only "paired, nothing published yet" -- keep the image.)
+ *
+ * Two wakes rather than one is deliberate: unpairing costs the operator a
+ * physical trip to type a fresh code, so a single 401 injected by a captive
+ * portal or middlebox should not trigger it. Two is the cap, not a starting
+ * point -- a genuinely revoked panel must not keep polling a dead mailbox. */
+bool relay_pairing_revoked(void);
+
+/* Drop the stored pairing (token, frame key, install/device ids) after
+ * relay_pairing_revoked(). The caller keeps the last image on the glass and
+ * reopens setup so a fresh code re-pairs cleanly. relay_url survives, being
+ * operator configuration rather than pairing state. */
+void relay_forget_revoked_pairing(void);
+
 /* POST the device's status JSON to the mailbox (battery, RSSI, fw_version ...).
  * Body is the SAME shape a REST client posts to a home /status endpoint, so the
  * home instance can feed it through its normal heartbeat pipeline. Plaintext by

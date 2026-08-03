@@ -351,6 +351,69 @@ static void test_pair_body(void)
     CHECK(tiny[0] == '\0');
 }
 
+/* ---- status body + buttons over the relay -------------------------------- */
+
+static void test_status_body(void)
+{
+    char b[512];
+
+    /* No press: neither key appears. A relay panel posts status on every wake,
+     * so an accidental empty "button" would fire a phantom press each time. */
+    CHECK(relay_build_status_body(b, sizeof b, "dev1", "1.10.0", 800, 480,
+                                  "192.168.1.9", -50, 4100, 92, NULL, 0));
+    CHECK(strstr(b, "\"device_id\":\"dev1\"") != NULL);
+    CHECK(strstr(b, "\"fw_version\":\"1.10.0\"") != NULL);
+    CHECK(strstr(b, "\"button\"") == NULL);
+    CHECK(strstr(b, "\"button_event_id\"") == NULL);
+
+    /* A press: BOTH fields, since the server drops a button with no event id
+     * (its time-window dedup fallback is unreliable over a polled relay). */
+    CHECK(relay_build_status_body(b, sizeof b, "dev1", "1.10.0", 800, 480,
+                                  "192.168.1.9", -50, 4100, 92, "refresh", 42));
+    CHECK(strstr(b, "\"button\":\"refresh\"") != NULL);
+    CHECK(strstr(b, "\"button_event_id\":42") != NULL);
+
+    /* Repeating a post of the same wake must reproduce the id EXACTLY -- the
+     * relay's status slot is latest-only, so an idle heartbeat that changed or
+     * dropped the id would either double-fire or lose an unpulled press. */
+    char again[512];
+    CHECK(relay_build_status_body(again, sizeof again, "dev1", "1.10.0",
+                                  800, 480, "192.168.1.9", -50, 4100, 92,
+                                  "refresh", 42));
+    CHECK(strcmp(b, again) == 0);
+
+    /* An empty name is "no press", never a button with a bare id. */
+    CHECK(relay_build_status_body(b, sizeof b, "dev1", "1.10.0", 800, 480,
+                                  NULL, 0, 0, 0, "", 7));
+    CHECK(strstr(b, "\"button\"") == NULL);
+    CHECK(strstr(b, "\"button_event_id\"") == NULL);
+
+    /* Unknown optionals are omitted rather than sent as zeroes, so home does
+     * not record a 0 mV battery or a 0 dBm signal. */
+    CHECK(strstr(b, "\"ip\"") == NULL);
+    CHECK(strstr(b, "\"rssi\"") == NULL);
+    CHECK(strstr(b, "\"battery_mv\"") == NULL);
+
+    /* The id is seeded high to avoid colliding with a previous boot's counter
+     * -- main.c uses ((esp_random() & 0xFFFFF) << 32) | esp_random(), so the
+     * largest value it can ever produce is 2^52-1. Pin that it still prints as
+     * an exact integer: cJSON formats numbers with %g and falls back to
+     * SCIENTIFIC NOTATION above roughly 2^53 (9007199254740991 emits as
+     * 9.00719925474099e+15), which the server would read as a different id --
+     * silently breaking dedup. This asserts the real seeder ceiling, so
+     * widening that mask trips the test rather than the field. */
+    CHECK(relay_build_status_body(b, sizeof b, "d", "v", 0, 0, NULL, 0, 0, 0,
+                                  "left", 4503599627370495ULL));
+    CHECK(strstr(b, "\"button_event_id\":4503599627370495") != NULL);
+
+    /* Refuse rather than truncate: a half-written JSON body would be rejected
+     * by the server and the press lost with no local signal. */
+    char tiny[16];
+    CHECK(!relay_build_status_body(tiny, sizeof tiny, "dev1", "1.10.0",
+                                   800, 480, NULL, 0, 0, 0, "refresh", 42));
+    CHECK(tiny[0] == '\0');
+}
+
 /* ---- device config (contract: "Device config") --------------------------- */
 
 static void test_parse_config_etag(void)
@@ -439,6 +502,7 @@ int main(void)
     test_parse_ready();
     test_mailbox_url();
     test_pair_body();
+    test_status_body();
     test_parse_config_etag();
     test_parse_config();
     printf("%s: %d checks, %d failures\n", fails ? "FAIL" : "ok", tests, fails);
