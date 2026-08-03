@@ -15,6 +15,10 @@ dependency, then runs RFC 8032 + Tesserae fixture vectors):
 
     sh tools/test_ota_verify.sh
 
+Frame-cache collection manifest, cache differ, and offline Album playback:
+
+    sh tools/test_frame_collection.sh
+
 
 Unit Testing is a software testing method by which individual units of
 source code, sets of one or more MCU program modules together with associated

@@ -51,6 +51,9 @@ jobs:
       - name: Deck cache logic tests
         run: sh tools/test_deck.sh
 
+      - name: Frame-cache collection and Album playback tests
+        run: sh tools/test_frame_collection.sh
+
       - name: Overlay logic tests
         run: sh tools/test_overlay.sh
 

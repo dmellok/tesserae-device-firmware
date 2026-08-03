@@ -84,10 +84,42 @@ bool rest_pending_button(char *name, size_t cap, uint64_t *event_id)
 static uint64_t s_deck_capacity;
 static char     s_deck_page[DECK_ID_CAP];
 static char     s_deck_ver[DECK_VERSION_CAP];
+static uint64_t s_frame_capacity;
+static uint16_t s_frame_max;
+static char     s_collection_id[FC_ID_CAP];
+static char     s_collection_ver[FC_VERSION_CAP];
+static char     s_collection_state[12];
+static uint16_t s_collection_cached;
+static uint32_t s_collection_total;
 
 void rest_set_deck_capability(uint64_t capacity_bytes)
 {
     s_deck_capacity = capacity_bytes;
+}
+
+void rest_set_frame_cache_capability(uint64_t capacity_bytes, uint16_t max_frames)
+{
+    s_frame_capacity = capacity_bytes;
+    s_frame_max = max_frames;
+}
+
+void rest_set_collection_report(const char *id, const char *version,
+                                uint16_t cached, uint32_t total,
+                                const char *state)
+{
+    if (!id || !id[0] || !version || !version[0] || !state || !state[0]) {
+        s_collection_id[0] = '\0';
+        s_collection_ver[0] = '\0';
+        s_collection_state[0] = '\0';
+        s_collection_cached = 0;
+        s_collection_total = 0;
+        return;
+    }
+    snprintf(s_collection_id, sizeof s_collection_id, "%s", id);
+    snprintf(s_collection_ver, sizeof s_collection_ver, "%s", version);
+    snprintf(s_collection_state, sizeof s_collection_state, "%s", state);
+    s_collection_cached = cached;
+    s_collection_total = total;
 }
 
 void rest_set_deck_painted(const char *page_id, const char *version)
@@ -114,6 +146,30 @@ static void add_deck_capability(cJSON *o)
     uint64_t cap = s_deck_capacity < DECK_CAPACITY_CAP ? s_deck_capacity
                                                        : DECK_CAPACITY_CAP;
     cJSON_AddNumberToObject(dc, "capacity_bytes", (double)cap);
+}
+
+static void add_frame_cache_capability(cJSON *o)
+{
+    if (!s_frame_capacity || !s_frame_max) return;
+    cJSON *fc = cJSON_AddObjectToObject(o, "frame_cache");
+    if (!fc) return;
+    cJSON_AddNumberToObject(fc, "schema", 1);
+    uint64_t cap = s_frame_capacity < DECK_CAPACITY_CAP ? s_frame_capacity
+                                                        : DECK_CAPACITY_CAP;
+    cJSON_AddNumberToObject(fc, "capacity_bytes", (double)cap);
+    cJSON_AddNumberToObject(fc, "max_frames", s_frame_max);
+}
+
+static void add_collection_report(cJSON *o)
+{
+    if (!s_collection_id[0]) return;
+    cJSON *c = cJSON_AddObjectToObject(o, "collection");
+    if (!c) return;
+    cJSON_AddStringToObject(c, "id", s_collection_id);
+    cJSON_AddStringToObject(c, "version", s_collection_ver);
+    cJSON_AddNumberToObject(c, "cached", s_collection_cached);
+    cJSON_AddNumberToObject(c, "total", (double)s_collection_total);
+    cJSON_AddStringToObject(c, "state", s_collection_state);
 }
 
 #if BOARD_HAS_TOUCH
@@ -449,6 +505,7 @@ static char *identity_body(uint16_t panel_w, uint16_t panel_h,
 #endif
     /* Register advertises capabilities; discover stays identity-only. */
     if (advertise_ota) add_deck_capability(o);
+    if (advertise_ota) add_frame_cache_capability(o);
 #if BOARD_OVERLAY_PARTIAL
     if (advertise_ota) add_overlay_capability(o);
     if (advertise_ota) add_proto_capability(o);
@@ -637,6 +694,30 @@ rest_status_t rest_get_deck_manifest(char *buf, size_t cap, size_t *out_len,
     const char *rbody = NULL;
     rest_status_t st = do_request(HTTP_METHOD_GET, url, hdrs, 1, NULL, &rbody, timeout_ms);
     if (st != REST_OK) return st;   /* 204 = no deck bound (caller handles) */
+    if (s_overflow || s_rx_len == 0 || s_rx_len >= cap) return REST_HTTP_ERR;
+    memcpy(buf, rbody, s_rx_len);
+    buf[s_rx_len] = '\0';
+    if (out_len) *out_len = s_rx_len;
+    return REST_OK;
+}
+
+rest_status_t rest_get_collection_manifest(char *buf, size_t cap,
+                                           size_t *out_len,
+                                           uint32_t timeout_ms)
+{
+    if (out_len) *out_len = 0;
+    const rest_config_t *c = rest_config_get();
+    char url[256];
+    snprintf(url, sizeof url, "%s/api/v1/device/%s/collection",
+             c->server_url, rest_config_device_id());
+
+    char auth[300];
+    snprintf(auth, sizeof auth, "Bearer %s", c->device_token);
+    rest_hdr_t hdrs[] = { { "Authorization", auth } };
+    const char *rbody = NULL;
+    rest_status_t st = do_request(HTTP_METHOD_GET, url, hdrs, 1, NULL,
+                                  &rbody, timeout_ms);
+    if (st != REST_OK) return st;
     if (s_overflow || s_rx_len == 0 || s_rx_len >= cap) return REST_HTTP_ERR;
     memcpy(buf, rbody, s_rx_len);
     buf[s_rx_len] = '\0';
@@ -901,6 +982,7 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         cJSON_AddNumberToObject(o, "button_event_id", (double)s_button.event_id);
     }
     add_deck_capability(o);
+    add_frame_cache_capability(o);
 #if BOARD_OVERLAY_PARTIAL
     add_overlay_capability(o);
     add_proto_capability(o);
@@ -918,6 +1000,7 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         cJSON_AddStringToObject(o, "deck_page_id", s_deck_page);
         cJSON_AddStringToObject(o, "deck_version", s_deck_ver);
     }
+    add_collection_report(o);
     char *body = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     if (!body) return REST_NET_ERR;
@@ -1005,6 +1088,18 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     if (cJSON_IsObject(deck)) {
         out->deck_present = true;
         json_get_str(deck, "version", out->deck_version, sizeof out->deck_version);
+    }
+    cJSON *collection = cJSON_GetObjectItemCaseSensitive(r, "collection");
+    if (cJSON_IsObject(collection)) {
+        out->collection_present = true;
+        json_get_str(collection, "id", out->collection_id,
+                     sizeof out->collection_id);
+        json_get_str(collection, "kind", out->collection_kind,
+                     sizeof out->collection_kind);
+        json_get_str(collection, "version", out->collection_version,
+                     sizeof out->collection_version);
+        if (!out->collection_id[0] || !out->collection_kind[0] ||
+            !out->collection_version[0]) out->collection_present = false;
     }
 #if TESSERAE_OTA_CAPABILITY_ENABLED
     cJSON *ota = cJSON_GetObjectItemCaseSensitive(r, "ota");
