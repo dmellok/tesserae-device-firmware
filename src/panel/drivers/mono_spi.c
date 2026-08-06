@@ -242,6 +242,48 @@ static const uint8_t LUT_BB_4G[42] = {   /* R24 */
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
+/* Uniform drive-time gain for the register LUTs, in percent (100 = as
+ * published by GoodDisplay).
+ *
+ * A batch that renders FAINT is under-driven, not mis-driven: the plane
+ * encoding and image are correct, the particles simply have not been pushed
+ * far enough. VDH/VDL are already at maximum (PWR_V 0x3f/0x3f), so the only
+ * remaining knob is how long each phase runs.
+ *
+ * Applied to ALL FIVE LUTs identically -- VCOM as well as WW/BW/WB/BB. The
+ * common plane must stay time-aligned with the pixel planes; stretching the
+ * pixel LUTs alone desynchronises VCOM and makes the result worse, not
+ * darker. One shared factor is what makes that impossible to get wrong.
+ *
+ * Cost is refresh time, which grows in proportion. Override per build with
+ * -DGRAY4_LUT_GAIN_PCT=150. */
+#ifndef GRAY4_LUT_GAIN_PCT
+#define GRAY4_LUT_GAIN_PCT 100
+#endif
+
+/* Send one 42-byte register LUT, scaling only the four phase-duration bytes of
+ * each 6-byte group. The level byte (which rail each phase drives to) and the
+ * repeat count are structural and must not be touched. */
+static void gray_send_lut(uint8_t cmd, const uint8_t *lut)
+{
+#if GRAY4_LUT_GAIN_PCT == 100
+    cmd_data(cmd, lut, 42);
+#else
+    uint8_t scaled[42];
+    for (int g = 0; g < 7; g++) {
+        const uint8_t *src = lut + g * 6;
+        uint8_t *dst = scaled + g * 6;
+        dst[0] = src[0];                      /* phase level selector */
+        for (int ph = 1; ph <= 4; ph++) {     /* four phase durations */
+            int v = src[ph] * GRAY4_LUT_GAIN_PCT / 100;
+            dst[ph] = (uint8_t)(v > 255 ? 255 : v);
+        }
+        dst[5] = src[5];                      /* repeat count */
+    }
+    cmd_data(cmd, scaled, 42);
+#endif
+}
+
 static const uint8_t BTST_4G[] = {0x17, 0x17, 0x28, 0x17};
 /* 0x3F = the proven mono 0x1F plus the REG bit (LUTs from registers). The GD
  * demo's 0xBF also sets PSR bit7 -- a RES[1:0] resolution-select bit on this
@@ -408,12 +450,12 @@ static void mono_init(void)
     cmd_data(TCON, TCON_V,  sizeof TCON_V);
     cmd_data(0x82, VDCS_4G, sizeof VDCS_4G);
     cmd_data(CDI,  CDI_4G,  sizeof CDI_4G);
-    cmd_data(0x20, LUT_VCOM_4G, sizeof LUT_VCOM_4G);
-    cmd_data(0x21, LUT_WW_4G,   sizeof LUT_WW_4G);
-    cmd_data(0x22, LUT_BW_4G,   sizeof LUT_BW_4G);
-    cmd_data(0x23, LUT_WB_4G,   sizeof LUT_WB_4G);
-    cmd_data(0x24, LUT_BB_4G,   sizeof LUT_BB_4G);
-    cmd_data(0x25, LUT_WW_4G,   sizeof LUT_WW_4G);   /* border */
+    gray_send_lut(0x20, LUT_VCOM_4G);
+    gray_send_lut(0x21, LUT_WW_4G);
+    gray_send_lut(0x22, LUT_BW_4G);
+    gray_send_lut(0x23, LUT_WB_4G);
+    gray_send_lut(0x24, LUT_BB_4G);
+    gray_send_lut(0x25, LUT_WW_4G);   /* border */
     ESP_LOGI(TAG, "init complete (4-gray register LUTs)");
 #else
     cmd_data(PWR, PWR_V, sizeof PWR_V);
