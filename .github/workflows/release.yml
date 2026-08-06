@@ -43,6 +43,10 @@ jobs:
           - { env: waveshare-photopainter-73, kind: waveshare_photopainter_73 }
           - { env: seeed-reterminal-e1001,    kind: seeed_reterminal_e1001 }
           - { env: seeed-reterminal-e1001-gray, kind: seeed_reterminal_e1001_gray }
+          # Legacy glass: same frame bytes, register-LUT waveform. Distinct
+          # kind because kind names the OTA lineage AND the signing input
+          # file (<kind>.app.bin) that all targets merge into one directory.
+          - { env: seeed-reterminal-e1001-gray-legacy, kind: seeed_reterminal_e1001_gray_legacy }
           - { env: seeed-reterminal-e1002,    kind: seeed_reterminal_e1002 }
           - { env: seeed-reterminal-e1003,    kind: seeed_reterminal_e1003 }
           - { env: seeed-reterminal-e1004,    kind: seeed_reterminal_e1004 }
