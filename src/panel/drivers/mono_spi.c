@@ -351,20 +351,41 @@ static const uint8_t PLL_4G[]  = {0x06};        /* 50 Hz */
 static const uint8_t VDCS_4G[] = {0x12};
 static const uint8_t CDI_4G[]  = {0x10, 0x07};
 
-/* Plane encoding for the GEN2 built-in OTP 4-gray waveform, mapped
- * EMPIRICALLY on a production E1001 (bench 2026-07-23; the GD register-LUT
- * table does NOT apply to the OTP waveform -- ends were swapped):
+/* Plane encoding. The two waveform paths need DIFFERENT tables, and using one
+ * for the other inverts the image -- which is what shipped: the register-LUT
+ * target was fed the OTP encoding, so pure white and pure black came out
+ * swapped while the two mid-greys passed through untouched. A dithered photo is
+ * mostly extremes, so it read as a negative.
+ *
+ * Register LUTs (GoodDisplay GDEY075T7 4-gray demo, corroborated by GxEPD2_4G):
  *
  *        white  light-gray  dark-gray  black         (g = 3    2    1    0)
+ *   0x10:  1        1           0        0           (bit = (g >> 1) & 1)
+ *   0x13:  1        0           1        0           (bit =  g       & 1)
+ *
+ * GEN2 built-in OTP waveform, mapped EMPIRICALLY on a production E1001 (bench
+ * 2026-07-23) -- both inverted AND shift-swapped against the table above. The
+ * file already warned that "the GD register-LUT table does NOT apply to the OTP
+ * waveform, ends were swapped"; that is now ENCODED rather than written next to
+ * one shared implementation of a single table:
+ *
  *   0x10:  0        1           0        1           (bit = (g & 1) ^ 1)
- *   0x13:  0        0           1        1           (bit = (g >> 1) ^ 1)
+ *   0x13:  0        0           1        1           (bit = ((g >> 1) & 1) ^ 1)
  */
+#ifdef EPD_GRAY4_REG_LUTS
+#define GRAY_P1_BIT(g) (((g) >> 1) & 1)         /* DTM1 (0x10) */
+#define GRAY_P2_BIT(g) ((g) & 1)                /* DTM2 (0x13) */
+#else
 #define GRAY_P1_BIT(g) (((g) & 1) ^ 1)          /* DTM1 (0x10) */
 #define GRAY_P2_BIT(g) ((((g) >> 1) & 1) ^ 1)   /* DTM2 (0x13) */
+#endif
 
 /* Stream one 1bpp plane derived from the 2bpp frame: plane bit =
- * ((g >> shift) & 1) ^ 1, 8 px/byte MSB-first, row by row. */
-static void gray_send_plane(uint8_t dtm_cmd, const uint8_t *image, int shift)
+ * 8 px/byte MSB-first, row by row. plane is 1 (DTM1) or 2 (DTM2) and the bit
+ * comes from the macros above, NOT an open-coded shift -- hand-inlining it here
+ * is exactly what let this path drift from mono_clear() and the test pattern,
+ * which used the macros and so stayed correct while the image did not. */
+static void gray_send_plane(uint8_t dtm_cmd, const uint8_t *image, int plane)
 {
     uint8_t row[EPD_WIDTH / 8];
     const uint8_t *in = image;
@@ -378,7 +399,9 @@ static void gray_send_plane(uint8_t dtm_cmd, const uint8_t *image, int shift)
                 uint8_t v = *in++;
                 for (int p = 0; p < 4; p++) {
                     uint8_t g = (uint8_t)((v >> (6 - 2 * p)) & 0x3);
-                    o = (uint8_t)((o << 1) | (((g >> shift) & 1) ^ 1));
+                    uint8_t bit = (plane == 1) ? GRAY_P1_BIT(g)
+                                              : GRAY_P2_BIT(g);
+                    o = (uint8_t)((o << 1) | (bit & 1));
                 }
             }
             row[b] = o;
@@ -572,8 +595,8 @@ static void mono_display(const uint8_t *image)
     trigger_refresh();
 #elif defined(EPD_GRAY4)
     /* Both planes, derived on the fly from the 2bpp buffer (see table). */
-    gray_send_plane(0x10, image, 0);   /* DTM1: bit = (g & 1) ^ 1  */
-    gray_send_plane(DTM2, image, 1);   /* DTM2: bit = (g >> 1) ^ 1 */
+    gray_send_plane(0x10, image, 1);   /* DTM1, per GRAY_P1_BIT */
+    gray_send_plane(DTM2, image, 2);   /* DTM2, per GRAY_P2_BIT */
     trigger_refresh();
 #else
     gpio_set_level(EPD_PIN_CS, 0);
