@@ -25,6 +25,7 @@
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -87,17 +88,48 @@ static void cmd_data(uint8_t cmd, const uint8_t *data, size_t len)
 }
 
 /* Block while BUSY is low (busy). UC81xx idle == BUSY high. ~60 s cap. */
+/* Treat the panel as idle only after BUSY reads high on this many consecutive
+ * samples. A single glitch high part-way through a multi-second refresh would
+ * otherwise end the wait early and let the caller cut power mid-waveform. */
+#define BUSY_IDLE_STABLE_SAMPLES 3
+
+/* How long to allow for BUSY to ASSERT after a command that starts long work.
+ * Normal assertion is a few ms; this only bounds the pathological case. */
+#define BUSY_ASSERT_TIMEOUT_MS 1000
+
+/* Wait for BUSY to clear. BUSY is active-LOW (0 = busy). */
 static void wait_idle(void)
 {
-    int ticks = 0;
+    int ticks = 0, high = 0;
     bool warned = false;
-    while (gpio_get_level(EPD_PIN_BUSY) == 0) {
+    while (high < BUSY_IDLE_STABLE_SAMPLES) {
+        high = (gpio_get_level(EPD_PIN_BUSY) == 0) ? 0 : high + 1;
         vTaskDelay(pdMS_TO_TICKS(10));
         if (!warned && ++ticks >= 6000) {
             ESP_LOGW(TAG, "BUSY low after 60 s -- panel may be stuck");
             warned = true;
         }
     }
+}
+
+/* Wait for the panel to ASSERT busy, i.e. to acknowledge that the work it was
+ * just told to do has actually started. Returns false if it never did.
+ *
+ * This closes a real race. wait_idle() only waits WHILE busy, so if the
+ * controller has not pulled BUSY low yet it returns instantly, the caller sends
+ * POF, and power is cut part-way through the waveform -- leaving a partial or
+ * inverted image on the glass. It is intermittent by nature, and worse on the
+ * 4-gray path, which queues register LUTs and two full planes before the
+ * refresh begins, so its assertion latency is longer and more variable than
+ * mono's. The old fixed 1 ms delay was a guess at that latency; this waits for
+ * the event instead of assuming a bound on it. */
+static bool wait_busy_asserted(void)
+{
+    for (int waited = 0; waited < BUSY_ASSERT_TIMEOUT_MS; waited += 2) {
+        if (gpio_get_level(EPD_PIN_BUSY) == 0) return true;
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    return false;
 }
 
 static void hw_reset(void)
@@ -257,6 +289,31 @@ static const uint8_t LUT_BB_4G[42] = {   /* R24 */
  *
  * Cost is refresh time, which grows in proportion. Override per build with
  * -DGRAY4_LUT_GAIN_PCT=150. */
+/* Drive the 4-gray path with the panel's OWN booster and VCOM instead of the
+ * GoodDisplay demo values.
+ *
+ * Field evidence (2026-08-07): a unit that renders correct-but-FAINT with heavy
+ * erratic flashing in 4-gray displays perfectly on the MONO build. The two
+ * paths share the panel, the wiring and PWR_V, so the fault is in what gray
+ * overrides and mono does not:
+ *
+ *     register        mono (works)        4-gray (faint)
+ *     0x06 booster    not sent -> OTP     17 17 28 17
+ *     0x82 VCOM DC    not sent -> OTP     0x12
+ *     0x50 CDI        21 07               10 07
+ *
+ * A forced VCOM that does not match the glass is the classic cause of a washed
+ * out image, and an overridden booster soft-start is a good candidate for rails
+ * that sag during the longer 4-gray refresh -- which is what erratic flashing
+ * looks like. Neither is corrected by more drive time, which is why the LUT
+ * gain changed nothing.
+ *
+ * With this set, the only things 4-gray still changes are the ones it must:
+ * PSR (select register LUTs), the PLL, and the LUTs themselves. */
+#ifndef GRAY4_MONO_POWER
+#define GRAY4_MONO_POWER 0
+#endif
+
 #ifndef GRAY4_LUT_GAIN_PCT
 #define GRAY4_LUT_GAIN_PCT 100
 #endif
@@ -439,7 +496,9 @@ static void mono_init(void)
     cmd_data(0x15, DSPI_V,  sizeof DSPI_V);
     ESP_LOGI(TAG, "init complete (4-gray GEN2 built-in waveform)");
 #elif defined(EPD_GRAY4)
+#if !GRAY4_MONO_POWER
     cmd_data(0x06, BTST_4G, sizeof BTST_4G);   /* booster soft start */
+#endif
     cmd_data(PWR,  PWR_V,   sizeof PWR_V);
     cmd_data(PON,  NULL, 0);
     wait_idle();
@@ -448,15 +507,21 @@ static void mono_init(void)
     cmd_data(TRES, TRES_V,  sizeof TRES_V);
     cmd_data(0x15, DSPI_V,  sizeof DSPI_V);
     cmd_data(TCON, TCON_V,  sizeof TCON_V);
+#if GRAY4_MONO_POWER
+    /* No 0x82 at all: keep the panel's OTP VCOM, exactly as mono does. */
+    cmd_data(CDI,  CDI_V,   sizeof CDI_V);     /* mono's known-good CDI */
+#else
     cmd_data(0x82, VDCS_4G, sizeof VDCS_4G);
     cmd_data(CDI,  CDI_4G,  sizeof CDI_4G);
+#endif
     gray_send_lut(0x20, LUT_VCOM_4G);
     gray_send_lut(0x21, LUT_WW_4G);
     gray_send_lut(0x22, LUT_BW_4G);
     gray_send_lut(0x23, LUT_WB_4G);
     gray_send_lut(0x24, LUT_BB_4G);
     gray_send_lut(0x25, LUT_WW_4G);   /* border */
-    ESP_LOGI(TAG, "init complete (4-gray register LUTs)");
+    ESP_LOGI(TAG, "init complete (4-gray register LUTs%s)",
+         GRAY4_MONO_POWER ? ", OTP booster+VCOM" : "");
 #else
     cmd_data(PWR, PWR_V, sizeof PWR_V);
     cmd_data(PON, NULL, 0);            /* power on */
@@ -478,17 +543,25 @@ static void trigger_refresh(void)
     /* bb_epaper sends DRF with one 0x00 parameter byte in 4-gray mode. */
     static const uint8_t DRF_V[] = {0x00};
     cmd_data(DRF, DRF_V, sizeof DRF_V);
-    vTaskDelay(pdMS_TO_TICKS(1));   /* >=200 us before polling BUSY */
 #else
     cmd_data(DRF, NULL, 0);
-#ifdef EPD_BWR
-    vTaskDelay(pdMS_TO_TICKS(1));   /* >=200 us before polling BUSY (GD demo) */
 #endif
-#endif
+    /* Confirm the refresh actually STARTED before waiting for it to finish.
+     * Skipping this is what leaves a half-drawn or inverted image: wait_idle()
+     * returns immediately while BUSY is still high, POF cuts power, and the
+     * waveform never runs to completion. */
+    int64_t t0 = esp_timer_get_time();
+    if (!wait_busy_asserted())
+        ESP_LOGW(TAG, "panel never asserted BUSY %d ms after DRF; "
+                      "refresh may not have started",
+                 BUSY_ASSERT_TIMEOUT_MS);
     wait_idle();
     cmd_data(POF, NULL, 0);
     wait_idle();
-    ESP_LOGI(TAG, "refresh done");
+    /* Duration is the tell if this ever regresses: a real full refresh is
+     * seconds. Sub-second means the panel was powered down early. */
+    ESP_LOGI(TAG, "refresh done (%lld ms)",
+             (long long)((esp_timer_get_time() - t0) / 1000));
 }
 
 static void mono_display(const uint8_t *image)
