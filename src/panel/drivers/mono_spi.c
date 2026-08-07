@@ -373,8 +373,23 @@ static const uint8_t CDI_4G[]  = {0x10, 0x07};
  *   0x13:  0        0           1        1           (bit = ((g >> 1) & 1) ^ 1)
  */
 #ifdef EPD_GRAY4_REG_LUTS
-#define GRAY_P1_BIT(g) (((g) >> 1) & 1)         /* DTM1 (0x10) */
-#define GRAY_P2_BIT(g) ((g) & 1)                /* DTM2 (0x13) */
+/* DERIVED ON HARDWARE, not from the GD demo -- the published table above is
+ * fully inverted on this glass. Two field observations pin all four levels:
+ *
+ *   OTP table on this path  -> text CORRECT, photos negative
+ *        => the ENDS were already right: (0,0) is white, (1,1) is black,
+ *           and only the two mid-greys were exchanged.
+ *   GD table on this path   -> EVERYTHING inverted
+ *        => confirms (1,1) is black here, opposite to what GD documents.
+ *
+ * Solving both at once gives the OTP inversion with the PLANES EXCHANGED:
+ *
+ *        white  light-gray  dark-gray  black         (g = 3    2    1    0)
+ *   0x10:  0        0           1        1           (bit = ((g >> 1) & 1) ^ 1)
+ *   0x13:  0        1           0        1           (bit =  (g & 1)      ^ 1)
+ */
+#define GRAY_P1_BIT(g) ((((g) >> 1) & 1) ^ 1)   /* DTM1 (0x10) */
+#define GRAY_P2_BIT(g) (((g) & 1) ^ 1)          /* DTM2 (0x13) */
 #else
 #define GRAY_P1_BIT(g) (((g) & 1) ^ 1)          /* DTM1 (0x10) */
 #define GRAY_P2_BIT(g) ((((g) >> 1) & 1) ^ 1)   /* DTM2 (0x13) */
