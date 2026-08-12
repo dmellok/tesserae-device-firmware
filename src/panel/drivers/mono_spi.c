@@ -26,6 +26,9 @@
 #include "driver/spi_master.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#if defined(BOARD_HAS_SHT4X)
+#include "sht4x.h"
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -238,7 +241,7 @@ static const uint8_t LUT_VCOM_4G[42] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
-static const uint8_t LUT_WW_4G[42] = {   /* R21, also the border LUT (R25) */
+static const uint8_t LUT_WW_4G[42] = {   /* R21 */
     0x40, 0x0A, 0x00, 0x00, 0x00, 0x01,
     0x90, 0x14, 0x14, 0x00, 0x00, 0x01,
     0x10, 0x14, 0x0A, 0x00, 0x00, 0x01,
@@ -318,27 +321,67 @@ static const uint8_t LUT_BB_4G[42] = {   /* R24 */
 #define GRAY4_LUT_GAIN_PCT 100
 #endif
 
+/* Auto-scale the register LUTs from the onboard temperature sensor. On by
+ * default wherever the board has one, since fixed LUTs demonstrably drift with
+ * ambient. -DGRAY4_TEMP_COMP=0 pins the fixed gain instead. */
+#ifndef GRAY4_TEMP_COMP
+#define GRAY4_TEMP_COMP 1
+#endif
+
 /* Send one 42-byte register LUT, scaling only the four phase-duration bytes of
  * each 6-byte group. The level byte (which rail each phase drives to) and the
  * repeat count are structural and must not be touched. */
-static void gray_send_lut(uint8_t cmd, const uint8_t *lut)
+static void gray_send_lut(uint8_t cmd, const uint8_t *lut, int gain_pct)
 {
-#if GRAY4_LUT_GAIN_PCT == 100
-    cmd_data(cmd, lut, 42);
-#else
+    if (gain_pct == 100) { cmd_data(cmd, lut, 42); return; }
     uint8_t scaled[42];
     for (int g = 0; g < 7; g++) {
         const uint8_t *src = lut + g * 6;
         uint8_t *dst = scaled + g * 6;
         dst[0] = src[0];                      /* phase level selector */
         for (int ph = 1; ph <= 4; ph++) {     /* four phase durations */
-            int v = src[ph] * GRAY4_LUT_GAIN_PCT / 100;
+            int v = src[ph] * gain_pct / 100;
             dst[ph] = (uint8_t)(v > 255 ? 255 : v);
         }
         dst[5] = src[5];                      /* repeat count */
     }
     cmd_data(cmd, scaled, 42);
+}
+
+/* Temperature compensation for the register-LUT path.
+ *
+ * Register LUTs carry NO temperature compensation of their own -- unlike the
+ * OTP waveform, where the controller picks a table from its own sensor. The
+ * published durations suit roughly 25 C, so the same image is progressively
+ * over-driven as the room warms and under-driven as it cools. In the field that
+ * shows up as photos that are occasionally "overexposed / burned" with no
+ * reproducible pattern, because the pattern is the ambient temperature.
+ *
+ * This board carries an SHT4x, so the correction is available for free: read
+ * it and scale every phase duration by the same factor gray_send_lut() already
+ * applies. 2 %/C either side of 25 C, clamped -- deliberately gentler than a
+ * real vendor temperature table, because the aim is to remove the drift that
+ * causes visible burning, not to chase optimal contrast, and an over-eager
+ * curve would make a currently-good panel worse.
+ *
+ * Falls back to the compile-time default if the sensor cannot be read, so a
+ * failed I2C transaction degrades to today's behaviour rather than a guess. */
+static int gray_lut_gain_pct(void)
+{
+#if defined(GRAY4_TEMP_COMP) && GRAY4_TEMP_COMP && defined(BOARD_HAS_SHT4X)
+    sht4x_sample_t env;
+    if (sht4x_read(&env) == ESP_OK) {
+        int gain = 100 + (int)((25.0f - env.temperature_c) * 2.0f);
+        if (gain < 80)  gain = 80;
+        if (gain > 150) gain = 150;
+        ESP_LOGI(TAG, "4-gray LUT gain %d%% (%.1f C)", gain,
+                 (double)env.temperature_c);
+        return gain;
+    }
+    ESP_LOGW(TAG, "SHT4x read failed; using the fixed LUT gain %d%%",
+             GRAY4_LUT_GAIN_PCT);
 #endif
+    return GRAY4_LUT_GAIN_PCT;
 }
 
 static const uint8_t BTST_4G[] = {0x17, 0x17, 0x28, 0x17};
@@ -552,12 +595,23 @@ static void mono_init(void)
     cmd_data(0x82, VDCS_4G, sizeof VDCS_4G);
     cmd_data(CDI,  CDI_4G,  sizeof CDI_4G);
 #endif
-    gray_send_lut(0x20, LUT_VCOM_4G);
-    gray_send_lut(0x21, LUT_WW_4G);
-    gray_send_lut(0x22, LUT_BW_4G);
-    gray_send_lut(0x23, LUT_WB_4G);
-    gray_send_lut(0x24, LUT_BB_4G);
-    gray_send_lut(0x25, LUT_WW_4G);   /* border */
+    const int lut_gain = gray_lut_gain_pct();
+    gray_send_lut(0x20, LUT_VCOM_4G, lut_gain);
+    gray_send_lut(0x21, LUT_WW_4G,   lut_gain);
+    gray_send_lut(0x22, LUT_BW_4G,   lut_gain);
+    gray_send_lut(0x23, LUT_WB_4G,   lut_gain);
+    gray_send_lut(0x24, LUT_BB_4G,   lut_gain);
+    /* Border (R25). NOT LUT_WW, despite the name: the controller selects a LUT
+     * from the (old,new) bit pair as 1=white, 0=black, and this glass encodes
+     * white as (0,0) and black as (1,1) -- see the plane-encoding table above.
+     * So the LUT roles are inverted here, LUT_WW is the BLACK waveform, and
+     * pointing the border at it painted a black frame on every refresh (the
+     * "black border that briefly disappears mid-refresh" reported in the
+     * field). LUT_BB is the one that drives white on this panel.
+     *
+     * The level bytes corroborate it: 0x40 vs 0x80, phase levels 01 vs 10 --
+     * opposite rails, so these two are opposite-polarity waveforms. */
+    gray_send_lut(0x25, LUT_BB_4G,   lut_gain);   /* border -> white */
     ESP_LOGI(TAG, "init complete (4-gray register LUTs%s)",
          GRAY4_MONO_POWER ? ", OTP booster+VCOM" : "");
 #else
