@@ -42,6 +42,7 @@
 
 /* Board model -> default device id "reTerminal_E1002_<mac-suffix>". */
 #define TESSERAE_DEVICE_MODEL  "reTerminal_E1002"
+#define TESSERAE_BLE_HARDWARE_CODE  2
 
 /* Tesserae hardware-catalog kind (esp32_client protocol + esp32_bin renderer:
  * 800x480 4bpp Spectra-6, 192000 bytes). The E1002 manifest was migrated to

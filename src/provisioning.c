@@ -1,5 +1,6 @@
 #include "provisioning.h"
 #include "app_config.h"
+#include "buttons.h"
 #include "relay.h"       /* RELAY_DEFAULT_URL */
 #include "rest_config.h"
 #include "wifi_manager.h"
@@ -24,8 +25,10 @@
 static const char *TAG = "portal";
 
 #define BIT_CREDS_SAVED  BIT0
+#define BIT_BLE_REQUESTED BIT1
 static EventGroupHandle_t s_done;
 static TaskHandle_t s_dns_task = NULL;
+static TaskHandle_t s_button_task = NULL;
 static httpd_handle_t s_httpd = NULL;
 static esp_netif_t *s_ap_netif = NULL;
 static bool s_mdns_up = false;
@@ -51,6 +54,31 @@ typedef struct {
 } scan_entry_t;
 static scan_entry_t s_scan[SCAN_MAX];
 static int          s_scan_count = 0;
+
+#ifdef BOARD_BTN_REFRESH_PIN
+/* Runs from provisioning_begin(), before the slow e-paper portal splash is
+ * painted. That makes the physical switch responsive as soon as the AP/web
+ * page is live instead of missing a hold that begins and ends during refresh. */
+static void ble_switch_button_task(void *arg)
+{
+    (void)arg;
+    int held_ms = 0;
+    while (1) {
+        if (buttons_maintenance_is_pressed()) {
+            held_ms += 50;
+            if (held_ms >= BLE_MAINTENANCE_HOLD_S * 1000) {
+                ESP_LOGI(TAG, "Refresh held for %d s; requesting BLE setup",
+                         BLE_MAINTENANCE_HOLD_S);
+                xEventGroupSetBits(s_done, BIT_BLE_REQUESTED);
+                while (1) vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+        } else {
+            held_ms = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+#endif
 
 /* ---------- minimal wildcard DNS hijack ----------
  *
@@ -150,6 +178,11 @@ static const char k_head[] =
 ".status .k{font-weight:600;color:var(--fg)}"
 ".status code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"
 "font-size:12px;background:#fafaf9;padding:1px 6px;border-radius:4px;border:1px solid var(--border)}"
+".ble-switch{display:flex;gap:11px;align-items:flex-start;margin:0 0 14px;"
+"padding:12px 14px;border:1px solid #cfe7e3;border-radius:var(--radius);"
+"background:var(--accent-soft);color:var(--accent-hover);font-size:13px}"
+".ble-switch svg{width:18px;height:18px;flex:none;margin-top:1px;color:var(--accent)}"
+".ble-switch strong{color:var(--fg)}"
 ".field{margin-bottom:14px}"
 ".field:last-child{margin-bottom:0}"
 "label{display:block;font-weight:500;font-size:13px;margin-bottom:6px;color:var(--fg)}"
@@ -498,6 +531,18 @@ static esp_err_t render_form(httpd_req_t *req, const char *error)
         "</div>",
         e_devid, e_server[0] ? e_server : "(not set)", have_ip ? ip : "(setup AP)");
     httpd_resp_sendstr_chunk(req, status);
+
+#ifdef BOARD_BTN_REFRESH_PIN
+    char ble_switch[320];
+    snprintf(ble_switch, sizeof ble_switch,
+        "<div class=\"ble-switch\">"
+        "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" "
+        "stroke-width=\"2\" aria-hidden=\"true\"><path d=\"M7 7l10 10-5 5V2l5 5L7 17\"/>"
+        "</svg><span><strong>Prefer the Tesserae app?</strong> Hold %s for %d "
+        "seconds to switch to Bluetooth setup.</span></div>",
+        "Refresh", BLE_MAINTENANCE_HOLD_S);
+    httpd_resp_sendstr_chunk(req, ble_switch);
+#endif
 
     /* Build the scan-picker <select> block from the cached scan results.
      * Empty string if the scan turned up nothing -- the form still renders
@@ -891,6 +936,14 @@ void provisioning_begin(void)
     do_wifi_scan();
 
     start_ap();
+    buttons_poll_init();
+#ifdef BOARD_BTN_REFRESH_PIN
+    if (xTaskCreate(ble_switch_button_task, "ble_switch_btn", 2048, NULL, 4,
+                    &s_button_task) != pdPASS) {
+        s_button_task = NULL;
+        ESP_LOGE(TAG, "could not start Refresh-to-BLE button monitor");
+    }
+#endif
     idle_tracker_install();
     start_http(/* captive */ true);
     xTaskCreate(dns_hijack_task, "dns_hijack", 4096, NULL, 5, &s_dns_task);
@@ -899,18 +952,16 @@ void provisioning_begin(void)
              PROVISION_PORTAL_TIMEOUT_S);
 }
 
-esp_err_t provisioning_serve(void)
+provisioning_result_t provisioning_serve(void)
 {
-    /* Poll in 1 s chunks so we can react to either a credential save OR the
-     * idle deadline elapsing without a client connected. The idle deadline
-     * is zeroed by the AP event handler whenever >=1 STA is associated. The
-     * save handler runs on the httpd task, so a submit that lands while the
-     * caller was painting the splash (before this call) is captured too. */
+    /* The save handler and physical-button monitor run in their own tasks, so
+     * either event can already be waiting after the slow panel splash. */
     EventBits_t bits = 0;
     while (1) {
-        bits = xEventGroupWaitBits(s_done, BIT_CREDS_SAVED,
+        bits = xEventGroupWaitBits(s_done, BIT_CREDS_SAVED | BIT_BLE_REQUESTED,
                                    pdFALSE, pdFALSE, pdMS_TO_TICKS(1000));
-        if (bits & BIT_CREDS_SAVED) break;
+        if (bits & (BIT_CREDS_SAVED | BIT_BLE_REQUESTED)) break;
+
         if (s_idle_deadline_us != 0 &&
             esp_timer_get_time() > s_idle_deadline_us) {
             ESP_LOGW(TAG, "captive portal idle for %ds with no client; giving up",
@@ -919,19 +970,27 @@ esp_err_t provisioning_serve(void)
         }
     }
 
-    /* Give the browser a beat to render the "saved" page before we tear AP down. */
-    vTaskDelay(pdMS_TO_TICKS(500));
+    /* Give the browser a beat to render the "saved" page before we tear AP
+     * down. A BLE switch tears it down immediately so the next radio mode can
+     * start without competing with the SoftAP. */
+    if (bits & BIT_CREDS_SAVED) vTaskDelay(pdMS_TO_TICKS(500));
 
     idle_tracker_uninstall();
 
+    if (s_button_task) { vTaskDelete(s_button_task); s_button_task = NULL; }
     if (s_dns_task) { vTaskDelete(s_dns_task); s_dns_task = NULL; }
     if (s_httpd)    { httpd_stop(s_httpd);     s_httpd = NULL; }
     esp_wifi_stop();
 
-    return (bits & BIT_CREDS_SAVED) ? ESP_OK : ESP_ERR_TIMEOUT;
+    provisioning_result_t result = PROVISIONING_RESULT_TIMEOUT;
+    if (bits & BIT_CREDS_SAVED) result = PROVISIONING_RESULT_SAVED;
+    else if (bits & BIT_BLE_REQUESTED) result = PROVISIONING_RESULT_BLE_REQUESTED;
+    vEventGroupDelete(s_done);
+    s_done = NULL;
+    return result;
 }
 
-esp_err_t provisioning_run_blocking(void)
+provisioning_result_t provisioning_run_blocking(void)
 {
     provisioning_begin();
     return provisioning_serve();

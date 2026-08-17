@@ -32,6 +32,8 @@ idf_component_register(
         "touch_queue.c"
         "touch_wakestub.c"
         "wifi_manager.c"
+        "ble_setup_protocol.c"
+        "ble_setup.c"
         "provisioning.c"
         "button_report.c"
         "net_rest.c"
@@ -73,6 +75,7 @@ idf_component_register(
         ${TESSERAE_EMBED_FILES}
     REQUIRES
         driver
+        bt
         app_update
         esp_adc
         esp_driver_i2c

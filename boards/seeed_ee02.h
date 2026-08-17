@@ -49,6 +49,7 @@
 
 /* Board model -> default device id "Seeed_EE02_<mac-suffix>". */
 #define TESSERAE_DEVICE_MODEL  "Seeed_EE02"
+#define TESSERAE_BLE_HARDWARE_CODE  5
 
 /* Tesserae hardware-catalog kind. Same 1200x1600 4bpp Spectra-6 frame (960000
  * bytes) as the E1004, so the server maps this to the existing renderer. */

@@ -154,9 +154,11 @@ static bool try_nav_event(const char *button, int tx, int ty, bool is_touch)
     return serve_page_from_sd(target);
 }
 
-bool deck_try_button(const char *button, uint64_t *event_seq, bool *fallthrough)
+bool deck_try_button(const char *button, uint64_t *event_seq, bool *fallthrough,
+                     bool *maintenance_requested)
 {
     *fallthrough = false;
+    *maintenance_requested = false;
     if (!button || !try_nav_event(button, 0, 0, false)) return false;
 
     /* Served locally: withdraw the pending report main armed for this press
@@ -178,6 +180,13 @@ bool deck_try_button(const char *button, uint64_t *event_seq, bool *fallthrough)
             idle_ms += 20; total_ms += 20;
             button_id_t b = buttons_poll_pressed();
             if (b == BTN_NONE) continue;
+            if (buttons_is_maintenance_button(b)) {
+                if (buttons_maintenance_held_for_activation()) {
+                    ESP_LOGI(TAG, "local window maintenance key held for BLE");
+                    *maintenance_requested = true;
+                    return true;
+                }
+            }
             const char *name = button_name(b);
             uint64_t ev = ++(*event_seq);
             if (try_nav_event(name, 0, 0, false)) {

@@ -120,6 +120,7 @@
 
 /* Board model -> default device id "reTerminal_E1003_<mac-suffix>". */
 #define TESSERAE_DEVICE_MODEL  "reTerminal_E1003"
+#define TESSERAE_BLE_HARDWARE_CODE  3
 
 /* Tesserae hardware-catalog kind. NOTE: the E1003 needs a 4bpp GRAYSCALE
  * (16-level, 1872x1404) server renderer, distinct from the Spectra / mono

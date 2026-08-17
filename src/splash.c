@@ -17,6 +17,7 @@
 #include "app_config.h"
 
 #include <stdbool.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -42,6 +43,9 @@ static int       s_bpp = 4;   /* set per call from the active driver */
 static const char *s_portal_note;   /* NULL -> default "Setup mode" subtitle */
 static const char *s_msg_title;
 static const char *s_msg_body;
+static const char *s_ble_payload;
+static uint32_t    s_ble_passkey;
+static bool        s_ble_maintenance;
 
 /* ---------- primitives (display coords: x across, y down) ---------- */
 
@@ -117,6 +121,18 @@ static void draw_char(int x, int y, char ch, int s, uint8_t c)
 }
 
 static int text_w(const char *str, int s) { return (int)strlen(str) * 8 * s; }
+
+/* Keep a requested font scale inside its assigned column. Splash copy varies
+ * in length (and panels range from 800x480 landscape to 1200x1600 portrait),
+ * so deriving scale from panel size alone is not sufficient. */
+static int text_scale_to_fit(const char *str, int preferred, int max_w)
+{
+    if (!str || !*str || preferred < 1) return 1;
+    int glyph_w = (int)strlen(str) * 8;
+    int fitted = glyph_w > 0 ? max_w / glyph_w : preferred;
+    if (fitted < 1) fitted = 1;
+    return preferred < fitted ? preferred : fitted;
+}
 
 /* Draw `str` at scale `s`, horizontally centered within [x0, x0+w). */
 static void draw_text_in(int x0, int w, int y, const char *str, int s, uint8_t c)
@@ -221,6 +237,15 @@ static int build_ap_qr(uint8_t *qrbuf)
     if (!qrcodegen_encodeText(wifi, tmp, qrbuf, qrcodegen_Ecc_MEDIUM,
                               1, 6, qrcodegen_Mask_AUTO, true))
         return 0;
+    return qrcodegen_getSize(qrbuf);
+}
+
+static int build_ble_qr(uint8_t *qrbuf)
+{
+    if (!s_ble_payload || !s_ble_payload[0]) return 0;
+    uint8_t tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(10)];
+    if (!qrcodegen_encodeText(s_ble_payload, tmp, qrbuf, qrcodegen_Ecc_MEDIUM,
+                              1, 10, qrcodegen_Mask_AUTO, true)) return 0;
     return qrcodegen_getSize(qrbuf);
 }
 
@@ -344,6 +369,108 @@ static void draw_message(void)
     }
 }
 
+static void draw_ble(void)
+{
+    uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(10)];
+    int qn = build_ble_qr(qr);
+    char passkey[40];
+    snprintf(passkey, sizeof passkey, "Passkey: %06" PRIu32, s_ble_passkey);
+    const char *title = s_ble_maintenance ? "Maintenance" : "Set Up";
+    const char *instruction = "Scan with Companion app";
+
+    int base_s = ((s_W < s_H) ? s_W : s_H) / 240;
+    if (base_s < 2) base_s = 2;
+    int gap = 8 * base_s;
+
+    if (s_W > s_H) {
+        int half = s_W / 2;
+        int margin = half / 12;
+        int text_x = margin;
+        int text_area_w = half - 2 * margin;
+        int wordmark_s = text_scale_to_fit("Tesserae", 2 * base_s, text_area_w);
+        int title_s = text_scale_to_fit(title, 2 * base_s, text_area_w);
+        int body_s = base_s;
+        int passkey_s = text_scale_to_fit(passkey, base_s, text_area_w);
+        bool split_instruction = text_w(instruction, body_s) > text_area_w;
+        int instruction_h = split_instruction ? 16 * body_s + gap / 2
+                                              : 8 * body_s;
+        int logo = (s_H * 2) / 5;
+        if (logo > text_area_w * 2 / 3) logo = text_area_w * 2 / 3;
+        int block = logo + gap + 8 * wordmark_s + gap + 8 * title_s + gap
+                    + instruction_h + gap + 8 * passkey_s;
+        int y = (s_H - block) / 2;
+        blit_logo(half / 2, y, logo); y += logo + gap;
+        draw_text_in(text_x, text_area_w, y, "Tesserae", wordmark_s, COL_BLK);
+        y += 8 * wordmark_s + gap;
+        draw_text_in(text_x, text_area_w, y, title, title_s, COL_BLK);
+        y += 8 * title_s + gap;
+        if (split_instruction) {
+            draw_text_in(text_x, text_area_w, y, "Scan with", body_s, COL_BLK);
+            y += 8 * body_s + gap / 2;
+            draw_text_in(text_x, text_area_w, y, "Companion app", body_s, COL_BLK);
+            y += 8 * body_s + gap;
+        } else {
+            draw_text_in(text_x, text_area_w, y, instruction, body_s, COL_BLK);
+            y += 8 * body_s + gap;
+        }
+        draw_text_in(text_x, text_area_w, y, passkey, passkey_s, COL_BLK);
+        if (qn) {
+            int box_w = half * 4 / 5;
+            int box_h = s_H * 4 / 5;
+            int scale_w = box_w / (qn + 8);
+            int scale_h = box_h / (qn + 8);
+            int scale = scale_w < scale_h ? scale_w : scale_h;
+            if (scale < 1) scale = 1;
+            if (qn * scale > 420) scale = 420 / qn;
+            int total = (qn + 8) * scale;
+            int qx = half + (half - total) / 2 + 4 * scale;
+            int qy = (s_H - total) / 2 + 4 * scale;
+            draw_qr(qr, qx, qy, scale);
+        }
+    } else {
+        int margin = s_W / 12;
+        int text_area_w = s_W - 2 * margin;
+        int wordmark_s = text_scale_to_fit("Tesserae", 2 * base_s, text_area_w);
+        int title_s = text_scale_to_fit(title, 2 * base_s, text_area_w);
+        int body_s = text_scale_to_fit(instruction, base_s, text_area_w);
+        int passkey_s = text_scale_to_fit(passkey, base_s, text_area_w);
+        int logo = s_W / 3;
+
+        int scale = 0;
+        int total = 0;
+        if (qn) {
+            int box_w = s_W * 4 / 5;
+            int box_h = s_H * 2 / 5;
+            int scale_w = box_w / (qn + 8);
+            int scale_h = box_h / (qn + 8);
+            scale = scale_w < scale_h ? scale_w : scale_h;
+            if (scale < 1) scale = 1;
+            if (qn * scale > 420) scale = 420 / qn;
+            total = (qn + 8) * scale;
+        }
+
+        int block = logo + gap + 8 * wordmark_s + gap + 8 * title_s + gap
+                    + 8 * body_s + gap + 8 * passkey_s
+                    + (qn ? gap + total : 0);
+        int y = (s_H - block) / 2;
+        if (y < gap) y = gap;
+        blit_logo(s_W / 2, y, logo); y += logo + gap;
+        draw_text_in(margin, text_area_w, y, "Tesserae", wordmark_s, COL_BLK);
+        y += 8 * wordmark_s + gap;
+        draw_text_in(margin, text_area_w, y, title, title_s, COL_BLK);
+        y += 8 * title_s + gap;
+        draw_text_in(margin, text_area_w, y, instruction, body_s, COL_BLK);
+        y += 8 * body_s + gap;
+        draw_text_in(margin, text_area_w, y, passkey, passkey_s, COL_BLK);
+        y += 8 * passkey_s + gap;
+        if (qn) {
+            int qx = (s_W - total) / 2 + 4 * scale;
+            int qy = y + 4 * scale;
+            draw_qr(qr, qx, qy, scale);
+        }
+    }
+}
+
 /* ---------- public API ---------- */
 
 esp_err_t splash_show_logo(void)   { s_portal_note = NULL; return render_and_paint(draw_logo,   "logo"); }
@@ -360,4 +487,13 @@ esp_err_t splash_show_message(const char *title, const char *body)
     s_msg_title = title;
     s_msg_body  = body;
     return render_and_paint(draw_message, "message");
+}
+
+esp_err_t splash_show_ble_setup(const char *qr_payload, uint32_t passkey,
+                                bool maintenance)
+{
+    s_ble_payload = qr_payload;
+    s_ble_passkey = passkey;
+    s_ble_maintenance = maintenance;
+    return render_and_paint(draw_ble, maintenance ? "ble-maintenance" : "ble-setup");
 }

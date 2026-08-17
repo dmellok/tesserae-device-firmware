@@ -71,6 +71,11 @@
  * the next onboarding self-heals via the MAC-matched discover. */
 #define FACTORY_RESET_HOLD_S 20
 
+/* On supported Seeed displays, a Refresh hold shorter than factory reset opens
+ * the bounded BLE channel. A no-credentials boot remains AP-first. */
+#define BLE_MAINTENANCE_HOLD_S 3
+#define BLE_SETUP_TIMEOUT_S    (5 * 60)
+
 /* Low-battery goodbye: below GOODBYE mV the device paints a "battery empty"
  * message once and hibernates (hourly recheck; buttons still wake). It
  * resumes above RESUME mV -- the gap is hysteresis so a recovering cell
@@ -88,6 +93,12 @@
  * sets its own; this is just a fallback so the file compiles standalone. */
 #ifndef TESSERAE_DEVICE_MODEL
 #define TESSERAE_DEVICE_MODEL  "esp32"
+#endif
+
+/* Stable public BLE discovery identifier. Values are registered in
+ * docs/ble-setup-protocol.md and map to App-side hardware catalog entries. */
+#ifndef TESSERAE_BLE_HARDWARE_CODE
+#error "Selected board must define TESSERAE_BLE_HARDWARE_CODE"
 #endif
 
 /* How long to deep-sleep between MQTT checks. 1 minute is the short

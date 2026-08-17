@@ -17,6 +17,8 @@
 #pragma once
 
 #include "esp_err.h"
+#include <stdbool.h>
+#include <stdint.h>
 
 /* Tesserae logo + wordmark, centered on white. Shown on cold boot when WiFi
  * creds are present, so the user knows the device just booted. */
@@ -39,3 +41,9 @@ esp_err_t splash_show_portal_note(const char *subtitle);
  * feedback: "Connected! / Waiting for your first frame", "Almost done /
  * Approve this device in Tesserae". */
 esp_err_t splash_show_message(const char *title, const char *body);
+
+/* BLE setup/maintenance screen, visually aligned with the AP setup splash:
+ * centered Tesserae branding, Companion scan guidance, an ephemeral setup QR,
+ * and the numeric LE Secure Connections fallback passkey. */
+esp_err_t splash_show_ble_setup(const char *qr_payload, uint32_t passkey,
+                                bool maintenance);

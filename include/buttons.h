@@ -49,6 +49,8 @@ static inline const char *button_name(button_id_t b)
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
 #include "esp_sleep.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #ifdef BOARD_BTN_REFRESH_PIN
 #  define BUTTONS__REFRESH_BIT (1ULL << BOARD_BTN_REFRESH_PIN)
@@ -65,7 +67,6 @@ static inline const char *button_name(button_id_t b)
 #else
 #  define BUTTONS__RIGHT_BIT 0ULL
 #endif
-
 #define BUTTON_WAKE_MASK (BUTTONS__REFRESH_BIT | BUTTONS__LEFT_BIT | BUTTONS__RIGHT_BIT)
 
 /* Client-side hard cap on one post-button stay-awake window (issue #123), on
@@ -181,6 +182,51 @@ static inline button_id_t buttons_poll_pressed(void)
     return BTN_NONE;
 }
 
+/* The currently supported BLE gesture is the Seeed-family Refresh button. */
+static inline bool buttons_is_maintenance_button(button_id_t b)
+{
+#ifdef BOARD_BTN_REFRESH_PIN
+    return b == BTN_REFRESH;
+#else
+    (void)b;
+    return false;
+#endif
+}
+
+static inline bool buttons_maintenance_is_pressed(void)
+{
+#ifdef BOARD_BTN_REFRESH_PIN
+    return gpio_get_level((gpio_num_t)BOARD_BTN_REFRESH_PIN) == 0;
+#else
+    return false;
+#endif
+}
+
+static inline bool buttons_maintenance_held_for_activation(void)
+{
+#ifdef BOARD_BTN_REFRESH_PIN
+    int held_ms = 0;
+    while (buttons_maintenance_is_pressed() &&
+           held_ms < BLE_MAINTENANCE_HOLD_S * 1000) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        held_ms += 20;
+    }
+    return held_ms >= BLE_MAINTENANCE_HOLD_S * 1000;
+#else
+    return false;
+#endif
+}
+
+/* Resolve a Refresh edge before dispatching it during an awake interaction
+ * window. A short press returns only after release and remains an ordinary
+ * refresh; a continuous hold reaches the same maintenance threshold used by
+ * the deep-sleep wake path. Other buttons never call this helper and retain
+ * their immediate edge-triggered behaviour. */
+static inline bool buttons_refresh_held_for_maintenance(void)
+{
+    return buttons_maintenance_held_for_activation();
+}
+
 /* Which button (if any) woke us from deep sleep. Reads the ext1 status latch.
  * Returns BTN_NONE when ext1 fired but no button bit is set -- e.g. a touch INT
  * sharing the mask -- so the caller distinguishes touch from button itself. */
@@ -202,5 +248,9 @@ static inline void        buttons_arm_ext1_with(uint64_t m) { (void)m; }
 static inline button_id_t buttons_which_woke(void) { return BTN_NONE; }
 static inline void        buttons_poll_init(void) { }
 static inline button_id_t buttons_poll_pressed(void) { return BTN_NONE; }
+static inline bool        buttons_refresh_held_for_maintenance(void) { return false; }
+static inline bool        buttons_is_maintenance_button(button_id_t b) { (void)b; return false; }
+static inline bool        buttons_maintenance_is_pressed(void) { return false; }
+static inline bool        buttons_maintenance_held_for_activation(void) { return false; }
 
 #endif /* BOARD_HAS_BUTTONS */
