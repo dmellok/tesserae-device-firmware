@@ -1,5 +1,22 @@
 #include "ble_setup.h"
 
+#include "sdkconfig.h"
+
+#ifndef CONFIG_BT_NIMBLE_ENABLED
+
+/* Boards whose sdkconfig leaves NimBLE out (no sdkconfig.ble.defaults overlay)
+ * define no BOARD_BTN_REFRESH_PIN either, so both entry points -- the AP-portal
+ * hold in provisioning.c and the awake-window hold in main.c -- are compiled
+ * out. Keep the symbol so main.c links without per-board #ifdefs. */
+ble_setup_result_t ble_setup_run(ble_setup_mode_t mode, uint32_t timeout_s)
+{
+    (void)mode;
+    (void)timeout_s;
+    return BLE_SETUP_RESULT_ERROR;
+}
+
+#else  /* CONFIG_BT_NIMBLE_ENABLED */
+
 #include <assert.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -805,3 +822,5 @@ ble_setup_result_t ble_setup_run(ble_setup_mode_t mode, uint32_t timeout_s)
     scrub_session();
     return s_result;
 }
+
+#endif /* CONFIG_BT_NIMBLE_ENABLED */

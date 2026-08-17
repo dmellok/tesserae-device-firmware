@@ -18,6 +18,9 @@
  */
 #pragma once
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #include "app_config.h"   /* -> board.h : BOARD_BTN_*_PIN */
 
 #if defined(BOARD_BTN_REFRESH_PIN) || defined(BOARD_BTN_LEFT_PIN) || defined(BOARD_BTN_RIGHT_PIN)
@@ -44,8 +47,6 @@ static inline const char *button_name(button_id_t b)
 
 #ifdef BOARD_HAS_BUTTONS
 
-#include <stdbool.h>
-#include <stdint.h>
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
 #include "esp_sleep.h"
