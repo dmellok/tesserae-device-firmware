@@ -124,6 +124,11 @@ rest_status_t rest_register(uint16_t panel_w, uint16_t panel_h,
                             const char *mac, const char *fw_version,
                             rest_register_out_t *out, uint32_t timeout_ms);
 
+/* Validate a staged server URL without changing rest_config. Requires a 200
+ * Companion capability response whose product is tesserae and API name is
+ * companion. Used by BLE setup before committing Wi-Fi or server settings. */
+bool rest_probe_server_url(const char *server_url, uint32_t timeout_ms);
+
 /* Report a front-button press with the subsequent frame request.
  * name is "refresh"/"left"/"right" (see buttons.h); NULL/"" clears it. event_id
  * is a monotonic per-press id the server can dedup on. Adds

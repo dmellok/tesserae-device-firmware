@@ -30,8 +30,11 @@ void deck_boot(void);
  * button_wake_s window: false = window closed cleanly, go to sleep WITHOUT
  * bringing the radio up; true = a later press had no local link, its report
  * has been armed via rest_set_button(), continue into the network cycle.
- * event_seq is main's wake-event counter (shared with touch). */
-bool deck_try_button(const char *button, uint64_t *event_seq, bool *fallthrough);
+ * A later 3-second Refresh hold sets *maintenance_requested instead of
+ * dispatching a refresh. event_seq is main's wake-event counter (shared with
+ * touch). */
+bool deck_try_button(const char *button, uint64_t *event_seq, bool *fallthrough,
+                     bool *maintenance_requested);
 
 /* Local nav for a captured touch tap: hit-tests (x, y) -- the stroke end --
  * against the current page's zones. True = painted from SD; the caller must

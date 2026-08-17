@@ -55,6 +55,7 @@
 
 /* Board model -> default device id "reTerminal_E1004_<mac-suffix>". */
 #define TESSERAE_DEVICE_MODEL  "reTerminal_E1004"
+#define TESSERAE_BLE_HARDWARE_CODE  4
 
 /* Tesserae hardware-catalog kind (esp32_client protocol + esp32_bin renderer:
  * raw 4bpp Spectra-6, EPD_WIDTH*EPD_HEIGHT/2 bytes). */

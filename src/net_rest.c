@@ -395,6 +395,32 @@ static int32_t json_get_int(const cJSON *o, const char *k, int32_t dflt)
     return cJSON_IsNumber(v) ? (int32_t)v->valuedouble : dflt;
 }
 
+bool rest_probe_server_url(const char *server_url, uint32_t timeout_ms)
+{
+    if (!server_url ||
+        (strncmp(server_url, "http://", 7) != 0 &&
+         strncmp(server_url, "https://", 8) != 0)) return false;
+    char url[224];
+    int n = snprintf(url, sizeof url, "%s/api/app/v1", server_url);
+    if (n <= 0 || (size_t)n >= sizeof url) return false;
+
+    const char *body = NULL;
+    if (do_request(HTTP_METHOD_GET, url, NULL, 0, NULL, &body, timeout_ms) != REST_OK ||
+        !body) return false;
+    cJSON *root = cJSON_Parse(body);
+    if (!root) return false;
+    const cJSON *product = cJSON_GetObjectItemCaseSensitive(root, "product");
+    const cJSON *api = cJSON_GetObjectItemCaseSensitive(root, "api");
+    const cJSON *name = cJSON_IsObject(api)
+        ? cJSON_GetObjectItemCaseSensitive(api, "name") : NULL;
+    bool ok = cJSON_IsString(product) && product->valuestring &&
+              strcmp(product->valuestring, "tesserae") == 0 &&
+              cJSON_IsString(name) && name->valuestring &&
+              strcmp(name->valuestring, "companion") == 0;
+    cJSON_Delete(root);
+    return ok;
+}
+
 #if TESSERAE_OTA_CAPABILITY_ENABLED
 static void add_ota_capability(cJSON *o)
 {

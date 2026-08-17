@@ -40,6 +40,7 @@
 
 /* Board model -> default device id "reTerminal_E1001_<mac-suffix>". */
 #define TESSERAE_DEVICE_MODEL  "reTerminal_E1001"
+#define TESSERAE_BLE_HARDWARE_CODE  1
 
 /* Tesserae hardware-catalog kind. NOTE: the E1001 needs a MONO (1bpp 800x480)
  * server renderer, distinct from the Spectra esp32_bin path. Confirm this id

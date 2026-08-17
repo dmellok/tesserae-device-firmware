@@ -31,6 +31,18 @@ static bool s_inited = false;
  * state that blocks the scan. */
 static bool s_autoconnect = false;
 
+/* Provisioning may create WIFI_STA_DEF before handing the radio to BLE. Reuse
+ * that netif instead of creating a second default STA, which ESP-IDF rejects
+ * as a duplicate interface key. */
+static esp_netif_t *ensure_sta_netif(void)
+{
+    if (s_sta_netif) return s_sta_netif;
+
+    s_sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!s_sta_netif) s_sta_netif = esp_netif_create_default_wifi_sta();
+    return s_sta_netif;
+}
+
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
@@ -158,6 +170,13 @@ bool wifi_manager_get_sta_ip(char *out, size_t out_sz)
     return true;
 }
 
+int wifi_manager_get_rssi(void)
+{
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return 0;
+    return ap.rssi;
+}
+
 esp_err_t wifi_creds_save(const char *ssid, const char *pass)
 {
     if (!ssid || !*ssid) return ESP_ERR_INVALID_ARG;
@@ -182,6 +201,76 @@ esp_err_t wifi_creds_save(const char *ssid, const char *pass)
     }
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
+    return err;
+}
+
+esp_err_t wifi_creds_clear(void)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS_WIFI, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    esp_err_t first = ESP_OK;
+    const char *keys[] = {NVS_KEY_SSID, NVS_KEY_PASS, NVS_KEY_BSSID, NVS_KEY_CHAN};
+    for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+        err = nvs_erase_key(h, keys[i]);
+        if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND && first == ESP_OK) first = err;
+    }
+    if (first == ESP_OK) first = nvs_commit(h);
+    nvs_close(h);
+    return first;
+}
+
+esp_err_t wifi_scan_networks(wifi_network_t *out, size_t cap, size_t *count)
+{
+    if (count) *count = 0;
+    if (!out || cap == 0) return ESP_ERR_INVALID_ARG;
+    if (!ensure_sta_netif()) return ESP_ERR_NO_MEM;
+
+    s_autoconnect = false;
+    esp_wifi_stop();
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err != ESP_OK) return err;
+    err = esp_wifi_start();
+    if (err != ESP_OK) return err;
+
+    wifi_scan_config_t cfg = {
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time.active = { .min = 30, .max = 80 },
+    };
+    err = ESP_ERR_WIFI_STATE;
+    for (int attempt = 0; attempt < 15 && err == ESP_ERR_WIFI_STATE; attempt++) {
+        err = esp_wifi_scan_start(&cfg, true);
+        if (err == ESP_ERR_WIFI_STATE) vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (err != ESP_OK) {
+        esp_wifi_stop();
+        return err;
+    }
+
+    uint16_t requested = (uint16_t)(cap > WIFI_SCAN_MAX_NETWORKS
+                                    ? WIFI_SCAN_MAX_NETWORKS : cap);
+    wifi_ap_record_t records[WIFI_SCAN_MAX_NETWORKS];
+    uint16_t found = requested;
+    err = esp_wifi_scan_get_ap_records(&found, records);
+    size_t used = 0;
+    if (err == ESP_OK) {
+        for (uint16_t i = 0; i < found && used < cap; i++) {
+            const char *ssid = (const char *)records[i].ssid;
+            if (!ssid[0]) continue;
+            bool duplicate = false;
+            for (size_t j = 0; j < used; j++) {
+                if (strcmp(out[j].ssid, ssid) == 0) { duplicate = true; break; }
+            }
+            if (duplicate) continue;
+            strncpy(out[used].ssid, ssid, sizeof out[used].ssid - 1);
+            out[used].ssid[sizeof out[used].ssid - 1] = '\0';
+            out[used].rssi = records[i].rssi;
+            out[used].secure = records[i].authmode != WIFI_AUTH_OPEN;
+            used++;
+        }
+    }
+    esp_wifi_stop();
+    if (count) *count = used;
     return err;
 }
 
@@ -258,12 +347,14 @@ static void clear_ap_hint(void)
 static esp_err_t connect_once(const char *ssid, const char *pass,
                               const uint8_t *bssid, uint8_t chan, int max_retries)
 {
+    if (s_events) vEventGroupDelete(s_events);
     s_events = xEventGroupCreate();
+    if (!s_events) return ESP_ERR_NO_MEM;
     s_retries = 0;
     s_max_retries = max_retries;
     s_autoconnect = true;   /* enable STA_START -> connect for this attempt */
 
-    if (!s_sta_netif) s_sta_netif = esp_netif_create_default_wifi_sta();
+    if (!ensure_sta_netif()) return ESP_ERR_NO_MEM;
 
     wifi_config_t wc = {0};
     strncpy((char *)wc.sta.ssid,     ssid, sizeof(wc.sta.ssid)     - 1);
@@ -287,6 +378,13 @@ static esp_err_t connect_once(const char *ssid, const char *pass,
     if (bits & BIT_CONNECTED) return ESP_OK;
     if (bits & BIT_FAIL)      return ESP_FAIL;
     return ESP_ERR_TIMEOUT;
+}
+
+esp_err_t wifi_sta_connect_credentials(const char *ssid, const char *pass)
+{
+    if (!ssid || !ssid[0] || !pass) return ESP_ERR_INVALID_ARG;
+    wifi_sta_stop();
+    return connect_once(ssid, pass, NULL, 0, 1);
 }
 
 esp_err_t wifi_sta_connect_stored(void)

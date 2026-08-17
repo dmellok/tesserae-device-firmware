@@ -48,6 +48,7 @@
 #include "touch_queue.h"    /* RTC replay queue for unsent touches (guarded) */
 #include "touch_wakestub.h" /* RTC wake-stub early touch capture (guarded) */
 #include "battery.h"
+#include "ble_setup.h"
 #include "epd_driver.h"
 #include "image_decoder.h"
 #include "image_fetcher.h"
@@ -361,24 +362,52 @@ static void sleep_forever_or_until_timer(void)
 
 /* ---------- app ---------- */
 
+static bool apply_ble_result(ble_setup_result_t result);
+
+static bool registered_wifi_recovery_needed(void)
+{
+    const rest_config_t *cfg = rest_config_get();
+    return !wifi_creds_present() &&
+           rest_config_has_server() &&
+           cfg->device_token[0];
+}
+
+static ble_setup_mode_t setup_ble_mode(void)
+{
+    if (registered_wifi_recovery_needed()) {
+        ESP_LOGI(TAG, "saved registration found; BLE will repair Wi-Fi in place");
+        return BLE_SETUP_MODE_MAINTENANCE;
+    }
+    return BLE_SETUP_MODE_NEW_DEVICE;
+}
+
 static void run_provisioning_then_reboot(const char *note)
 {
-    ESP_LOGW(TAG, "opening captive portal%s%s", note ? ": " : "", note ? note : "");
-    /* Bring the AP up FIRST (joinable in ~1-2 s), THEN paint the portal splash.
-     * The splash is a ~25-30 s blocking panel refresh (worst on the 13.3"), so
-     * doing it first would leave the AP dark that whole time -- and the QR it
-     * shows would point at an AP that isn't up yet. With begin() first, the AP
-     * is live while the panel renders, and a submit during the paint is captured
-     * on the httpd task (serve() picks it up). `note` (when set) replaces the
-     * "Setup mode" subtitle with why the user was sent back here. */
-    provisioning_begin();
-    if (note) splash_show_portal_note(note);
-    else      splash_show_portal();
-    esp_err_t err = provisioning_serve();
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "creds saved; rebooting to use them");
-        esp_restart();
-        /* not reached */
+    const char *portal_note = note;
+    while (1) {
+        ESP_LOGW(TAG, "opening captive portal%s%s",
+                 portal_note ? ": " : "", portal_note ? portal_note : "");
+        /* Bring the AP up FIRST (joinable in ~1-2 s), THEN paint the portal
+         * splash. The user can use 192.168.4.1 immediately, or hold the board's
+         * maintenance control to tear AP down and switch to Companion BLE. */
+        provisioning_begin();
+        if (portal_note) splash_show_portal_note(portal_note);
+        else             splash_show_portal();
+        provisioning_result_t result = provisioning_serve();
+        if (result == PROVISIONING_RESULT_SAVED) {
+            ESP_LOGI(TAG, "creds saved; rebooting to use them");
+            esp_restart();
+            /* not reached */
+        }
+        if (result == PROVISIONING_RESULT_BLE_REQUESTED) {
+            ble_setup_result_t ble_result = ble_setup_run(
+                setup_ble_mode(), BLE_SETUP_TIMEOUT_S);
+            if (apply_ble_result(ble_result)) return;
+            ESP_LOGW(TAG, "BLE setup ended without a saved configuration; returning to AP");
+            portal_note = "Bluetooth ended; use AP";
+            continue;
+        }
+        break;
     }
 
     /* Portal expired with no client ever joining (or no submission). Don't
@@ -662,26 +691,29 @@ static void battery_goodbye_check(bool settings_mode)
 
 /* ---------- front-button factory reset ---------- */
 
-/* Hold the refresh button (Key1) for FACTORY_RESET_HOLD_S to erase NVS and
- * reboot into the setup portal. The initiating press is an ordinary ext1 wake
+/* Hold Refresh (Key1) for BLE_MAINTENANCE_HOLD_S and release before
+ * FACTORY_RESET_HOLD_S to enter bounded BLE maintenance. Keep holding through
+ * FACTORY_RESET_HOLD_S to erase NVS and reboot into setup. The initiating press is an ordinary ext1 wake
  * (or the button can be held through a RESET/power-on), so this runs on every
  * boot but costs one GPIO read when the button is already up. It must run
  * BEFORE wifi_manager_init() so the erase cannot race the connect path's own
  * NVS writes (fast-connect hints, creds). Held through the reboot, the check
  * simply re-arms: NVS is already blank, and the portal opens on release. */
 #if defined(BOARD_HAS_BUTTONS) && defined(BOARD_BTN_REFRESH_PIN)
-static void maybe_factory_reset_hold(button_id_t woke_btn, bool first_boot)
+static bool maybe_factory_reset_hold(button_id_t woke_btn, bool first_boot)
 {
-    if (woke_btn != BTN_REFRESH && !first_boot) return;
+    if (!buttons_is_maintenance_button(woke_btn) && !first_boot) return false;
 
     buttons_poll_init();
     vTaskDelay(pdMS_TO_TICKS(10));   /* pull-up settle before the first read */
+    if (!buttons_maintenance_is_pressed()) return false;
 
     int held_ms = 0;
-    while (gpio_get_level((gpio_num_t)BOARD_BTN_REFRESH_PIN) == 0) {
+    while (buttons_maintenance_is_pressed()) {
         if (held_ms == 0) {
-            ESP_LOGW(TAG, "refresh button held: factory reset in %d s (release to cancel)",
-                     FACTORY_RESET_HOLD_S);
+            ESP_LOGW(TAG,
+                     "refresh held: release after %d s for BLE maintenance; keep holding %d s to reset",
+                     BLE_MAINTENANCE_HOLD_S, FACTORY_RESET_HOLD_S);
         }
         vTaskDelay(pdMS_TO_TICKS(100));
         held_ms += 100;
@@ -697,15 +729,66 @@ static void maybe_factory_reset_hold(button_id_t woke_btn, bool first_boot)
         }
     }
     if (held_ms) {
+        if (held_ms >= BLE_MAINTENANCE_HOLD_S * 1000) {
+            ESP_LOGI(TAG, "released after %d ms; entering BLE maintenance", held_ms);
+            return true;
+        }
         ESP_LOGI(TAG, "released after %d ms; continuing as a normal press", held_ms);
     }
+    return false;
 }
 #else
-static void maybe_factory_reset_hold(button_id_t woke_btn, bool first_boot)
+static bool maybe_factory_reset_hold(button_id_t woke_btn, bool first_boot)
 {
     (void)woke_btn; (void)first_boot;
+    return false;
 }
 #endif
+
+static bool apply_ble_result(ble_setup_result_t result)
+{
+    switch (result) {
+    case BLE_SETUP_RESULT_CONFIGURED:
+    case BLE_SETUP_RESULT_REBOOT:
+        /* The setup splash replaced the physical panel contents. Persistently
+         * invalidate the cached ETag before restarting so the next ordinary
+         * wake cannot leave that splash visible after a server 304. */
+        rest_config_set_frame_etag("");
+        ESP_ERROR_CHECK(rest_config_save());
+        esp_restart();
+        return true;
+    case BLE_SETUP_RESULT_CLEAR_WIFI:
+        ESP_ERROR_CHECK(wifi_creds_clear());
+        esp_restart();
+        return true;
+    case BLE_SETUP_RESULT_FACTORY_RESET:
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        esp_restart();
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Awake button windows used to dispatch Refresh on its first edge, making the
+ * 3-second BLE gesture work only when waking from deep sleep. Enter through a
+ * fresh software cycle after stopping Wi-Fi so every runtime state converges
+ * on the same bounded maintenance path. */
+static void enter_ble_maintenance_from_awake_window(void)
+{
+    ESP_LOGI(TAG, "awake-window Refresh hold: entering BLE maintenance");
+    rest_set_button(NULL, 0);
+    wifi_sta_stop();
+    ble_setup_result_t result = ble_setup_run(
+        BLE_SETUP_MODE_MAINTENANCE, BLE_SETUP_TIMEOUT_S);
+    if (apply_ble_result(result)) return;   /* action paths restart */
+
+    /* Timeout/error also replaced the panel with the maintenance splash.
+     * Persist an empty ETag and restart so the normal cycle restores content. */
+    rest_config_set_frame_etag("");
+    ESP_ERROR_CHECK(rest_config_save());
+    esp_restart();
+}
 
 /* One conditional relay frame poll, painting only a frame that decrypted AND
  * matches this panel's geometry. Returns true when the glass changed.
@@ -1460,10 +1543,49 @@ void app_main(void)
      * or a portal), then the factory-reset hold -- both before any NVS/WiFi
      * init so the erase path is race-free. */
     battery_goodbye_check(settings_mode);
-    maybe_factory_reset_hold(woke_btn, first_boot);
+    bool maintenance_requested = maybe_factory_reset_hold(woke_btn, first_boot);
 
     ESP_ERROR_CHECK(wifi_manager_init());
     rest_config_load();
+
+    if (maintenance_requested) {
+        ble_setup_result_t result = ble_setup_run(
+            BLE_SETUP_MODE_MAINTENANCE, BLE_SETUP_TIMEOUT_S);
+        if (apply_ble_result(result)) return;
+        /* The maintenance screen replaced the last frame. Force the ordinary
+         * cycle below to restore display content even when its ETag is unchanged. */
+        rest_config_set_frame_etag("");
+    }
+
+#if defined(BOARD_BTN_REFRESH_PIN)
+    /* Clear Wi-Fi is an authenticated Companion action, so a display that
+     * still has its server registration should return to the app first. This
+     * is distinct from a new/factory-reset display, whose missing registration
+     * keeps the established AP-first onboarding path below. */
+    if (registered_wifi_recovery_needed() && !maintenance_requested) {
+        ESP_LOGI(TAG, "registered display has no Wi-Fi; opening BLE recovery first");
+        ble_setup_result_t result = ble_setup_run(
+            BLE_SETUP_MODE_MAINTENANCE, BLE_SETUP_TIMEOUT_S);
+        if (apply_ble_result(result)) return;
+        ESP_LOGW(TAG, "BLE recovery timed out or failed; falling back to captive portal");
+    }
+#else
+    /* AP-first switching is currently scoped to Seeed-family builds that have
+     * an established Refresh gesture. Preserve the existing BLE-first setup
+     * flow on other board families until their physical controls are designed
+     * and validated separately. */
+    const rest_config_t *setup_cfg = rest_config_get();
+    bool setup_relay_ready = setup_cfg->relay_url[0] &&
+                             (relay_ready() || relay_pairing_pending());
+    bool ble_setup_needed = !wifi_creds_present() ||
+                            (!rest_config_has_server() && !setup_relay_ready);
+    if (ble_setup_needed && !maintenance_requested) {
+        ble_setup_result_t result = ble_setup_run(
+            setup_ble_mode(), BLE_SETUP_TIMEOUT_S);
+        if (apply_ble_result(result)) return;
+        ESP_LOGW(TAG, "BLE setup timed out or failed; falling back to captive portal");
+    }
+#endif
 
     /* Recovered from the battery goodbye this wake: the goodbye is still on
      * the panel, so drop the cached ETag -- the server must send a full frame
@@ -1496,8 +1618,13 @@ void app_main(void)
      * still pending from above. */
     if (woke_by_button) {
         bool nav_fallthrough = false;
+        bool nav_maintenance = false;
         if (deck_try_button(button_name(woke_btn), &s_button_event_seq,
-                            &nav_fallthrough)) {
+                            &nav_fallthrough, &nav_maintenance)) {
+            if (nav_maintenance) {
+                enter_ble_maintenance_from_awake_window();
+                return;   /* not reached */
+            }
             if (!nav_fallthrough) {
                 ESP_LOGI(TAG, "served locally from deck cache; back to sleep");
                 sleep_forever_or_until_timer();
@@ -1846,6 +1973,12 @@ void app_main(void)
                        !relay_pairing_revoked()) {
                     button_id_t b = buttons_poll_pressed();
                     if (b != BTN_NONE) {
+                        if (buttons_is_maintenance_button(b)) {
+                            if (buttons_maintenance_held_for_activation()) {
+                                enter_ble_maintenance_from_awake_window();
+                                return;   /* not reached */
+                            }
+                        }
                         /* A NEW press: fresh id, and repost at once so home
                          * sees it on its very next relay poll. */
                         uint64_t ev = ++s_button_event_seq;
@@ -2316,6 +2449,12 @@ void app_main(void)
         while (esp_timer_get_time() < deadline && esp_timer_get_time() < hard_cap) {
             button_id_t b = buttons_poll_pressed();
             if (b == BTN_NONE) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
+            if (buttons_is_maintenance_button(b)) {
+                if (buttons_maintenance_held_for_activation()) {
+                    enter_ble_maintenance_from_awake_window();
+                    return;   /* not reached */
+                }
+            }
             uint64_t ev = ++s_button_event_seq;
             ESP_LOGI(TAG, "window press '%s' (event %llu)", button_name(b),
                      (unsigned long long)ev);

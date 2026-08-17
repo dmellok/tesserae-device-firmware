@@ -52,6 +52,7 @@
 
 /* Board model -> default device id "Seeed_EE04_75_<mac-suffix>". */
 #define TESSERAE_DEVICE_MODEL  "Seeed_EE04_75"
+#define TESSERAE_BLE_HARDWARE_CODE  6
 
 /* Tesserae hardware-catalog kind. Same 800x480 1bpp mono frame (48000 bytes)
  * as the E1001, so the server maps this to the existing mono renderer. */
