@@ -83,7 +83,6 @@
 
 /* Board model -> default device id "PhotoPainter_73_<mac-suffix>". */
 #define TESSERAE_DEVICE_MODEL  "PhotoPainter_73"
-#define TESSERAE_BLE_HARDWARE_CODE  10
 
 /* Tesserae hardware-catalog kind. Same 800x480 4bpp Spectra-6 frame (192000
  * bytes) as the E1002, so the server maps this to the existing renderer. */

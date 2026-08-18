@@ -1569,22 +1569,6 @@ void app_main(void)
         if (apply_ble_result(result)) return;
         ESP_LOGW(TAG, "BLE recovery timed out or failed; falling back to captive portal");
     }
-#else
-    /* AP-first switching is currently scoped to Seeed-family builds that have
-     * an established Refresh gesture. Preserve the existing BLE-first setup
-     * flow on other board families until their physical controls are designed
-     * and validated separately. */
-    const rest_config_t *setup_cfg = rest_config_get();
-    bool setup_relay_ready = setup_cfg->relay_url[0] &&
-                             (relay_ready() || relay_pairing_pending());
-    bool ble_setup_needed = !wifi_creds_present() ||
-                            (!rest_config_has_server() && !setup_relay_ready);
-    if (ble_setup_needed && !maintenance_requested) {
-        ble_setup_result_t result = ble_setup_run(
-            setup_ble_mode(), BLE_SETUP_TIMEOUT_S);
-        if (apply_ble_result(result)) return;
-        ESP_LOGW(TAG, "BLE setup timed out or failed; falling back to captive portal");
-    }
 #endif
 
     /* Recovered from the battery goodbye this wake: the goodbye is still on

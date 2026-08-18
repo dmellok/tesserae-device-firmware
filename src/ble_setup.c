@@ -23,6 +23,7 @@ ble_setup_result_t ble_setup_run(ble_setup_mode_t mode, uint32_t timeout_s)
 #include <stdlib.h>
 #include <string.h>
 
+#include "app_config.h"
 #include "battery.h"
 #include "ble_setup_protocol.h"
 #include "net_rest.h"
@@ -51,6 +52,13 @@ ble_setup_result_t ble_setup_run(ble_setup_mode_t mode, uint32_t timeout_s)
 #include "nimble/nimble_port_freertos.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
+
+#ifndef BOARD_BTN_REFRESH_PIN
+#error "BLE setup requires a board with a Refresh button"
+#endif
+
+_Static_assert(TESSERAE_BLE_HARDWARE_CODE != 0,
+               "BLE-enabled boards must define TESSERAE_BLE_HARDWARE_CODE");
 
 static const char *TAG = "ble_setup";
 
