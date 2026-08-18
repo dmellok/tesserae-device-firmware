@@ -42,7 +42,6 @@
 
 /* Board model -> default device id "Waveshare_133E6_<mac-suffix>". */
 #define TESSERAE_DEVICE_MODEL  "Waveshare_133E6"
-#define TESSERAE_BLE_HARDWARE_CODE  9
 
 /* Tesserae hardware-catalog kind (esp32_client protocol + esp32_bin renderer:
  * raw 4bpp Spectra-6/E6, EPD_WIDTH*EPD_HEIGHT/2 bytes). */

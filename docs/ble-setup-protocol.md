@@ -7,8 +7,9 @@ REST transport used for normal display operation. On supported Seeed displays
 with a Refresh button, a brand-new or factory-reset display opens its captive
 portal first and advertises only after a physical maintenance-mode action. A
 registered display whose Wi-Fi was cleared from Companion instead returns to
-Bluetooth recovery first. Other board families retain their existing BLE-first
-setup flow until their physical controls are designed and validated separately.
+Bluetooth recovery first. Other board families retain captive-portal setup and
+do not link the NimBLE setup stack until their physical controls are designed
+and validated separately.
 
 ## Physical authorization and lifetime
 
@@ -44,18 +45,18 @@ UUID:
 
 Hardware code registry:
 
-| Code | Hardware catalog kind |
-| ---: | --- |
-| `1` | `seeed_reterminal_e1001` |
-| `2` | `seeed_reterminal_e1002` |
-| `3` | `seeed_reterminal_e1003` |
-| `4` | `seeed_reterminal_e1004` |
-| `5` | `seeed_ee02` |
-| `6` | `seeed_ee04_75` |
-| `7` | `seeed_ee04_73e6` |
-| `8` | `seeed_xiao_75` |
-| `9` | `waveshare_133e6` |
-| `10` | `waveshare_photopainter_73` |
+| Code | Hardware catalog kind | Status |
+| ---: | --- | --- |
+| `1` | `seeed_reterminal_e1001` | Enabled |
+| `2` | `seeed_reterminal_e1002` | Enabled |
+| `3` | `seeed_reterminal_e1003` | Enabled |
+| `4` | `seeed_reterminal_e1004` | Enabled |
+| `5` | `seeed_ee02` | Enabled |
+| `6` | `seeed_ee04_75` | Enabled |
+| `7` | `seeed_ee04_73e6` | Enabled |
+| `8` | `seeed_xiao_75` | Reserved; BLE not enabled |
+| `9` | `waveshare_133e6` | Reserved; BLE not enabled |
+| `10` | `waveshare_photopainter_73` | Reserved; BLE not enabled |
 
 The advertisement does not expose SSID, server URL, room name, password, full
 MAC address, or device token.

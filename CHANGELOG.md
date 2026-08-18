@@ -25,6 +25,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Aligned the Bluetooth setup screen with the captive-portal design, centering
   the Tesserae branding, QR code, Companion scan prompt, and fallback passkey.
+- Limited the NimBLE setup stack to supported Seeed displays with a Refresh
+  button. Other boards retain captive-portal setup without carrying an
+  unreachable Bluetooth implementation.
 
 ### Fixed
 

@@ -96,9 +96,11 @@
 #endif
 
 /* Stable public BLE discovery identifier. Values are registered in
- * docs/ble-setup-protocol.md and map to App-side hardware catalog entries. */
+ * docs/ble-setup-protocol.md and map to App-side hardware catalog entries.
+ * Boards without the BLE overlay do not need one; ble_setup.c asserts a
+ * non-zero value only when NimBLE is actually enabled. */
 #ifndef TESSERAE_BLE_HARDWARE_CODE
-#error "Selected board must define TESSERAE_BLE_HARDWARE_CODE"
+#define TESSERAE_BLE_HARDWARE_CODE  0
 #endif
 
 /* How long to deep-sleep between MQTT checks. 1 minute is the short

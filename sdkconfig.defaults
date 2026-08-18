@@ -38,24 +38,6 @@ CONFIG_LWIP_LOCAL_HOSTNAME="tesserae-esp32"
 # WiFi: STA + AP simultaneously (we need AP during provisioning)
 CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
 
-# BLE setup / maintenance: one secure peripheral connection, no continuous
-# background radio. NimBLE is started only inside the bounded setup window.
-CONFIG_BT_ENABLED=y
-CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y
-CONFIG_BT_NIMBLE_ENABLED=y
-CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
-CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
-CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
-CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
-CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
-CONFIG_BT_NIMBLE_MAX_BONDS=1
-CONFIG_BT_NIMBLE_SM_SC=y
-CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=256
-# Connection setup derives an authenticated session key inside the NimBLE host
-# callback. The default 4 KiB task is too small once mbedTLS and JSON formatting
-# share that stack, and can corrupt the host mutex before the first GATT write.
-CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192
-
 # --- TLS / HTTPS via mbedTLS bundled root CAs ---
 # Lets esp_http_client + esp-tls validate arbitrary public HTTPS endpoints
 # without us embedding any certs.
