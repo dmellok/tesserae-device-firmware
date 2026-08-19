@@ -33,11 +33,16 @@ ota_install_result_t ota_install_apply(const ota_manifest_t *manifest)
     if (manifest == NULL || manifest->image_url[0] == '\0' ||
         manifest->size_bytes == 0) return OTA_INSTALL_INVALID_ARGUMENT;
 
-    int battery_mv = battery_read_mv();
-    if (battery_mv < TESSERAE_OTA_MIN_BATTERY_MV) {
-        ESP_LOGW(TAG, "update deferred: battery=%d mV, minimum=%d mV",
-                 battery_mv, TESSERAE_OTA_MIN_BATTERY_MV);
-        return OTA_INSTALL_LOW_BATTERY;
+    /* Only gate on charge where there is a cell to read. A board with no sense
+     * reports 0 mV, which is below any threshold, so gating on it unconditionally
+     * refuses every update forever and reports it as a flat battery. */
+    if (battery_present()) {
+        int battery_mv = battery_read_mv();
+        if (battery_mv < TESSERAE_OTA_MIN_BATTERY_MV) {
+            ESP_LOGW(TAG, "update deferred: battery=%d mV, minimum=%d mV",
+                     battery_mv, TESSERAE_OTA_MIN_BATTERY_MV);
+            return OTA_INSTALL_LOW_BATTERY;
+        }
     }
 
     const esp_partition_t *running = esp_ota_get_running_partition();

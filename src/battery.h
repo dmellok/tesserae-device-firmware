@@ -10,6 +10,16 @@
  */
 #pragma once
 
+#include <stdbool.h>
+
+/* True when this board can actually measure its cell.
+ *
+ * Check this before acting on battery_read_mv(). A board with no sense reports
+ * 0 mV, which is indistinguishable from a flat cell, and treating it as a
+ * reading means "0%" everywhere: the XIAO C3 panel has a battery but no divider
+ * to any ADC pin, so it can never report one. */
+bool battery_present(void);
+
 /* Battery rail in millivolts, or 0 if this board has no configured sense. */
 int battery_read_mv(void);
 

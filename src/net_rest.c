@@ -963,11 +963,19 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     snprintf(url, sizeof url, "%s/api/v1/device/%s/status", c->server_url, rest_config_device_id());
 
     int mv = battery_read_mv();
-    ESP_LOGI(TAG, "status: battery=%d mV (%d%%), rssi=%d, ip=%s",
-             mv, battery_pct(mv), rssi, ip ? ip : "");
+    if (battery_present())
+        ESP_LOGI(TAG, "status: battery=%d mV (%d%%), rssi=%d, ip=%s",
+                 mv, battery_pct(mv), rssi, ip ? ip : "");
+    else
+        ESP_LOGI(TAG, "status: battery=none, rssi=%d, ip=%s", rssi, ip ? ip : "");
     cJSON *o = cJSON_CreateObject();
-    cJSON_AddNumberToObject(o, "battery_mv", mv);
-    cJSON_AddNumberToObject(o, "battery_pct", battery_pct(mv));
+    /* OMIT rather than send 0 where the board cannot measure its cell. A zero
+     * is a real reading everywhere else, so the server would render a flat
+     * battery on every frame; an absent field is unambiguous. */
+    if (battery_present()) {
+        cJSON_AddNumberToObject(o, "battery_mv", mv);
+        cJSON_AddNumberToObject(o, "battery_pct", battery_pct(mv));
+    }
     cJSON_AddNumberToObject(o, "rssi", rssi);
     cJSON_AddStringToObject(o, "ip", ip ? ip : "");
     cJSON_AddNumberToObject(o, "next_sleep_s", next_sleep_s);
