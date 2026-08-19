@@ -402,6 +402,8 @@ static void draw_ble(void)
     snprintf(passkey, sizeof passkey, "Passkey: %06" PRIu32, s_ble_passkey);
     const char *title = s_ble_maintenance ? "Maintenance" : "Set Up";
     const char *instruction = "Scan with Companion app";
+    /* The way out. Without it the only exit is waiting out the whole window. */
+    const char *back = "Hold Refresh to go back";
 
     int base_s = ((s_W < s_H) ? s_W : s_H) / 240;
     if (base_s < 2) base_s = 2;
@@ -416,13 +418,15 @@ static void draw_ble(void)
         int title_s = text_scale_to_fit(title, 2 * base_s, text_area_w);
         int body_s = base_s;
         int passkey_s = text_scale_to_fit(passkey, base_s, text_area_w);
+        int back_s = text_scale_to_fit(back, base_s, text_area_w);
         bool split_instruction = text_w(instruction, body_s) > text_area_w;
         int instruction_h = split_instruction ? 16 * body_s + gap / 2
                                               : 8 * body_s;
         int logo = (s_H * 2) / 5;
         if (logo > text_area_w * 2 / 3) logo = text_area_w * 2 / 3;
         int block = logo + gap + 8 * wordmark_s + gap + 8 * title_s + gap
-                    + instruction_h + gap + 8 * passkey_s;
+                    + instruction_h + gap + 8 * passkey_s
+                    + gap + 8 * back_s;
         int y = (s_H - block) / 2;
         blit_logo(half / 2, y, logo); y += logo + gap;
         draw_text_in(text_x, text_area_w, y, "Tesserae", wordmark_s, COL_BLK);
@@ -439,6 +443,8 @@ static void draw_ble(void)
             y += 8 * body_s + gap;
         }
         draw_text_in(text_x, text_area_w, y, passkey, passkey_s, COL_BLK);
+        y += 8 * passkey_s + gap;
+        draw_text_in(text_x, text_area_w, y, back, back_s, COL_BLK);
         if (qn) {
             int box_w = half * 4 / 5;
             int box_h = s_H * 4 / 5;
@@ -459,6 +465,7 @@ static void draw_ble(void)
         int title_s = text_scale_to_fit(title, 2 * base_s, text_area_w);
         int body_s = text_scale_to_fit(instruction, base_s, text_area_w);
         int passkey_s = text_scale_to_fit(passkey, base_s, text_area_w);
+        int back_s = text_scale_to_fit(back, base_s, text_area_w);
         int logo = s_W / 3;
 
         int scale = 0;
@@ -475,7 +482,7 @@ static void draw_ble(void)
         }
 
         int block = logo + gap + 8 * wordmark_s + gap + 8 * title_s + gap
-                    + 8 * body_s + gap + 8 * passkey_s
+                    + 8 * body_s + gap + 8 * passkey_s + gap + 8 * back_s
                     + (qn ? gap + total : 0);
         int y = (s_H - block) / 2;
         if (y < gap) y = gap;
@@ -488,6 +495,8 @@ static void draw_ble(void)
         y += 8 * body_s + gap;
         draw_text_in(margin, text_area_w, y, passkey, passkey_s, COL_BLK);
         y += 8 * passkey_s + gap;
+        draw_text_in(margin, text_area_w, y, back, back_s, COL_BLK);
+        y += 8 * back_s + gap;
         if (qn) {
             int qx = (s_W - total) / 2 + 4 * scale;
             int qy = y + 4 * scale;
