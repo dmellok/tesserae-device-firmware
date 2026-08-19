@@ -3,6 +3,19 @@
 
 #include <stdint.h>
 
+#include "sdkconfig.h"
+
+/* Defined on builds that actually carry BLE setup. The overlay enabling NimBLE
+ * is applied only to boards with a Refresh button, so this one condition covers
+ * both "the stack is linked" and "there is a control to trigger it".
+ *
+ * Gate UI hints and the hold gesture on THIS, not on BOARD_BTN_REFRESH_PIN: the
+ * selftest envs have the button without the overlay, and there a hint would
+ * advertise a gesture that reaches nothing but the ble_setup_run() stub. */
+#ifdef CONFIG_BT_NIMBLE_ENABLED
+#define TESSERAE_BLE_SETUP_AVAILABLE 1
+#endif
+
 typedef enum {
     BLE_SETUP_MODE_NEW_DEVICE = 1,
     BLE_SETUP_MODE_MAINTENANCE = 2,
@@ -10,6 +23,9 @@ typedef enum {
 
 typedef enum {
     BLE_SETUP_RESULT_TIMEOUT = 0,
+    /* Refresh held again on the device: leave without waiting out the window.
+     * Handled like a timeout by the caller -- fall back to the captive portal. */
+    BLE_SETUP_RESULT_CANCELLED,
     BLE_SETUP_RESULT_CONFIGURED,
     BLE_SETUP_RESULT_REBOOT,
     BLE_SETUP_RESULT_CLEAR_WIFI,

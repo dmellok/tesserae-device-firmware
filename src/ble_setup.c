@@ -25,6 +25,7 @@ ble_setup_result_t ble_setup_run(ble_setup_mode_t mode, uint32_t timeout_s)
 
 #include "app_config.h"
 #include "battery.h"
+#include "buttons.h"
 #include "ble_setup_protocol.h"
 #include "net_rest.h"
 #include "relay_crypto.h"
@@ -65,6 +66,8 @@ static const char *TAG = "ble_setup";
 #define BIT_DONE           BIT0
 #define BIT_HOST_STOPPED   BIT1
 #define BIT_WORKER_STOPPED BIT2
+#define BIT_CANCEL_STOPPED BIT3
+#define CANCEL_POLL_MS     50
 #define COMMAND_QUEUE_LEN  4
 #define EVENT_FRAME_MAX    300
 #define LOG_ROWS           10
@@ -104,6 +107,7 @@ static ble_setup_result_t s_result;
 static EventGroupHandle_t s_events;
 static QueueHandle_t s_commands;
 static TaskHandle_t s_worker;
+static TaskHandle_t s_cancel;
 static bool s_stopping;
 static bool s_notify;
 static bool s_nimble_initialized;
@@ -441,6 +445,41 @@ static void process_command(const command_t *command)
     cJSON_Delete(root);
 }
 
+/* Second Refresh hold ends the session early, so the user is not stuck looking
+ * at a QR code for the rest of the five-minute window.
+ *
+ * The press that opened this session is very often STILL DOWN when we get here
+ * -- the portal hands over as soon as its own 3 s hold completes, without
+ * waiting for a release -- so arm only after seeing the button up. Otherwise
+ * one continuous hold enters and immediately cancels. */
+static void cancel_button_task(void *arg)
+{
+    (void)arg;
+    buttons_poll_init();
+    bool armed = false;
+    int held_ms = 0;
+    while (!s_stopping) {
+        bool down = buttons_maintenance_is_pressed();
+        if (!armed) {
+            armed = !down;
+            held_ms = 0;
+        } else if (down) {
+            held_ms += CANCEL_POLL_MS;
+            if (held_ms >= BLE_MAINTENANCE_HOLD_S * 1000) {
+                ESP_LOGI(TAG, "Refresh held again; ending BLE session");
+                add_log("Cancelled on device");
+                finish(BLE_SETUP_RESULT_CANCELLED);
+                break;
+            }
+        } else {
+            held_ms = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(CANCEL_POLL_MS));
+    }
+    xEventGroupSetBits(s_events, BIT_CANCEL_STOPPED);
+    vTaskDelete(NULL);
+}
+
 static void worker_task(void *arg)
 {
     (void)arg;
@@ -733,6 +772,20 @@ static void stop_ble(void)
         s_worker = NULL;
     }
 
+    /* Join the cancel poller too: it sets BIT_DONE through s_events, which
+     * scrub_session() is about to delete. It only ever waits one poll interval,
+     * so anything longer than that means it is wedged. */
+    if (s_cancel) {
+        EventBits_t bits = xEventGroupWaitBits(
+            s_events, BIT_CANCEL_STOPPED, pdFALSE, pdTRUE,
+            pdMS_TO_TICKS(2000));
+        if (!(bits & BIT_CANCEL_STOPPED)) {
+            ESP_LOGE(TAG, "BLE cancel poller did not stop; restarting instead of unsafe teardown");
+            esp_restart();
+        }
+        s_cancel = NULL;
+    }
+
     if (s_nimble_initialized && s_host_started) {
         /* nimble_port_stop() already terminates active links and advertising.
          * Manually terminating first raced its asynchronous disconnect with
@@ -795,7 +848,8 @@ ble_setup_result_t ble_setup_run(ble_setup_mode_t mode, uint32_t timeout_s)
     s_result = BLE_SETUP_RESULT_TIMEOUT;
     s_stopping = false; s_notify = false; s_conn = BLE_HS_CONN_HANDLE_NONE;
     s_nimble_initialized = false; s_host_started = false;
-    s_worker = NULL; s_out_message_id = 0; s_last_event_len = 0; s_log_count = 0;
+    s_worker = NULL; s_cancel = NULL;
+    s_out_message_id = 0; s_last_event_len = 0; s_log_count = 0;
     memset(&s_staged, 0, sizeof s_staged);
     ble_setup_reassembly_reset(&s_qr_reassembly);
     ble_setup_reassembly_reset(&s_native_reassembly);
@@ -814,6 +868,13 @@ ble_setup_result_t ble_setup_run(ble_setup_mode_t mode, uint32_t timeout_s)
      * timeout. Make the session visible first, then start the BLE tasks. */
     splash_show_ble_setup(s_qr_payload, s_passkey,
                           mode == BLE_SETUP_MODE_MAINTENANCE);
+
+    /* Started before start_ble() so the way out exists even if the host never
+     * comes up and the session is heading for the error path below. */
+    if (xTaskCreate(cancel_button_task, "ble_cancel_btn", 2048, NULL, 4, &s_cancel) != pdPASS) {
+        s_cancel = NULL;
+        ESP_LOGE(TAG, "could not start Refresh-to-cancel monitor");
+    }
 
     if (xTaskCreate(worker_task, "ble_setup_work", 7168, NULL, 5, &s_worker) != pdPASS ||
         !start_ble()) {

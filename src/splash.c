@@ -12,6 +12,7 @@
  * (tesserae_logo.h).
  */
 #include "splash.h"
+#include "ble_setup.h"      /* -> TESSERAE_BLE_SETUP_AVAILABLE */
 #include "epd_driver.h"
 #include "panel/epd_panel.h"
 #include "app_config.h"
@@ -251,6 +252,21 @@ static int build_ble_qr(uint8_t *qrbuf)
 
 static const char *k_url = "Open  http://192.168.4.1";
 
+/* Second route off this screen, for displays that have the gesture. The portal
+ * page carries the same offer, but only after joining the AP -- which is the
+ * step someone reaching for the app is trying to skip, so it has to be here.
+ *
+ * NULL where BLE is not built, which drops the line and its height. Keep the
+ * text short: the landscape column sizes its body scale so the longest line
+ * fits ~26 characters, and a longer string shrinks every line on that panel. */
+#define SPLASH_STR2(x) #x
+#define SPLASH_STR(x)  SPLASH_STR2(x)
+#ifdef TESSERAE_BLE_SETUP_AVAILABLE
+static const char *k_ble_hint = "Or hold Refresh " SPLASH_STR(BLE_MAINTENANCE_HOLD_S) "s";
+#else
+static const char *k_ble_hint = NULL;
+#endif
+
 /* ---------- cold-boot logo ---------- */
 
 static void draw_logo(void)
@@ -282,6 +298,7 @@ static void draw_portal_portrait(void)
     int qz     = qn ? 4 * qscale : 0;
 
     int total = logo + gap + 8 * ts + gap + 8 * s + gap + 8 * s + gap + 8 * s
+                + (k_ble_hint ? gap + 8 * s : 0)
                 + (qn ? gap + qz + qpix : 0);
     int y = (s_H - total) / 2 - s_H / 14; if (y < gap) y = gap;
 
@@ -294,6 +311,9 @@ static void draw_portal_portrait(void)
                                                               y += 8 * s + gap;
     draw_text_in(0, s_W, y, line_ssid, s, COL_BLK);           y += 8 * s + gap;
     draw_text_in(0, s_W, y, k_url, s, COL_BLK);               y += 8 * s + gap;
+    if (k_ble_hint) {
+        draw_text_in(0, s_W, y, k_ble_hint, s, COL_BLK);      y += 8 * s + gap;
+    }
     if (qn) { y += qz; draw_qr(qr, (s_W - qpix) / 2, y, qscale); }
 }
 
@@ -316,7 +336,8 @@ static void draw_portal_landscape(void)
     int logo = (s_H * 2) / 5;                           /* ~40% of height */
     if (logo > lw) logo = lw;
 
-    int block = logo + gap + 8 * ts + gap + 8 * s + gap + 8 * s + gap + 8 * s;
+    int block = logo + gap + 8 * ts + gap + 8 * s + gap + 8 * s + gap + 8 * s
+                + (k_ble_hint ? gap + 8 * s : 0);
     int y = (s_H - block) / 2; if (y < gap) y = gap;
 
     char line_ssid[64];
@@ -329,6 +350,10 @@ static void draw_portal_landscape(void)
                                                         y += 8 * s + gap;
     draw_text_in(lm, lw, y, line_ssid, s, COL_BLK);     y += 8 * s + gap;
     draw_text_in(lm, lw, y, k_url, s, COL_BLK);
+    if (k_ble_hint) {
+        y += 8 * s + gap;
+        draw_text_in(lm, lw, y, k_ble_hint, s, COL_BLK);
+    }
 
     /* Right column: QR centered, clamped so it doesn't dominate a large panel. */
     if (qn) {
@@ -377,6 +402,8 @@ static void draw_ble(void)
     snprintf(passkey, sizeof passkey, "Passkey: %06" PRIu32, s_ble_passkey);
     const char *title = s_ble_maintenance ? "Maintenance" : "Set Up";
     const char *instruction = "Scan with Companion app";
+    /* The way out. Without it the only exit is waiting out the whole window. */
+    const char *back = "Hold Refresh to go back";
 
     int base_s = ((s_W < s_H) ? s_W : s_H) / 240;
     if (base_s < 2) base_s = 2;
@@ -391,13 +418,15 @@ static void draw_ble(void)
         int title_s = text_scale_to_fit(title, 2 * base_s, text_area_w);
         int body_s = base_s;
         int passkey_s = text_scale_to_fit(passkey, base_s, text_area_w);
+        int back_s = text_scale_to_fit(back, base_s, text_area_w);
         bool split_instruction = text_w(instruction, body_s) > text_area_w;
         int instruction_h = split_instruction ? 16 * body_s + gap / 2
                                               : 8 * body_s;
         int logo = (s_H * 2) / 5;
         if (logo > text_area_w * 2 / 3) logo = text_area_w * 2 / 3;
         int block = logo + gap + 8 * wordmark_s + gap + 8 * title_s + gap
-                    + instruction_h + gap + 8 * passkey_s;
+                    + instruction_h + gap + 8 * passkey_s
+                    + gap + 8 * back_s;
         int y = (s_H - block) / 2;
         blit_logo(half / 2, y, logo); y += logo + gap;
         draw_text_in(text_x, text_area_w, y, "Tesserae", wordmark_s, COL_BLK);
@@ -414,6 +443,8 @@ static void draw_ble(void)
             y += 8 * body_s + gap;
         }
         draw_text_in(text_x, text_area_w, y, passkey, passkey_s, COL_BLK);
+        y += 8 * passkey_s + gap;
+        draw_text_in(text_x, text_area_w, y, back, back_s, COL_BLK);
         if (qn) {
             int box_w = half * 4 / 5;
             int box_h = s_H * 4 / 5;
@@ -434,6 +465,7 @@ static void draw_ble(void)
         int title_s = text_scale_to_fit(title, 2 * base_s, text_area_w);
         int body_s = text_scale_to_fit(instruction, base_s, text_area_w);
         int passkey_s = text_scale_to_fit(passkey, base_s, text_area_w);
+        int back_s = text_scale_to_fit(back, base_s, text_area_w);
         int logo = s_W / 3;
 
         int scale = 0;
@@ -450,7 +482,7 @@ static void draw_ble(void)
         }
 
         int block = logo + gap + 8 * wordmark_s + gap + 8 * title_s + gap
-                    + 8 * body_s + gap + 8 * passkey_s
+                    + 8 * body_s + gap + 8 * passkey_s + gap + 8 * back_s
                     + (qn ? gap + total : 0);
         int y = (s_H - block) / 2;
         if (y < gap) y = gap;
@@ -463,6 +495,8 @@ static void draw_ble(void)
         y += 8 * body_s + gap;
         draw_text_in(margin, text_area_w, y, passkey, passkey_s, COL_BLK);
         y += 8 * passkey_s + gap;
+        draw_text_in(margin, text_area_w, y, back, back_s, COL_BLK);
+        y += 8 * back_s + gap;
         if (qn) {
             int qx = (s_W - total) / 2 + 4 * scale;
             int qy = y + 4 * scale;

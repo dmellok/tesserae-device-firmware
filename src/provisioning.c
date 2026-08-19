@@ -1,5 +1,6 @@
 #include "provisioning.h"
 #include "app_config.h"
+#include "ble_setup.h"   /* -> TESSERAE_BLE_SETUP_AVAILABLE */
 #include "buttons.h"
 #include "relay.h"       /* RELAY_DEFAULT_URL */
 #include "rest_config.h"
@@ -28,6 +29,10 @@ static const char *TAG = "portal";
 #define BIT_BLE_REQUESTED BIT1
 static EventGroupHandle_t s_done;
 static TaskHandle_t s_dns_task = NULL;
+/* Owned by dns_hijack_task, but closed by the teardown below: deleting a
+ * task runs no cleanup, so without this the UDP socket stays bound to :53
+ * and the next portal's bind() fails -- no DNS hijack, no auto-popup. */
+static int s_dns_sock = -1;
 static TaskHandle_t s_button_task = NULL;
 static httpd_handle_t s_httpd = NULL;
 static esp_netif_t *s_ap_netif = NULL;
@@ -55,7 +60,7 @@ typedef struct {
 static scan_entry_t s_scan[SCAN_MAX];
 static int          s_scan_count = 0;
 
-#ifdef BOARD_BTN_REFRESH_PIN
+#ifdef TESSERAE_BLE_SETUP_AVAILABLE
 /* Runs from provisioning_begin(), before the slow e-paper portal splash is
  * painted. That makes the physical switch responsive as soon as the AP/web
  * page is live instead of missing a hold that begins and ends during refresh. */
@@ -103,6 +108,7 @@ static void dns_hijack_task(void *arg)
         ESP_LOGE(TAG, "dns bind fail");
         close(sock); vTaskDelete(NULL);
     }
+    s_dns_sock = sock;
 
     /* 192.168.4.1 in network byte order */
     const uint8_t our_ip[4] = {192, 168, 4, 1};
@@ -532,7 +538,7 @@ static esp_err_t render_form(httpd_req_t *req, const char *error)
         e_devid, e_server[0] ? e_server : "(not set)", have_ip ? ip : "(setup AP)");
     httpd_resp_sendstr_chunk(req, status);
 
-#ifdef BOARD_BTN_REFRESH_PIN
+#ifdef TESSERAE_BLE_SETUP_AVAILABLE
     char ble_switch[320];
     snprintf(ble_switch, sizeof ble_switch,
         "<div class=\"ble-switch\">"
@@ -940,7 +946,7 @@ void provisioning_begin(void)
 
     start_ap();
     buttons_poll_init();
-#ifdef BOARD_BTN_REFRESH_PIN
+#ifdef TESSERAE_BLE_SETUP_AVAILABLE
     if (xTaskCreate(ble_switch_button_task, "ble_switch_btn", 2048, NULL, 4,
                     &s_button_task) != pdPASS) {
         s_button_task = NULL;
@@ -982,6 +988,7 @@ provisioning_result_t provisioning_serve(void)
 
     if (s_button_task) { vTaskDelete(s_button_task); s_button_task = NULL; }
     if (s_dns_task) { vTaskDelete(s_dns_task); s_dns_task = NULL; }
+    if (s_dns_sock >= 0) { close(s_dns_sock); s_dns_sock = -1; }
     if (s_httpd)    { httpd_stop(s_httpd);     s_httpd = NULL; }
     esp_wifi_stop();
 
