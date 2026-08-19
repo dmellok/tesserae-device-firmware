@@ -12,6 +12,7 @@
  * (tesserae_logo.h).
  */
 #include "splash.h"
+#include "ble_setup.h"      /* -> TESSERAE_BLE_SETUP_AVAILABLE */
 #include "epd_driver.h"
 #include "panel/epd_panel.h"
 #include "app_config.h"
@@ -251,6 +252,21 @@ static int build_ble_qr(uint8_t *qrbuf)
 
 static const char *k_url = "Open  http://192.168.4.1";
 
+/* Second route off this screen, for displays that have the gesture. The portal
+ * page carries the same offer, but only after joining the AP -- which is the
+ * step someone reaching for the app is trying to skip, so it has to be here.
+ *
+ * NULL where BLE is not built, which drops the line and its height. Keep the
+ * text short: the landscape column sizes its body scale so the longest line
+ * fits ~26 characters, and a longer string shrinks every line on that panel. */
+#define SPLASH_STR2(x) #x
+#define SPLASH_STR(x)  SPLASH_STR2(x)
+#ifdef TESSERAE_BLE_SETUP_AVAILABLE
+static const char *k_ble_hint = "Or hold Refresh " SPLASH_STR(BLE_MAINTENANCE_HOLD_S) "s";
+#else
+static const char *k_ble_hint = NULL;
+#endif
+
 /* ---------- cold-boot logo ---------- */
 
 static void draw_logo(void)
@@ -282,6 +298,7 @@ static void draw_portal_portrait(void)
     int qz     = qn ? 4 * qscale : 0;
 
     int total = logo + gap + 8 * ts + gap + 8 * s + gap + 8 * s + gap + 8 * s
+                + (k_ble_hint ? gap + 8 * s : 0)
                 + (qn ? gap + qz + qpix : 0);
     int y = (s_H - total) / 2 - s_H / 14; if (y < gap) y = gap;
 
@@ -294,6 +311,9 @@ static void draw_portal_portrait(void)
                                                               y += 8 * s + gap;
     draw_text_in(0, s_W, y, line_ssid, s, COL_BLK);           y += 8 * s + gap;
     draw_text_in(0, s_W, y, k_url, s, COL_BLK);               y += 8 * s + gap;
+    if (k_ble_hint) {
+        draw_text_in(0, s_W, y, k_ble_hint, s, COL_BLK);      y += 8 * s + gap;
+    }
     if (qn) { y += qz; draw_qr(qr, (s_W - qpix) / 2, y, qscale); }
 }
 
@@ -316,7 +336,8 @@ static void draw_portal_landscape(void)
     int logo = (s_H * 2) / 5;                           /* ~40% of height */
     if (logo > lw) logo = lw;
 
-    int block = logo + gap + 8 * ts + gap + 8 * s + gap + 8 * s + gap + 8 * s;
+    int block = logo + gap + 8 * ts + gap + 8 * s + gap + 8 * s + gap + 8 * s
+                + (k_ble_hint ? gap + 8 * s : 0);
     int y = (s_H - block) / 2; if (y < gap) y = gap;
 
     char line_ssid[64];
@@ -329,6 +350,10 @@ static void draw_portal_landscape(void)
                                                         y += 8 * s + gap;
     draw_text_in(lm, lw, y, line_ssid, s, COL_BLK);     y += 8 * s + gap;
     draw_text_in(lm, lw, y, k_url, s, COL_BLK);
+    if (k_ble_hint) {
+        y += 8 * s + gap;
+        draw_text_in(lm, lw, y, k_ble_hint, s, COL_BLK);
+    }
 
     /* Right column: QR centered, clamped so it doesn't dominate a large panel. */
     if (qn) {

@@ -1,5 +1,6 @@
 #include "provisioning.h"
 #include "app_config.h"
+#include "ble_setup.h"   /* -> TESSERAE_BLE_SETUP_AVAILABLE */
 #include "buttons.h"
 #include "relay.h"       /* RELAY_DEFAULT_URL */
 #include "rest_config.h"
@@ -55,7 +56,7 @@ typedef struct {
 static scan_entry_t s_scan[SCAN_MAX];
 static int          s_scan_count = 0;
 
-#ifdef BOARD_BTN_REFRESH_PIN
+#ifdef TESSERAE_BLE_SETUP_AVAILABLE
 /* Runs from provisioning_begin(), before the slow e-paper portal splash is
  * painted. That makes the physical switch responsive as soon as the AP/web
  * page is live instead of missing a hold that begins and ends during refresh. */
@@ -532,7 +533,7 @@ static esp_err_t render_form(httpd_req_t *req, const char *error)
         e_devid, e_server[0] ? e_server : "(not set)", have_ip ? ip : "(setup AP)");
     httpd_resp_sendstr_chunk(req, status);
 
-#ifdef BOARD_BTN_REFRESH_PIN
+#ifdef TESSERAE_BLE_SETUP_AVAILABLE
     char ble_switch[320];
     snprintf(ble_switch, sizeof ble_switch,
         "<div class=\"ble-switch\">"
@@ -940,7 +941,7 @@ void provisioning_begin(void)
 
     start_ap();
     buttons_poll_init();
-#ifdef BOARD_BTN_REFRESH_PIN
+#ifdef TESSERAE_BLE_SETUP_AVAILABLE
     if (xTaskCreate(ble_switch_button_task, "ble_switch_btn", 2048, NULL, 4,
                     &s_button_task) != pdPASS) {
         s_button_task = NULL;

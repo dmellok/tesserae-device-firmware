@@ -28,6 +28,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Limited the NimBLE setup stack to supported Seeed displays with a Refresh
   button. Other boards retain captive-portal setup without carrying an
   unreachable Bluetooth implementation.
+- Added a line to the setup screen on displays that support it, pointing out
+  that holding Refresh switches to app setup over Bluetooth. The captive portal
+  page already said so, but only once you had joined the Wi-Fi network the app
+  was meant to save you from.
 
 ### Fixed
 
