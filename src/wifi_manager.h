@@ -57,6 +57,14 @@ esp_err_t wifi_creds_clear(void);
  * SSIDs collapse to the strongest AP. */
 esp_err_t wifi_scan_networks(wifi_network_t *out, size_t cap, size_t *count);
 
+/* True while the Bluetooth controller is enabled, i.e. Wi-Fi is sharing the
+ * radio. The driver rejects a custom active-scan dwell in that state -- it logs
+ * "Should use default active scan time parameter for WiFi scan when Bluetooth
+ * is enabled" and the scan can come back short. Scan callers use this to fall
+ * back to the driver's default dwell; always false on boards built without
+ * Bluetooth. */
+bool wifi_bt_coex_active(void);
+
 /* Test credentials without persisting them. The caller owns the decision to
  * commit only after its server check also succeeds. */
 esp_err_t wifi_sta_connect_credentials(const char *ssid, const char *pass);
