@@ -31,6 +31,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Fixed the nearby-network scan Companion runs during Bluetooth setup, which
+  asked the Wi-Fi driver for a faster per-channel dwell than it accepts while
+  Bluetooth is on. The driver rejected the request and warned, and the scan
+  could return fewer networks than are really in range. Scans now use the
+  driver's own timing whenever Bluetooth is active, and keep the faster dwell
+  for the captive portal, where the radio is not shared.
 - Increased the Bluetooth host task stack used by authenticated setup so
   connection key derivation cannot corrupt NimBLE state before the first
   Companion command.

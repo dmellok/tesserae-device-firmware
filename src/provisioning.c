@@ -768,11 +768,14 @@ static void do_wifi_scan(void)
     /* Active scan with a short per-channel dwell: this runs on the critical
      * path before the AP comes up (see provisioning_begin), so keep it fast.
      * Active (probe-request) at 30-80 ms/channel is ~0.5-1 s vs the passive
-     * default's ~2-3 s -- the picker is a convenience, not worth a slow AP. */
-    wifi_scan_config_t cfg = {
-        .scan_type          = WIFI_SCAN_TYPE_ACTIVE,
-        .scan_time.active   = { .min = 30, .max = 80 },
-    };
+     * default's ~2-3 s -- the picker is a convenience, not worth a slow AP.
+     * The fast dwell is unavailable while the BT controller is up, though; the
+     * driver requires its own there (see wifi_bt_coex_active). */
+    wifi_scan_config_t cfg = { .scan_type = WIFI_SCAN_TYPE_ACTIVE };
+    if (!wifi_bt_coex_active()) {
+        cfg.scan_time.active.min = 30;
+        cfg.scan_time.active.max = 80;
+    }
     err = ESP_ERR_WIFI_STATE;
     for (int attempt = 0; attempt < 15 && err == ESP_ERR_WIFI_STATE; attempt++) {
         err = esp_wifi_scan_start(&cfg, /* block */ true);

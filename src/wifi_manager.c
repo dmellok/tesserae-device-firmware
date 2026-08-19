@@ -13,6 +13,10 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
+#if CONFIG_BT_ENABLED
+#include "esp_bt.h"
+#endif
+
 static const char *TAG = "wifi";
 
 static EventGroupHandle_t s_events;
@@ -220,6 +224,15 @@ esp_err_t wifi_creds_clear(void)
     return first;
 }
 
+bool wifi_bt_coex_active(void)
+{
+#if CONFIG_BT_ENABLED
+    return esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED;
+#else
+    return false;
+#endif
+}
+
 esp_err_t wifi_scan_networks(wifi_network_t *out, size_t cap, size_t *count)
 {
     if (count) *count = 0;
@@ -233,10 +246,14 @@ esp_err_t wifi_scan_networks(wifi_network_t *out, size_t cap, size_t *count)
     err = esp_wifi_start();
     if (err != ESP_OK) return err;
 
-    wifi_scan_config_t cfg = {
-        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-        .scan_time.active = { .min = 30, .max = 80 },
-    };
+    /* This is the scan Companion drives over BLE, so the controller is up and
+     * the driver insists on its own dwell (see wifi_bt_coex_active). Leaving
+     * scan_time zeroed selects that default. */
+    wifi_scan_config_t cfg = { .scan_type = WIFI_SCAN_TYPE_ACTIVE };
+    if (!wifi_bt_coex_active()) {
+        cfg.scan_time.active.min = 30;
+        cfg.scan_time.active.max = 80;
+    }
     err = ESP_ERR_WIFI_STATE;
     for (int attempt = 0; attempt < 15 && err == ESP_ERR_WIFI_STATE; attempt++) {
         err = esp_wifi_scan_start(&cfg, true);
