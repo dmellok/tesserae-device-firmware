@@ -45,6 +45,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The setup screen now shows the Wi-Fi password for the display's own setup
+  network, next to the network name. It named a network while giving no way to
+  join it, leaving the QR code as the only route in, and many phones do not act
+  on a Wi-Fi QR code. The password is also written to the serial log.
 - Fixed the captive portal losing its automatic pop-up after a Bluetooth
   session. Returning to the portal left the previous DNS responder's socket
   open, so the new one could not start and the setup page had to be reached by

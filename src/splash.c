@@ -252,6 +252,12 @@ static int build_ble_qr(uint8_t *qrbuf)
 
 static const char *k_url = "Open  http://192.168.4.1";
 
+/* The AP password, shown because the join QR is not a reliable way to get it:
+ * plenty of phones do not act on a WIFI: code, and the panel was otherwise
+ * naming a network it gave no way to enter. NULL when start_ap() will fall open
+ * (it drops to WIFI_AUTH_OPEN below 8 characters), so the two always agree. */
+#define SPLASH_AP_PASS_SHOWN (sizeof(PROVISION_AP_PASS) - 1 >= 8)
+
 /* Second route off this screen, for displays that have the gesture. The portal
  * page carries the same offer, but only after joining the AP -- which is the
  * step someone reaching for the app is trying to skip, so it has to be here.
@@ -298,18 +304,24 @@ static void draw_portal_portrait(void)
     int qz     = qn ? 4 * qscale : 0;
 
     int total = logo + gap + 8 * ts + gap + 8 * s + gap + 8 * s + gap + 8 * s
+                + (SPLASH_AP_PASS_SHOWN ? gap + 8 * s : 0)
                 + (k_ble_hint ? gap + 8 * s : 0)
                 + (qn ? gap + qz + qpix : 0);
     int y = (s_H - total) / 2 - s_H / 14; if (y < gap) y = gap;
 
     char line_ssid[64];
     snprintf(line_ssid, sizeof line_ssid, "Wi-Fi:  %s", PROVISION_AP_SSID);
+    char line_pass[64];
+    snprintf(line_pass, sizeof line_pass, "Password:  %s", PROVISION_AP_PASS);
 
     blit_logo(s_W / 2, y, logo);                              y += logo + gap;
     draw_text_in(0, s_W, y, "Tesserae", ts, COL_BLK);         y += 8 * ts + gap;
     draw_text_in(0, s_W, y, s_portal_note ? s_portal_note : "Setup mode", s, COL_BLK);
                                                               y += 8 * s + gap;
     draw_text_in(0, s_W, y, line_ssid, s, COL_BLK);           y += 8 * s + gap;
+    if (SPLASH_AP_PASS_SHOWN) {
+        draw_text_in(0, s_W, y, line_pass, s, COL_BLK);       y += 8 * s + gap;
+    }
     draw_text_in(0, s_W, y, k_url, s, COL_BLK);               y += 8 * s + gap;
     if (k_ble_hint) {
         draw_text_in(0, s_W, y, k_ble_hint, s, COL_BLK);      y += 8 * s + gap;
@@ -337,11 +349,14 @@ static void draw_portal_landscape(void)
     if (logo > lw) logo = lw;
 
     int block = logo + gap + 8 * ts + gap + 8 * s + gap + 8 * s + gap + 8 * s
+                + (SPLASH_AP_PASS_SHOWN ? gap + 8 * s : 0)
                 + (k_ble_hint ? gap + 8 * s : 0);
     int y = (s_H - block) / 2; if (y < gap) y = gap;
 
     char line_ssid[64];
     snprintf(line_ssid, sizeof line_ssid, "Wi-Fi:  %s", PROVISION_AP_SSID);
+    char line_pass[64];
+    snprintf(line_pass, sizeof line_pass, "Password:  %s", PROVISION_AP_PASS);
 
     int cx = lm + lw / 2;                               /* left-column centre */
     blit_logo(cx, y, logo);                             y += logo + gap;
@@ -349,6 +364,9 @@ static void draw_portal_landscape(void)
     draw_text_in(lm, lw, y, s_portal_note ? s_portal_note : "Setup mode", s, COL_BLK);
                                                         y += 8 * s + gap;
     draw_text_in(lm, lw, y, line_ssid, s, COL_BLK);     y += 8 * s + gap;
+    if (SPLASH_AP_PASS_SHOWN) {
+        draw_text_in(lm, lw, y, line_pass, s, COL_BLK); y += 8 * s + gap;
+    }
     draw_text_in(lm, lw, y, k_url, s, COL_BLK);
     if (k_ble_hint) {
         y += 8 * s + gap;
