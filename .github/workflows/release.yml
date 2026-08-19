@@ -39,23 +39,23 @@ jobs:
         # the Tesserae hardware catalog keys on, and therefore the device_kind
         # the OTA signer stamps into each signed descriptor.
         include:
-          - { env: waveshare-133e6,           kind: waveshare_133e6 }
-          - { env: waveshare-photopainter-73, kind: waveshare_photopainter_73 }
-          - { env: seeed-reterminal-e1001,    kind: seeed_reterminal_e1001 }
-          - { env: seeed-reterminal-e1001-gray, kind: seeed_reterminal_e1001_gray }
+          - { env: waveshare-133e6,           kind: waveshare_133e6, chip: esp32s3 }
+          - { env: waveshare-photopainter-73, kind: waveshare_photopainter_73, chip: esp32s3 }
+          - { env: seeed-reterminal-e1001,    kind: seeed_reterminal_e1001, chip: esp32s3 }
+          - { env: seeed-reterminal-e1001-gray, kind: seeed_reterminal_e1001_gray, chip: esp32s3 }
           # Legacy glass: same frame bytes, register-LUT waveform. Distinct
           # kind because kind names the OTA lineage AND the signing input
           # file (<kind>.app.bin) that all targets merge into one directory.
-          - { env: seeed-reterminal-e1001-gray-legacy, kind: seeed_reterminal_e1001_gray_legacy }
-          - { env: seeed-reterminal-e1002,    kind: seeed_reterminal_e1002 }
-          - { env: seeed-reterminal-e1003,    kind: seeed_reterminal_e1003 }
-          - { env: seeed-reterminal-e1004,    kind: seeed_reterminal_e1004 }
-          - { env: seeed-ee02,                kind: seeed_ee02 }
-          - { env: xiao-epaper-75,            kind: xiao_epaper_75 }
-          - { env: xiao-epaper-75-bwr,        kind: xiao_epaper_75_bwr }
-          - { env: xiao-epaper-75-c3,         kind: xiao_epaper_panel_75_c3 }
-          - { env: seeed-ee04-75,             kind: seeed_ee04_75 }
-          - { env: seeed-ee04-73e6,           kind: seeed_ee04_73e6 }
+          - { env: seeed-reterminal-e1001-gray-legacy, kind: seeed_reterminal_e1001_gray_legacy, chip: esp32s3 }
+          - { env: seeed-reterminal-e1002,    kind: seeed_reterminal_e1002, chip: esp32s3 }
+          - { env: seeed-reterminal-e1003,    kind: seeed_reterminal_e1003, chip: esp32s3 }
+          - { env: seeed-reterminal-e1004,    kind: seeed_reterminal_e1004, chip: esp32s3 }
+          - { env: seeed-ee02,                kind: seeed_ee02, chip: esp32s3 }
+          - { env: xiao-epaper-75,            kind: xiao_epaper_75, chip: esp32s3 }
+          - { env: xiao-epaper-75-bwr,        kind: xiao_epaper_75_bwr, chip: esp32s3 }
+          - { env: xiao-epaper-75-c3,         kind: xiao_epaper_panel_75_c3, chip: esp32c3 }
+          - { env: seeed-ee04-75,             kind: seeed_ee04_75, chip: esp32s3 }
+          - { env: seeed-ee04-73e6,           kind: seeed_ee04_73e6, chip: esp32s3 }
     steps:
       - uses: actions/checkout@v4
 
@@ -111,7 +111,7 @@ jobs:
           mkdir -p dist
           bin="dist/$e-$v.factory.bin"
           if [ -f "$b/ota_data_initial.bin" ]; then
-            python -m esptool --chip esp32s3 merge_bin -o "$bin" \
+            python -m esptool --chip "${{ matrix.chip }}" merge_bin -o "$bin" \
               --flash_mode keep --flash_freq keep --flash_size keep \
               0x0 "$b/bootloader.bin" \
               0x8000 "$b/partitions.bin" \
@@ -119,13 +119,22 @@ jobs:
               0x20000 "$b/firmware.bin"
             parts='bootloader.bin:0x0 partitions.bin:0x8000 ota_data_initial.bin:0x10000 firmware.bin:0x20000'
           else
-            python -m esptool --chip esp32s3 merge_bin -o "$bin" \
+            python -m esptool --chip "${{ matrix.chip }}" merge_bin -o "$bin" \
               --flash_mode keep --flash_freq keep --flash_size keep \
               0x0 "$b/bootloader.bin" \
               0x8000 "$b/partitions.bin" \
               0x10000 "$b/firmware.bin"
             parts='bootloader.bin:0x0 partitions.bin:0x8000 firmware.bin:0x10000'
           fi
+          # ESP Web Tools refuses (or warns) when chipFamily does not match the
+          # chip it finds on the wire. This was hardcoded to ESP32-S3, so the
+          # first non-S3 target shipped mislabelled and the flasher told the
+          # user they were putting S3 firmware on a C3.
+          case '${{ matrix.chip }}' in
+            esp32s3) family='ESP32-S3' ;;
+            esp32c3) family='ESP32-C3' ;;
+            *) echo "no chipFamily mapping for '${{ matrix.chip }}'" >&2; exit 1 ;;
+          esac
           sha=$(shasum -a 256 "$bin" | awk '{print $1}')
           parts_json='['
           sep=''
@@ -139,7 +148,7 @@ jobs:
           done
           parts_json="$parts_json]"
           cat > "dist/$e.meta.json" <<JSON
-          {"env":"$e","chipFamily":"ESP32-S3","offset":0,"webSerial":true,"version":"$v","path":"$e/$v.factory.bin","sha256":"$sha","parts":$parts_json}
+          {"env":"$e","chipFamily":"$family","offset":0,"webSerial":true,"version":"$v","path":"$e/$v.factory.bin","sha256":"$sha","parts":$parts_json}
           JSON
 
       # The app-only OTA image (what a device streams into its inactive slot),
