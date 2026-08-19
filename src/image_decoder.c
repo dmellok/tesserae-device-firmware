@@ -30,7 +30,7 @@ esp_err_t image_decode_to_frame(const fetched_image_t *src,
     }
 
     ESP_LOGI(TAG, "raw panel-native frame (%u bytes)", (unsigned)src->len);
-    uint8_t *frame = heap_caps_malloc(EPD_BUF_BYTES, MALLOC_CAP_SPIRAM);
+    uint8_t *frame = heap_caps_malloc(EPD_BUF_BYTES, TESSERAE_FB_CAPS);
     if (!frame) return ESP_ERR_NO_MEM;
     memcpy(frame, src->data, EPD_BUF_BYTES);
     *out_frame = frame;

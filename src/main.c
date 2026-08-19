@@ -935,9 +935,9 @@ void app_main(void)
             "\"8\":{\"x\":160,\"w\":20},\"9\":{\"x\":180,\"w\":20}}}]}");
         (void)sj;
         overlay_spec_t *sp = malloc(sizeof *sp);
-        uint8_t *base = heap_caps_malloc(EPD_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        uint8_t *base = heap_caps_malloc(EPD_BUF_BYTES, TESSERAE_FB_CAPS);
         enum { AW = 200, AH = 32, GW = 20 };
-        uint8_t *atlas = heap_caps_malloc(AW / 2 * AH, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        uint8_t *atlas = heap_caps_malloc(AW / 2 * AH, TESSERAE_FB_CAPS);
         if (!sp || !base || !atlas || !spec_json ||
             !overlay_spec_parse(spec_json, (size_t)sj,
                                 EPD_WIDTH, EPD_HEIGHT, sp)) {
@@ -1004,7 +1004,7 @@ void app_main(void)
                 vTaskDelay(pdMS_TO_TICKS(400));
             }
 
-            uint8_t *pristine = heap_caps_malloc(EPD_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            uint8_t *pristine = heap_caps_malloc(EPD_BUF_BYTES, TESSERAE_FB_CAPS);
             if (pristine) memcpy(pristine, base, EPD_BUF_BYTES);
             int64_t seq = -1;
             for (int d = 0; d <= 9 && pristine; d++) {
@@ -1056,9 +1056,9 @@ void app_main(void)
         char *spec_json = malloc(4096);
         t3_spec_t *sp = malloc(sizeof *sp);
         uint8_t *base = heap_caps_malloc(EPD_BUF_BYTES,
-                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                                         TESSERAE_FB_CAPS);
         uint8_t *atlas = heap_caps_malloc(AW / 2 * AH,
-                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                                          TESSERAE_FB_CAPS);
         int sj = 0;
         if (spec_json)
             sj = snprintf(spec_json, 4096,
@@ -1492,7 +1492,7 @@ void app_main(void)
             }
         }
         size_t n = EPD_BUF_BYTES;
-        uint8_t *buf = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        uint8_t *buf = heap_caps_malloc(n, TESSERAE_FB_CAPS);
         if (!buf) buf = malloc(n);
         if (!buf) {
             ESP_LOGE(TAG, "DECK_SD_SELFTEST: OOM for %u-byte test frame", (unsigned)n);

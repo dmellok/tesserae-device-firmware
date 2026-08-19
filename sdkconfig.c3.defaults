@@ -1,0 +1,61 @@
+# ------------------------------------------------------------------
+# Shared ESP-IDF config for the XIAO ESP32-C3 ePaper Panel. A THIRD parallel
+# base alongside sdkconfig.defaults (UART0 console) and sdkconfig.usbjtag.defaults
+# (S3 + octal PSRAM): the C3 has 4 MB of flash, NO PSRAM, and tops out at
+# 160 MHz, so neither of the others can be reused.
+#
+# SDKCONFIG_DEFAULTS is a full override rather than an append, so anything
+# non-console added to sdkconfig.defaults must be added here too or this board
+# silently loses it.
+# ------------------------------------------------------------------
+
+# --- Flash ---
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+
+# --- CPU ---
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+CONFIG_FREERTOS_HZ=1000
+
+# --- Main task stack ---
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# --- Networking ---
+CONFIG_LWIP_LOCAL_HOSTNAME="tesserae-esp32"
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
+
+# --- TLS / HTTPS via mbedTLS bundled root CAs ---
+CONFIG_ESP_TLS_USING_MBEDTLS=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# HKDF-SHA256 for the cloud relay's frame-key derivation (relay_crypto.c).
+# Off by default in ESP-IDF; ~1 KB of code. Mirrors sdkconfig.defaults -- this
+# file is a PARALLEL base (console on USB-JTAG), not an overlay, so anything
+# non-console added there must be added here too or the XIAO-class boards fail
+# to link.
+CONFIG_MBEDTLS_HKDF_C=y
+
+# --- MQTT ---
+CONFIG_MQTT_PROTOCOL_311=y
+
+# --- HTTP server (SoftAP captive portal) ---
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+
+# --- Logging ---
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_COLORS=y
+
+# --- Console: USB-Serial-JTAG PRIMARY (frees UART0 GPIO43/44 for the panel) ---
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# --- Power ---
+CONFIG_PM_ENABLE=n
+
+# --- FATFS: long filenames on heap (the SD deck cache stores frames as
+# <16-hex-digest>.bin, which exceeds 8.3; without LFN the rename fails) ---
+CONFIG_FATFS_LFN_HEAP=y

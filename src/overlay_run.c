@@ -1,6 +1,7 @@
 /* overlay_run.c -- device orchestration for the overlay render mode. */
 
 #include "overlay_run.h"
+#include "app_config.h"
 
 #if defined(BOARD_OVERLAY_PARTIAL)
 
@@ -78,7 +79,7 @@ static void drop_state(void)
 
 static uint8_t *fb_alloc(void)
 {
-    uint8_t *p = heap_caps_malloc(EPD_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t *p = heap_caps_malloc(EPD_BUF_BYTES, TESSERAE_FB_CAPS);
     if (!p) ESP_LOGW(TAG, "OOM framebuffer copy; overlay dormant");
     return p;
 }
@@ -116,7 +117,7 @@ static uint8_t *read_file(const char *path, size_t max, size_t *out_len)
      * (PSRAM degrades to single-sector; see deck_cache.c bounce note).
      * Overlay files are small (<=64 KB), so internal is fine. */
     uint8_t *buf = heap_caps_malloc(max, MALLOC_CAP_DMA);
-    if (!buf) buf = heap_caps_malloc(max, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) buf = heap_caps_malloc(max, TESSERAE_FB_CAPS);
     if (!buf) { fclose(f); return NULL; }
     size_t n = fread(buf, 1, max, f);
     bool complete = feof(f);
@@ -265,7 +266,7 @@ void overlay_frame_downloaded(const char *digest)
     if (!epd_supports_partial() || !digest || !digest[0]) return;
     drop_state();
 
-    char *buf = heap_caps_malloc(OVERLAY_SPEC_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *buf = heap_caps_malloc(OVERLAY_SPEC_MAX, TESSERAE_FB_CAPS);
     if (!buf) return;
     size_t len = 0;
     rest_status_t st = rest_get_overlay_spec(digest, buf, OVERLAY_SPEC_MAX, &len, 8000);

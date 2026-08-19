@@ -1,6 +1,7 @@
 /* collection_cache.c -- SD-card collection cache. See header. */
 
 #include "collection_cache.h"
+#include "app_config.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -172,7 +173,7 @@ bool collection_cache_read_frame(const char *collection_id, const char *digest,
     if (fd < 0) return false;
 
     uint8_t *buf = heap_caps_malloc(expect_bytes + 1,
-                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                                    TESSERAE_FB_CAPS);
     if (!buf) buf = malloc(expect_bytes + 1);
     if (!buf) { close(fd); return false; }
     size_t n = 0;
