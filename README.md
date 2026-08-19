@@ -455,9 +455,10 @@ esptool --chip esp32s3 --port <PORT> --baud 460800 write-flash --flash-size dete
 A fresh device (no WiFi creds or no server URL) comes up as a captive-portal
 setup AP:
 
-1. It paints a setup splash (logo, the AP name, the portal URL, a join QR).
+1. It paints a setup splash (logo, the AP name, **the AP password**, the portal
+   URL, a join QR).
 2. Join the **`Tesserae-Setup`** WiFi AP (scan the QR, or pick from the list;
-   password `tesserae`).
+   password `tesserae`, also printed on the splash and in the serial log).
 3. Enter your WiFi and the Tesserae **server URL** (and an optional pairing code).
 4. It reboots, onboards over REST, and appears in Tesserae → Settings → Devices
    for approval. Once approved it fetches and paints frames.

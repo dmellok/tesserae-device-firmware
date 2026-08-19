@@ -838,7 +838,14 @@ static void start_ap(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "AP up: ssid=%s ip=192.168.4.1", PROVISION_AP_SSID);
+    /* Log the passphrase too. It is a fixed compile-time value that is already
+     * public, so this leaks nothing, and anyone with a serial console is
+     * usually here because they could not get onto the AP. */
+    if (wc.ap.authmode == WIFI_AUTH_OPEN)
+        ESP_LOGI(TAG, "AP up: ssid=%s (open) ip=192.168.4.1", PROVISION_AP_SSID);
+    else
+        ESP_LOGI(TAG, "AP up: ssid=%s pass=%s ip=192.168.4.1",
+                 PROVISION_AP_SSID, PROVISION_AP_PASS);
 }
 
 static void start_http(bool captive)
