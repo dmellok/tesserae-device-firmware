@@ -1,4 +1,5 @@
 #include "image_fetcher.h"
+#include "app_config.h"
 
 #include <string.h>
 
@@ -62,7 +63,7 @@ static esp_err_t on_http(esp_http_client_event_t *e)
             while (new_cap < need) new_cap *= 2;
             if (new_cap > IMAGE_FETCH_MAX_BYTES) new_cap = IMAGE_FETCH_MAX_BYTES;
 
-            uint8_t *grown = heap_caps_realloc(ctx->out->data, new_cap, MALLOC_CAP_SPIRAM);
+            uint8_t *grown = heap_caps_realloc(ctx->out->data, new_cap, TESSERAE_FB_CAPS);
             if (!grown) {
                 ESP_LOGE(TAG, "PSRAM realloc(%u) failed", (unsigned)new_cap);
                 ctx->oom = true;

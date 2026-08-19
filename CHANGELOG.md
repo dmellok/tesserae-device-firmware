@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Added support for the Seeed XIAO 7.5" ePaper Panel, the all-in-one display
+  built around a XIAO ESP32-C3. This is a different board from the XIAO ePaper
+  7.5" kit already listed, which pairs an ESP32-S3 with a separate driver
+  board, and the two are not interchangeable. Setup is through the captive
+  portal, since the panel has no Refresh button, and it does not report battery
+  level because the hardware provides no way to measure it. Not yet confirmed
+  on physical hardware.
 - Added a stable hardware identifier to Bluetooth discovery so Companion can
   show a nearby display's brand and model before connecting.
 - Added a five-minute Bluetooth setup and maintenance mode for nearby Companion

@@ -1,6 +1,7 @@
 /* touch3_run.c -- device orchestration for touch v3. See touch3_run.h. */
 
 #include "touch3_run.h"
+#include "app_config.h"
 
 #if BOARD_TOUCH3
 
@@ -547,7 +548,7 @@ static uint8_t *feedback_fb(bool *real)
     *real = false;
     if (!s_fb_scratch) {
         s_fb_scratch = heap_caps_malloc(EPD_BUF_BYTES,
-                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                                        TESSERAE_FB_CAPS);
         if (!s_fb_scratch) {
             ESP_LOGW(TAG, "no PSRAM for the feedback scratch buffer");
             return NULL;

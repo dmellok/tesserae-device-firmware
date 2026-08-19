@@ -53,6 +53,7 @@ jobs:
           - { env: seeed-ee02,                kind: seeed_ee02 }
           - { env: xiao-epaper-75,            kind: xiao_epaper_75 }
           - { env: xiao-epaper-75-bwr,        kind: xiao_epaper_75_bwr }
+          - { env: xiao-epaper-75-c3,         kind: xiao_epaper_panel_75_c3 }
           - { env: seeed-ee04-75,             kind: seeed_ee04_75 }
           - { env: seeed-ee04-73e6,           kind: seeed_ee04_73e6 }
     steps:

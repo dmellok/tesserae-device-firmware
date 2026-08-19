@@ -28,6 +28,21 @@
 /* refactor when they lived directly here.                             */
 /* ------------------------------------------------------------------ */
 #include "board.h"
+#include "sdkconfig.h"
+
+/* Capabilities for the big, short-lived buffers: frame buffers, the download
+ * scratch they are decoded from, and the SD cache's read buffers.
+ *
+ * These asked for MALLOC_CAP_SPIRAM directly, which is right on every S3 board
+ * and fatal on one without PSRAM: heap_caps_malloc() returns NULL rather than
+ * falling back to internal RAM, so every frame path fails at the first
+ * allocation. The C3 panel has no PSRAM, so it takes them from internal RAM
+ * instead -- 48000 bytes for an 800x480 mono frame, against 320 KB of SRAM. */
+#if CONFIG_SPIRAM
+#define TESSERAE_FB_CAPS (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#else
+#define TESSERAE_FB_CAPS (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Application behavior                                               */

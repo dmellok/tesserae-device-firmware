@@ -1,6 +1,7 @@
 /* deck_cache.c -- SD-card file layer for the deck frame cache. See header. */
 
 #include "deck_cache.h"
+#include "app_config.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -126,7 +127,7 @@ bool deck_cache_read_frame(const char *deck_id, const char *digest,
 
     /* Frames are panel-sized; prefer PSRAM like the network fetch path. */
     uint8_t *buf = heap_caps_malloc(expect_bytes + 1,
-                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                                    TESSERAE_FB_CAPS);
     if (!buf) buf = malloc(expect_bytes + 1);
     if (!buf) { close(fd); return false; }
 

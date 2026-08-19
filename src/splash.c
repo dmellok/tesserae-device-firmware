@@ -198,7 +198,7 @@ static esp_err_t render_and_paint(void (*draw)(void), const char *label)
 
     s_bpp = epd_active_driver()->info.bpp;
 
-    s_fb = heap_caps_malloc(EPD_BUF_BYTES, MALLOC_CAP_SPIRAM);
+    s_fb = heap_caps_malloc(EPD_BUF_BYTES, TESSERAE_FB_CAPS);
     if (!s_fb) {
         ESP_LOGE(TAG, "OOM allocating %u-byte splash buffer", (unsigned)EPD_BUF_BYTES);
         return ESP_ERR_NO_MEM;
