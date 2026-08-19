@@ -1,6 +1,15 @@
 #include "battery.h"
 #include "app_config.h"   /* pulls board.h -> BOARD_BATTERY_* */
 
+bool battery_present(void)
+{
+#if defined(BOARD_BATTERY_PMIC) || defined(BOARD_BATTERY_ADC_CHANNEL)
+    return true;
+#else
+    return false;
+#endif
+}
+
 int battery_pct(int mv)
 {
     /* Two-segment piecewise linear: the Li-Po discharge curve is non-linear

@@ -45,6 +45,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Fixed the XIAO 7.5" ePaper Panel reporting an empty battery. It has a cell
+  but no way to measure it, and it was sending a literal zero, which reads as
+  flat rather than unknown. It now omits the reading entirely, so nothing shows
+  a permanently empty battery for that display.
+- Fixed over-the-air updates never installing on the XIAO 7.5" ePaper Panel.
+  Updates are held back when a display is low on charge, and the unmeasurable
+  battery above counted as empty, so every update was deferred indefinitely.
+  Displays that cannot measure their charge now skip that check.
 - Fixed the browser flasher warning that a display was being given firmware
   built for the wrong processor. Every published image was labelled ESP32-S3
   regardless of the board, so the XIAO 7.5" ePaper Panel, which uses an

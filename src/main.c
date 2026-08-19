@@ -199,7 +199,10 @@ static void kiosk_loop(void)
          * poll with no reboot. */
         if (!c->always_on) { ESP_LOGI(TAG, "kiosk off (config)"); break; }
         int mv = battery_read_mv();
-        if (battery_pct(mv) < 15 && !usb_serial_jtag_is_connected()) {
+        /* battery_present(): 0 mV on a board with no sense would drop out of
+         * kiosk mode immediately and permanently. */
+        if (battery_present() && battery_pct(mv) < 15 &&
+            !usb_serial_jtag_is_connected()) {
             ESP_LOGW(TAG, "kiosk: battery %d%%; resuming sleep cycles",
                      battery_pct(mv));
             break;
