@@ -45,6 +45,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Fixed the browser flasher warning that a display was being given firmware
+  built for the wrong processor. Every published image was labelled ESP32-S3
+  regardless of the board, so the XIAO 7.5" ePaper Panel, which uses an
+  ESP32-C3, was advertised incorrectly. The firmware itself was always correct,
+  and anyone who flashed past the warning got a working display.
 - The setup screen now shows the Wi-Fi password for the display's own setup
   network, next to the network name. It named a network while giving no way to
   join it, leaving the QR code as the only route in, and many phones do not act
