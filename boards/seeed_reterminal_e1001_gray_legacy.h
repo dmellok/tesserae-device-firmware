@@ -1,53 +1,45 @@
 /*
  * Board variant: Seeed reTerminal E1001, 4-level GRAYSCALE for LEGACY glass.
  *
- * Identical to seeed_reterminal_e1001_gray.h in every respect the SERVER can
- * see -- same 800x480 panel, same 2bpp/96000-byte wire format, same gamut --
- * and differs only in how mono_spi drives the glass:
+ * FUNCTIONALLY IDENTICAL to seeed_reterminal_e1001_gray.h. It exists now only
+ * to keep an OTA lineage alive, not because it drives the panel differently.
  *
- *   gray        (default)  GEN2 built-in OTP 4-gray waveform, selected by
- *                          fixing the temperature index (CCSET TSFIX +
- *                          TSSET 0x5F). PSR stays 0x1F.
- *   gray_legacy (this)     Register LUTs uploaded to R20-R25, PSR 0x3F.
+ * It used to. The two batches of this glass need different waveforms -- newer
+ * panels carry a built-in OTP 4-gray table, older ones must have register LUTs
+ * uploaded -- and the claim was that nothing could tell them apart, because the
+ * panel is write-only (mono_spi sets miso_io_num = -1). So there were two
+ * targets and an operator flashed both to see which refreshed. The claim was
+ * wrong: the UC8179 SDA line is bidirectional and the controller reads back its
+ * own OTP, which records whether a 4-gray table was burned in. mono_spi bit-bangs
+ * that read at port init (gray_probe_waveform) and picks the path itself, which
+ * is how the stock Seeed firmware serves both batches from one image. Confirmed
+ * on a user's legacy panel 2026-08-20: the probe read it correctly and selected
+ * the register-LUT path unassisted.
  *
- * Why both exist: the OTP waveform is present only on newer batches of this
- * glass. On the production E1001 benched 2026-07-23 the register-LUT path never
- * started a refresh at all, which is why the OTP path is the default. The
- * converse is the reason for this variant -- older glass has no OTP 4-gray
- * table, so it needs the LUTs uploaded.
+ * So this target no longer pins anything. It probes, exactly like the plain gray
+ * build, and the only differences left are the device kind and the probe-failure
+ * fallback below.
  *
- * THIS TARGET IS ON ITS WAY OUT. It used to be necessary: the claim was that
- * the panel is write-only (mono_spi sets miso_io_num = -1), so no image could
- * detect which glass it was talking to, and an operator had to flash both and
- * keep whichever refreshed. That claim was wrong. The UC8179 SDA line is
- * bidirectional and the controller reads back its own OTP, which records
- * whether a 4-gray table was burned in; mono_spi now bit-bangs that read at
- * port init (gray_probe_waveform) and picks the path itself, which is how the
- * stock Seeed firmware serves both batches from one image.
+ * WHY IT IS STILL HERE. Kind is the OTA lineage: release.yml stages each target's
+ * signing input as "<kind>.app.bin". This kind has shipped since v1.12.0, so
+ * deleting the target would mean nothing is ever published under it again and any
+ * field device keyed to it silently stops receiving updates -- sitting on an old
+ * release with no error anywhere. It has to outlive the deletion.
  *
- * So the plain gray target now covers this glass too. This one remains only to
- * pin the register-LUT path while the probe gets bench time, and should be
- * retired -- along with its device kind and catalog entry -- once a legacy
- * panel has been seen to probe correctly.
- *
- * Symptom guide, while both still exist:
- *   - nothing happens at all, no refresh  -> wrong path for this glass
- *   - refreshes but ghosts / flashes erratically -> usually NOT the waveform
- *     path; suspect batch variance, drive voltages, or the panel itself
- *
- * The KIND differs from the plain gray build even though the rendered bytes are
- * byte-identical, because kind is also the OTA lineage: release.yml stages the
- * signing input as "<kind>.app.bin" and merges all targets into one directory,
- * so two targets sharing a kind would overwrite each other's signing input --
- * and a GEN2 panel could be offered the legacy image, which does not refresh on
- * it. Distinct kinds keep the two update streams separate.
+ * RETIREMENT PATH. Keep building this until no device reports the legacy kind,
+ * then drop the env, this header, and the catalog entry. Because the two images
+ * now behave the same, a legacy-kind device that takes an OTA of THIS target
+ * gets the probe and the corrected waveform, so the migration needs no
+ * intervention from the user. Stop offering it in the flasher immediately
+ * though -- new devices have no reason to pick it.
  *
  * SERVER DEPENDENCY: Tesserae needs a hardware-catalog entry for
  * seeed_reterminal_e1001_gray_legacy -- a copy of
  * hardware/seeed/reterminal_e1001_gray.json with this id. Same protocol
  * (esp32_bw_client), same panel.gamut (gray_4), same renderers override
  * (esp32_gray2_bin), because the frame bytes are identical. Without it the
- * panel pairs but never receives a correctly packed frame.
+ * panel pairs but never receives a correctly packed frame. That entry must stay
+ * until the kind is fully retired.
  */
 #pragma once
 
@@ -57,8 +49,13 @@
 #undef  TESSERAE_DEVICE_KIND
 #define TESSERAE_DEVICE_KIND  "seeed_reterminal_e1001_gray_legacy"
 
-/* Pin the register-LUT path instead of asking the panel. mono_spi maps this to
- * GRAY4_WAVEFORM 0, which skips the probe entirely; everything else --
- * geometry, palette, plane encoding, packing -- is inherited unchanged from the
- * gray header above. Drop this define (and this file) to let the probe decide. */
-#define EPD_GRAY4_REG_LUTS 1
+/* If the probe cannot answer, use register LUTs rather than the OTP waveform.
+ *
+ * This is the one substantive difference from the plain gray build, and it is
+ * the reason this target can safely take the probe at all. Anything running this
+ * firmware is on glass that was already established to have no built-in 4-gray
+ * table -- that is why its owner is on this target. Falling back to OTP on a
+ * failed read would break a device that works today; falling back to register
+ * LUTs is what it was already doing. So the probe can only improve matters here,
+ * never regress them. */
+#define GRAY4_WAVEFORM_FALLBACK 0

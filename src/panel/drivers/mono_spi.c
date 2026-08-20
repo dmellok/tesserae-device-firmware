@@ -201,8 +201,8 @@ static void hw_reset(void)
  */
 
 /* Build-time override: -1 probes the panel, 0 forces register LUTs, 1 forces
- * the built-in OTP waveform. Boards that pin the answer (the legacy-glass
- * target) keep working unchanged; everything else asks. */
+ * the built-in OTP waveform. Kept as an escape hatch for a panel that ever
+ * needs overriding; no board pins it any more. */
 #ifndef GRAY4_WAVEFORM
 #ifdef EPD_GRAY4_REG_LUTS
 #define GRAY4_WAVEFORM 0
@@ -211,12 +211,24 @@ static void hw_reset(void)
 #endif
 #endif
 
-/* What the panel said. The initial value is the pre-probe shipped default, so
- * a probe that cannot run leaves today's panels behaving exactly as before --
- * the failure mode is "no new information", not "new behaviour". Note this is
- * the opposite of Seeed's fallback (they default to register LUTs); ours is
- * chosen to preserve the path this firmware has field evidence for. */
-static bool s_gray_use_otp = true;
+/* What to use when the probe cannot answer: 1 = built-in OTP, 0 = register LUTs.
+ *
+ * This is per board, and it matters most where the two populations differ. A
+ * device that has been running the legacy-glass target is KNOWN to be on glass
+ * with no built-in table, so falling back to OTP there would break a unit that
+ * works today. Its board header sets 0 and keeps that guarantee without pinning
+ * the answer, which is what lets it take the probe at all.
+ *
+ * Everything else defaults to 1, the pre-probe shipped behaviour, so a probe
+ * that cannot run is "no new information" rather than "new behaviour". Note
+ * that both directions are the opposite of Seeed, who always fall back to
+ * register LUTs; ours follows the field evidence per target instead. */
+#ifndef GRAY4_WAVEFORM_FALLBACK
+#define GRAY4_WAVEFORM_FALLBACK 1
+#endif
+
+/* What the panel said, seeded with the fallback above. */
+static bool s_gray_use_otp = (GRAY4_WAVEFORM_FALLBACK != 0);
 
 #define GRAY_OTP_CLK_US   1        /* ~500 kHz, near Seeed's bit-bang rate */
 #define GRAY_OTP_BUSY_MS  3000
