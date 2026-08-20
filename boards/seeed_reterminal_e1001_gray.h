@@ -6,9 +6,13 @@
  *   - Frame: 2bpp packed, 4 px/byte, MSB-first (bits 7-6 = leftmost pixel),
  *     values linear 0b00 = black .. 0b11 = white, 96000 bytes. No mirror in
  *     the payload (panel-side handling lives in the driver, as on the E1003).
- *   - Driver: mono_spi in EPD_GRAY4 mode -- custom register LUTs + dual-plane
- *     (DTM1+DTM2) refresh. The 1bpp OTP-waveform env stays untouched; pure
- *     B/W genuinely looks better there, so gray is a separate opt-in build.
+ *   - Driver: mono_spi in EPD_GRAY4 mode -- dual-plane (DTM1+DTM2) refresh,
+ *     driven either by the panel's built-in OTP 4-gray waveform or by register
+ *     LUTs, whichever this glass actually has. mono_spi asks the controller at
+ *     port init (gray_probe_waveform) rather than being told at build time, so
+ *     this one target covers both batches. The 1bpp OTP-waveform env stays
+ *     untouched; pure B/W genuinely looks better there, so gray is a separate
+ *     opt-in build.
  *   - Kind: seeed_reterminal_e1001_gray (server renders 96000-byte 2bpp).
  *     The MODEL stays reTerminal_E1001 so the default device id is stable
  *     across mono<->gray reflashes; the server auto-heals the registration's
@@ -51,5 +55,7 @@
 #define TESSERAE_RELAY_MODEL   "esp32_bw_client"
 #define TESSERAE_RELAY_GAMUT   "gray_4"
 
-/* Flip mono_spi into the dual-plane register-LUT grayscale mode. */
+/* Flip mono_spi into dual-plane 4-level grayscale. The waveform (built-in OTP
+ * vs uploaded register LUTs) is probed at runtime; -DGRAY4_WAVEFORM=0 or 1
+ * pins it if a panel ever needs overriding. */
 #define EPD_GRAY4 1
