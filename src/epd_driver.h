@@ -63,3 +63,14 @@ void epd_display_partial(const uint8_t *image, int x, int y, int w, int h,
  * uses EPD_RF_A2, where latency is what the user feels. */
 void epd_display_partial_mode(const uint8_t *image, int x, int y, int w, int h,
                               epd_refresh_t mode);
+
+/* Override the 4-gray register-LUT tuning at runtime (EPD_GRAY_TUNER builds).
+ * A no-op on panels that do not use register LUTs. Applied at the next
+ * epd_init(), since that is when the LUTs and CDI are uploaded. */
+void epd_gray_tune(int gain_pct, unsigned cdi_byte0, int border_lut);
+
+/* Override VCOM DC (command 0x82) at runtime; -1 leaves the factory value.
+ * For the VCOM sweep build, which exists because a panel that forms the image
+ * correctly and then cannot hold it is usually a VCOM mismatch, not a drive
+ * problem. */
+void epd_gray_set_vcom(int vdcs);
