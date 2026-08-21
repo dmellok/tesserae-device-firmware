@@ -203,3 +203,43 @@
  * "this is probably a bug". */
 #define SLEEP_INTERVAL_MIN_S  30
 #define SLEEP_INTERVAL_MAX_S  (7 * 24 * 60 * 60)
+
+/* Sanity bounds on the AWAKE poll cadence (always-on mode). Deliberately not
+ * the sleep bounds above: the 30 s floor exists to stop a sleeping device
+ * spinning up its radio too often, and the whole point of always-on is that the
+ * radio is already up, so a single-digit poll is cheap and legitimate. Matches
+ * the range the server accepts. */
+#define AWAKE_POLL_MIN_S      5
+#define AWAKE_POLL_MAX_S      300
+#define AWAKE_POLL_DEFAULT_S  15
+
+/* Heartbeat cadence while awake. The heartbeat carries battery / RSSI / IP and
+ * drives the server's device card; at AWAKE_POLL_MIN_S it would be pure noise,
+ * so it runs on its own much slower clock, independent of frame polling. */
+#define AWAKE_HEARTBEAT_S     60
+
+/* State of charge at which always-on gives up and returns to deep sleep, on a
+ * board that can see a cell at all. A mains-powered panel sits at 100 % and
+ * never reaches this; a battery panel that someone enabled always-on for, or
+ * one whose supply was unplugged, falls back here with enough charge left to
+ * keep doing useful work on the normal cycle. */
+#define AWAKE_BATTERY_MIN_PCT 15
+
+/* Floor on how often the GLASS may be driven while awake, independent of how
+ * often we poll. Polling is a cheap HTTP round trip that almost always ends in
+ * a 304; a panel refresh is seconds of drive and is the operation that wears.
+ * A board with a slower panel can raise this in its header. */
+#ifndef AWAKE_MIN_REPAINT_S
+#define AWAKE_MIN_REPAINT_S   30
+#endif
+
+/* Give up and reboot if neither a frame poll nor a heartbeat has succeeded for
+ * this long. A wedged poll loop is invisible from the outside -- the panel just
+ * keeps showing a stale frame -- and coming back up into always-on mode is
+ * strictly better than sitting there. Generous enough that a flaky AP or a
+ * server outage rides through without a reset loop. */
+#define AWAKE_STALL_REBOOT_S  (30 * 60)
+
+/* How often to log heap while awake. Deep sleep resets the heap every cycle and
+ * hides leaks; a device that now runs for months needs the trend visible. */
+#define AWAKE_HEAP_LOG_S      (15 * 60)

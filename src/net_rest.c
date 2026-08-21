@@ -483,12 +483,6 @@ static void add_touch3_capability(cJSON *o)
         cJSON_AddNumberToObject(t, "max_primitives", T3_MAX_PRIMS);
     }
     cJSON_AddBoolToObject(o, "partial_refresh", true);
-    /* A hardware fact, not a state: this device CAN run without deep sleep, so
-     * the server may offer it interactive controls. Whether it actually stays
-     * awake is server config (`config.always_on` on the /status response), NOT
-     * something the device derives -- so always_on is deliberately not
-     * advertised here. */
-    cJSON_AddBoolToObject(o, "can_stay_awake", true);
 
     cJSON *p = cJSON_AddObjectToObject(o, "panel");
     if (p) {
@@ -512,6 +506,23 @@ static void add_touch3_capability(cJSON *o)
 #endif
 
 /* Identity body shared by /discover and /register. Caller frees. */
+/* can_stay_awake: may this device be offered always-on mode?
+ *
+ * Deliberately NOT part of the touch capability block it used to live in. It
+ * used to be hardcoded true there, which meant two wrong things at once: only
+ * the one board with a digitizer ever advertised it, and that board claimed the
+ * capability whatever it was plugged into. It is a statement about POWER (see
+ * power_can_stay_awake), it belongs to every board, and it has to be re-sent on
+ * every heartbeat because a mains panel can be unplugged mid-session.
+ *
+ * Always emitted explicitly, never omitted. The server treats an absent key as
+ * "no new information" and keeps its last answer, so an explicit false is the
+ * only way to retract the capability once granted. */
+static void add_power_capability(cJSON *o)
+{
+    cJSON_AddBoolToObject(o, "can_stay_awake", power_can_stay_awake());
+}
+
 static char *identity_body(uint16_t panel_w, uint16_t panel_h,
                            const char *mac, const char *fw_version,
                            bool advertise_ota)
@@ -530,6 +541,7 @@ static char *identity_body(uint16_t panel_w, uint16_t panel_h,
     (void)advertise_ota;
 #endif
     /* Register advertises capabilities; discover stays identity-only. */
+    if (advertise_ota) add_power_capability(o);
     if (advertise_ota) add_deck_capability(o);
     if (advertise_ota) add_frame_cache_capability(o);
 #if BOARD_OVERLAY_PARTIAL
@@ -978,7 +990,14 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     }
     cJSON_AddNumberToObject(o, "rssi", rssi);
     cJSON_AddStringToObject(o, "ip", ip ? ip : "");
-    cJSON_AddNumberToObject(o, "next_sleep_s", next_sleep_s);
+    /* next_sleep_s and sleep_until (below) both describe WHEN WE WILL WAKE, and
+     * feed a server-side prediction that schedules renders to land just before
+     * it. While always-on that prediction has nothing to predict, and feeding it
+     * a number would make the server hold renders for a device that is sitting
+     * there ready. Omit both; the server derives what it needs from
+     * awake_poll_s. */
+    if (!c->always_on)
+        cJSON_AddNumberToObject(o, "next_sleep_s", next_sleep_s);
     cJSON_AddStringToObject(o, "fw_version", fw_version);
     cJSON_AddNumberToObject(o, "panel_w", panel_w);
     cJSON_AddNumberToObject(o, "panel_h", panel_h);
@@ -1010,11 +1029,15 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         ESP_LOGW(TAG, "status: SHTC3 read failed: %s", esp_err_to_name(environment_err));
     }
 #endif
-    if (sleep_until) cJSON_AddNumberToObject(o, "sleep_until", (double)sleep_until);
+    if (sleep_until && !c->always_on)
+        cJSON_AddNumberToObject(o, "sleep_until", (double)sleep_until);
     if (button_report_pending(&s_button)) { /* failed /frame fallback */
         cJSON_AddStringToObject(o, "button", s_button.name);
         cJSON_AddNumberToObject(o, "button_event_id", (double)s_button.event_id);
     }
+    /* Every beat, on every board: the answer can change without a reboot when
+     * a mains panel is unplugged or its cell runs down. */
+    add_power_capability(o);
     add_deck_capability(o);
     add_frame_cache_capability(o);
 #if BOARD_OVERLAY_PARTIAL
@@ -1082,6 +1105,26 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         if (ao_v >= 0 && (ao_v != 0) != c->always_on) {
             rest_config_set_always_on(ao_v != 0);
             rest_config_save();
+        }
+        /* awake_poll_s rides the same config block. It is the poll cadence
+         * WHILE awake and has nothing to do with sleep_interval_s, which keeps
+         * its meaning as the deep-sleep cadence and stays the value we fall
+         * back to the moment always_on goes false.
+         *
+         * Persisted only on a real change: this arrives on every heartbeat and
+         * writing NVS each time would wear flash for nothing. The setter drops
+         * out-of-range values, so an unusable config leaves the last good
+         * cadence in place rather than spinning the loop. */
+        int32_t aw = json_get_int(cfg, "awake_poll_s", -1);
+        if (aw > 0 && aw != c->awake_poll_s) {
+            rest_config_set_awake_poll_s(aw);
+            if (rest_config_get()->awake_poll_s == aw) {
+                ESP_LOGI(TAG, "awake poll cadence -> %d s", (int)aw);
+                rest_config_save();
+            } else {
+                ESP_LOGW(TAG, "ignoring awake_poll_s=%d (outside %d..%d)",
+                         (int)aw, AWAKE_POLL_MIN_S, AWAKE_POLL_MAX_S);
+            }
         }
     }
 #if BOARD_OVERLAY_PARTIAL

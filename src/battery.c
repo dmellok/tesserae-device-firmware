@@ -21,6 +21,29 @@ int battery_pct(int mv)
     return (mv - 3300) * 30 / 400;
 }
 
+/* ---------- always-on eligibility (see battery.h for why it is shaped so) ---- */
+
+bool power_battery_critical(void)
+{
+    /* No sense means no cell to protect, not "flat". Guarding on this is what
+     * keeps a board with no divider (the XIAO C3 panel) from reading 0 mV and
+     * dropping out of always-on immediately and permanently. */
+    if (!battery_present()) return false;
+    return battery_pct(battery_read_mv()) < AWAKE_BATTERY_MIN_PCT;
+}
+
+bool power_can_stay_awake(void)
+{
+#ifdef BOARD_MAINS_POWERED
+    /* The board says the supply sustains continuous Wi-Fi. Believe it unless a
+     * cell we can actually see says otherwise -- that covers the mains panel
+     * whose supply was unplugged, which is the case worth retracting for. */
+    return !power_battery_critical();
+#else
+    return false;
+#endif
+}
+
 #if defined(BOARD_BATTERY_PMIC)
 
 /* PMIC boards (Waveshare PhotoPainter): battery comes from the AXP2101 fuel
