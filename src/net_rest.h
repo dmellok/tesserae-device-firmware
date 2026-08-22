@@ -208,6 +208,11 @@ void rest_set_collection_report(const char *id, const char *version,
                                 uint16_t cached, uint32_t total,
                                 const char *state);
 
+/* Why the last collection sync failed; "" or NULL clears it. Reported
+ * alongside state, not inside it: the server validates state against a fixed
+ * set and drops the whole report on an unrecognised value. */
+void rest_set_collection_reason(const char *reason);
+
 /* GET /api/v1/device/<id>/collection. REST_NO_CONTENT means unbound. */
 rest_status_t rest_get_collection_manifest(char *buf, size_t cap,
                                            size_t *out_len,

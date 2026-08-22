@@ -33,6 +33,23 @@ RTC_DATA_ATTR static fc_play_state_t s_play;
 RTC_DATA_ATTR static int64_t         s_next_frame_at;
 RTC_DATA_ATTR static int64_t         s_next_network_at;
 
+/* Why the last sync attempt failed, held across deep sleep.
+ *
+ * Without this a failing album reports "syncing" for ever, which is exactly
+ * how it looked in the field (#247: "stuck at syncing, 0 of 0 frames cached").
+ * The reason is the ordering of a wake: collection_boot() reports "syncing",
+ * the status POST goes out, the response brings the album envelope, and only
+ * THEN does collection_sync_tail() run and discover the problem. Its
+ * report("error") lands after the last POST of the wake and is wiped by deep
+ * sleep, and the next wake's collection_boot() overwrites it with "syncing"
+ * before the next POST. The device knew what was wrong every single time and
+ * had no way to say so.
+ *
+ * RTC RAM rather than NVS deliberately: this is written on every failed wake,
+ * and a flash write per failure to report a failure is its own bug. Empty
+ * means the last attempt did not fail. */
+RTC_DATA_ATTR static char            s_last_fail[24];
+
 static fc_manifest_t *s_manifest;
 static bool           s_have_collection;
 
@@ -81,6 +98,23 @@ static void report(const char *state)
                                (uint16_t)cached, total, state);
 }
 
+/* Record why this wake's sync failed, so the NEXT status POST can say so.
+ * Also reports it immediately, which covers the linger case where another POST
+ * does happen before sleep. */
+static void fail(const char *reason)
+{
+    snprintf(s_last_fail, sizeof s_last_fail, "%s", reason);
+    rest_set_collection_reason(reason);
+    report("error");
+}
+
+/* The last attempt succeeded (or there is nothing to sync). */
+static void fail_clear(void)
+{
+    s_last_fail[0] = '\0';
+    rest_set_collection_reason(NULL);
+}
+
 void collection_boot(void)
 {
     if (!sdcard_mounted() && !sdcard_mount()) return;
@@ -90,7 +124,20 @@ void collection_boot(void)
     const rest_config_t *c = rest_config_get();
     if (!c->collection_id[0] || !c->collection_synced_ver[0] ||
         strcmp(c->collection_synced_ver, c->collection_srv_ver) != 0) {
-        if (c->collection_id[0]) report("syncing");
+        /* Not synced. Report LAST WAKE'S failure if there was one, rather than
+         * "syncing" -- this is the only POST that carries it, and reporting
+         * optimism here is what made a permanently broken album look like a
+         * sync that was merely slow. */
+        if (c->collection_id[0]) {
+            if (s_last_fail[0]) {
+                ESP_LOGW(TAG, "previous album sync failed (%s); reporting error",
+                         s_last_fail);
+                rest_set_collection_reason(s_last_fail);
+                report("error");
+            } else {
+                report("syncing");
+            }
+        }
         return;
     }
 
@@ -251,7 +298,7 @@ void collection_sync_tail(bool present, const char *id, const char *kind,
     if (!collection_sync_pending(present, id, kind, version)) return;
 
     char *json = malloc(COLLECTION_MANIFEST_BUF);
-    if (!json) { report("error"); return; }
+    if (!json) { fail("no_memory"); return; }
     size_t len = 0;
     rest_status_t st = rest_get_collection_manifest(
         json, COLLECTION_MANIFEST_BUF, &len, 15000);
@@ -263,7 +310,7 @@ void collection_sync_tail(bool present, const char *id, const char *kind,
     if (st != REST_OK) {
         ESP_LOGW(TAG, "collection manifest fetch failed (%d)", st);
         free(json);
-        report("error");
+        fail("manifest_fetch");
         return;
     }
 
@@ -273,7 +320,7 @@ void collection_sync_tail(bool present, const char *id, const char *kind,
         strcmp(m->kind, kind) != 0 || strcmp(m->version, version) != 0) {
         ESP_LOGW(TAG, "collection manifest invalid or status envelope moved");
         free(json); free(m);
-        report("error");
+        fail("manifest_mismatch");
         return;
     }
     for (int i = 0; i < m->n_frames; i++) {
@@ -282,7 +329,7 @@ void collection_sync_tail(bool present, const char *id, const char *kind,
                      m->frames[i].frame_id, (unsigned)m->frames[i].bytes,
                      (unsigned)EPD_BUF_BYTES);
             free(json); free(m);
-            report("error");
+            fail("frame_size");
             return;
         }
     }
@@ -303,7 +350,7 @@ void collection_sync_tail(bool present, const char *id, const char *kind,
                  FC_MAX_FRAMES);
         free(json);
         free(m);
-        report("error");
+        fail("sync_failed");
         return;
     }
 
@@ -338,7 +385,7 @@ void collection_sync_tail(bool present, const char *id, const char *kind,
 
     if (!complete) {
         free(m);
-        report("error");
+        fail("sync_failed");
         return;
     }
 
@@ -352,6 +399,7 @@ void collection_sync_tail(bool present, const char *id, const char *kind,
     fc_play_reset(&s_play, m->version, esp_random());
     int64_t now = 0;
     s_next_frame_at = wall_clock_now(&now) ? now + album_interval() : 0;
+    fail_clear();
     report("playing");
     ESP_LOGI(TAG, "offline Album '%s' synced at v%s (%d/%ld frames)",
              m->collection_id, m->version, m->n_frames,

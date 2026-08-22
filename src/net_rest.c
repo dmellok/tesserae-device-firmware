@@ -90,6 +90,7 @@ static char     s_collection_id[FC_ID_CAP];
 static char     s_collection_ver[FC_VERSION_CAP];
 static char     s_collection_state[12];
 static uint16_t s_collection_cached;
+static char     s_collection_reason[24];
 static uint32_t s_collection_total;
 
 void rest_set_deck_capability(uint64_t capacity_bytes)
@@ -120,6 +121,12 @@ void rest_set_collection_report(const char *id, const char *version,
     snprintf(s_collection_state, sizeof s_collection_state, "%s", state);
     s_collection_cached = cached;
     s_collection_total = total;
+}
+
+void rest_set_collection_reason(const char *reason)
+{
+    snprintf(s_collection_reason, sizeof s_collection_reason, "%s",
+             reason ? reason : "");
 }
 
 void rest_set_deck_painted(const char *page_id, const char *version)
@@ -170,6 +177,13 @@ static void add_collection_report(cJSON *o)
     cJSON_AddNumberToObject(c, "cached", s_collection_cached);
     cJSON_AddNumberToObject(c, "total", (double)s_collection_total);
     cJSON_AddStringToObject(c, "state", s_collection_state);
+    /* Why the last sync failed, when it did. The server validates `state`
+     * against a fixed set and drops the whole report on anything unexpected, so
+     * the reason cannot ride in there; it goes alongside as its own key. Older
+     * servers ignore it, which is the point -- the device can start explaining
+     * itself without waiting for a server release. */
+    if (s_collection_reason[0])
+        cJSON_AddStringToObject(c, "reason", s_collection_reason);
 }
 
 #if BOARD_HAS_TOUCH
