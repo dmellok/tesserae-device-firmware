@@ -22,6 +22,8 @@
 #  include "seeed_reterminal_e1001_gray_legacy.h"
 #elif defined(TESSERAE_BOARD_SEEED_E1001_GRAY)
 #  include "seeed_reterminal_e1001_gray.h"
+#elif defined(TESSERAE_BOARD_SEEED_STICKY)
+#  include "seeed_reterminal_sticky.h"
 #elif defined(TESSERAE_BOARD_SEEED_E1003)
 #  include "seeed_reterminal_e1003.h"
 #elif defined(TESSERAE_BOARD_WAVESHARE_PHOTOPAINTER_73)
