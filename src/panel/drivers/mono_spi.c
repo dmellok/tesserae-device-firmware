@@ -33,6 +33,8 @@
 #include "esp_rom_sys.h"
 #include "soc/gpio_sig_map.h"
 #include "soc/spi_periph.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 #endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -230,8 +232,20 @@ static void hw_reset(void)
 /* What the panel said, seeded with the fallback above. */
 static bool s_gray_use_otp = (GRAY4_WAVEFORM_FALLBACK != 0);
 
-#define GRAY_OTP_CLK_US   1        /* ~500 kHz, near Seeed's bit-bang rate */
+/* Half-period of the bit-banged clock, and the settling time allowed before
+ * sampling. 3 us puts this near 160 kHz, comfortably SLOWER than Seeed's
+ * digitalWrite-limited ~250-330 kHz rather than the ~500 kHz first shipped.
+ * The probe runs at most once in the life of a device (see the NVS cache), so
+ * there is nothing to buy by hurrying it. */
+#define GRAY_OTP_CLK_US   3
 #define GRAY_OTP_BUSY_MS  3000
+
+/* Plausible on-die temperature, in whole degrees C. The controller reports
+ * ambient; anything outside this is not a cold room, it is a read path that is
+ * not returning real data. Deliberately wide -- the job is to catch a dead or
+ * floating line, not to second-guess the sensor. */
+#define GRAY_OTP_TEMP_MIN_C (-30)
+#define GRAY_OTP_TEMP_MAX_C  85
 
 /* OTP dump geometry: clock out `total` bytes and keep 10 from `skip`. These are
  * positions in the dump rather than documented register addresses -- they come
@@ -306,7 +320,21 @@ static void gray_otp_cmd(uint8_t cmd)
     gpio_set_level(EPD_PIN_CS, 1);
 }
 
-/* One CS-framed read byte, MSB first, sampled while SCLK is high. */
+/* One CS-framed read byte, MSB first.
+ *
+ * The sample happens a full clock period AFTER the rising edge, which is the
+ * whole point of this function's shape. Seeed's reference reads like this:
+ *
+ *     digitalWrite(TFT_SCLK, HIGH);
+ *     if (digitalRead(TFT_MOSI) == HIGH) data |= 0x01;
+ *
+ * and looks as though it samples immediately. It does not: on Arduino-ESP32
+ * those two calls carry roughly a microsecond of overhead between them, so the
+ * panel gets that long to drive the bit. gpio_set_level() is ~100 ns, so the
+ * direct translation samples almost on the edge, before the data line is valid.
+ * That produced intermittently wrong OTP bytes, and one spurious 0x01 is enough
+ * to make legacy glass claim a built-in waveform and render faded. The delays
+ * belong between the edge and the sample, not either side of the edges. */
 static uint8_t gray_otp_read_byte(void)
 {
     uint8_t v = 0;
@@ -317,11 +345,11 @@ static uint8_t gray_otp_read_byte(void)
     gpio_set_direction((gpio_num_t)EPD_PIN_MOSI, GPIO_MODE_INPUT);
     for (int i = 0; i < 8; i++) {
         v = (uint8_t)(v << 1);
-        esp_rom_delay_us(GRAY_OTP_CLK_US);
         gpio_set_level(EPD_PIN_SCLK, 1);
+        esp_rom_delay_us(GRAY_OTP_CLK_US);   /* let the panel drive the bit */
         if (gpio_get_level(EPD_PIN_MOSI)) v |= 1;
-        esp_rom_delay_us(GRAY_OTP_CLK_US);
         gpio_set_level(EPD_PIN_SCLK, 0);
+        esp_rom_delay_us(GRAY_OTP_CLK_US);
     }
     gpio_set_direction((gpio_num_t)EPD_PIN_MOSI, GPIO_MODE_OUTPUT);
     gpio_set_level(EPD_PIN_MOSI, 1);
@@ -344,6 +372,40 @@ static void gray_otp_read_window(uint16_t total, uint16_t skip,
     }
 }
 
+/* The probe's answer, cached in NVS.
+ *
+ * Which waveform the glass has is a permanent property of the hardware: it
+ * cannot change without the panel being replaced. Reading it correctly once is
+ * therefore enough for ever, and caching it means a later marginal read can
+ * never flip a working panel to the wrong waveform -- which is exactly what
+ * happened in the field, and is far worse than not probing at all, because it
+ * breaks a display that was previously fine.
+ *
+ * Cleared by an NVS erase, which is also the escape hatch if a board is ever
+ * moved to different glass. */
+#define GRAY_NVS_NS   "epdcal"
+#define GRAY_NVS_KEY  "gray4_otp"
+
+static bool gray_cached_waveform(bool *use_otp)
+{
+    nvs_handle_t h;
+    if (nvs_open(GRAY_NVS_NS, NVS_READONLY, &h) != ESP_OK) return false;
+    uint8_t v = 0xff;
+    esp_err_t err = nvs_get_u8(h, GRAY_NVS_KEY, &v);
+    nvs_close(h);
+    if (err != ESP_OK || v > 1) return false;
+    *use_otp = (v != 0);
+    return true;
+}
+
+static void gray_cache_waveform(bool use_otp)
+{
+    nvs_handle_t h;
+    if (nvs_open(GRAY_NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    if (nvs_set_u8(h, GRAY_NVS_KEY, use_otp ? 1 : 0) == ESP_OK) nvs_commit(h);
+    nvs_close(h);
+}
+
 static void gray_probe_waveform(void)
 {
 #if GRAY4_WAVEFORM >= 0
@@ -351,7 +413,16 @@ static void gray_probe_waveform(void)
     ESP_LOGI(TAG, "4-gray waveform pinned by the board: %s",
              s_gray_use_otp ? "built-in OTP" : "register LUTs");
 #else
-    uint8_t a[10], b[10], t_int = 0, t_frac = 0;
+    /* A good answer is permanent; do not re-read it and risk a worse one. */
+    bool cached = false;
+    if (gray_cached_waveform(&cached)) {
+        s_gray_use_otp = cached;
+        ESP_LOGI(TAG, "4-gray waveform from NVS: %s",
+                 s_gray_use_otp ? "built-in OTP" : "register LUTs");
+        return;
+    }
+
+    uint8_t a[10], a2[10], b[10], t_int = 0, t_frac = 0;
     bool complete = false;
 
     esp_err_t lock = spi_device_acquire_bus(s_spi, portMAX_DELAY);
@@ -363,10 +434,6 @@ static void gray_probe_waveform(void)
     }
     gray_otp_bus_detach();
 
-    /* The on-die temperature read is not part of the decision, but it is part
-     * of Seeed's working sequence and it costs two bytes, so it stays. It is
-     * also a cheap sanity check on the read path: a panel returning 0x00/0x00
-     * here is very likely returning nothing at all below. */
     gray_otp_reset();
     if (gray_otp_wait_ready()) {
         gray_otp_cmd(0x40);
@@ -378,10 +445,19 @@ static void gray_probe_waveform(void)
         if (gray_otp_wait_ready()) {
             gray_otp_read_window(GRAY_OTP_A_TOTAL, GRAY_OTP_A_SKIP, a, sizeof a);
             gray_otp_reset();
+            /* Read the SAME window twice. One spurious bit in the decisive byte
+             * is all it takes to send a panel down the wrong path, and a
+             * repeatability check is the only thing that catches a read which is
+             * marginal rather than absent. */
             if (gray_otp_wait_ready()) {
-                gray_otp_read_window(GRAY_OTP_B_TOTAL, GRAY_OTP_B_SKIP,
-                                     b, sizeof b);
-                complete = true;
+                gray_otp_read_window(GRAY_OTP_A_TOTAL, GRAY_OTP_A_SKIP,
+                                     a2, sizeof a2);
+                gray_otp_reset();
+                if (gray_otp_wait_ready()) {
+                    gray_otp_read_window(GRAY_OTP_B_TOTAL, GRAY_OTP_B_SKIP,
+                                         b, sizeof b);
+                    complete = true;
+                }
             }
         }
     }
@@ -396,10 +472,30 @@ static void gray_probe_waveform(void)
         return;
     }
 
+    /* Sanity-gate the READ PATH before trusting anything it returned. This was
+     * read and logged from the start and then never actually checked, which is
+     * the check that would have caught the timing bug above. */
+    int8_t temp_c = (int8_t)t_int;
+    if (temp_c < GRAY_OTP_TEMP_MIN_C || temp_c > GRAY_OTP_TEMP_MAX_C) {
+        ESP_LOGW(TAG, "4-gray probe: implausible panel temperature %d C "
+                      "(raw %02x.%02x); distrusting the read, keeping %s",
+                 temp_c, t_int, t_frac,
+                 s_gray_use_otp ? "built-in OTP" : "register LUTs");
+        return;
+    }
+    if (a[0] != a2[0]) {
+        ESP_LOGW(TAG, "4-gray probe: unstable OTP read (%02x then %02x at "
+                      "%04x); distrusting it, keeping %s",
+                 a[0], a2[0], GRAY_OTP_A_SKIP,
+                 s_gray_use_otp ? "built-in OTP" : "register LUTs");
+        return;
+    }
+
     s_gray_use_otp = (a[0] == 0x01) || (b[0] == 0x01);
-    ESP_LOGI(TAG, "4-gray probe: otp[%04x]=%02x otp[%04x]=%02x temp=%u.%u -> %s",
-             GRAY_OTP_A_SKIP, a[0], GRAY_OTP_B_SKIP, b[0],
-             t_int, t_frac,
+    gray_cache_waveform(s_gray_use_otp);
+    ESP_LOGI(TAG, "4-gray probe: otp[%04x]=%02x otp[%04x]=%02x temp=%d C -> %s "
+                  "(cached)",
+             GRAY_OTP_A_SKIP, a[0], GRAY_OTP_B_SKIP, b[0], temp_c,
              s_gray_use_otp ? "built-in OTP waveform" : "register LUTs");
 #endif
 }
