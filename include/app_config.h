@@ -225,10 +225,19 @@
  * keep doing useful work on the normal cycle. */
 #define AWAKE_BATTERY_MIN_PCT 15
 
-/* Floor on how often the GLASS may be driven while awake, independent of how
- * often we poll. Polling is a cheap HTTP round trip that almost always ends in
- * a 304; a panel refresh is seconds of drive and is the operation that wears.
- * A board with a slower panel can raise this in its header. */
+/* The panel's refresh floor: the minimum interval between full repaints.
+ *
+ * This is the ONLY thing bounding repaint rate. The server used to bound it by
+ * accident, by clamping the poll cadence to a registered refresh_floor_s, and
+ * has stopped -- correctly, because that field describes how fast the glass can
+ * be driven, not how often the device may ask. Polling is a conditional GET
+ * that answers 304 and touches nothing; a repaint is seconds of drive and is
+ * the operation that wears. Conflating them is what made a 5 s always-on
+ * cadence poll every 60 s.
+ *
+ * So the guarantee lives here, on the only party that actually knows what this
+ * glass can take. A board with a slower panel raises it in its own header;
+ * nothing the server sends may lower it. */
 #ifndef AWAKE_MIN_REPAINT_S
 #define AWAKE_MIN_REPAINT_S   30
 #endif

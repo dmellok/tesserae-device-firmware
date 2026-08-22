@@ -44,6 +44,23 @@ CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
 CONFIG_ESP_TLS_USING_MBEDTLS=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# Allocate mbedTLS buffers from PSRAM instead of internal DRAM.
+#
+# mbedtls_ssl_setup() takes SSL_IN_CONTENT_LEN + SSL_OUT_CONTENT_LEN, which is
+# 16 KB + 4 KB by default. SPIRAM_MALLOC_ALWAYSINTERNAL is also 16 KB, so those
+# buffers land in internal DRAM -- and internal DRAM is the scarce pool here,
+# shared with the Wi-Fi stack. On the E1003 that reliably failed:
+#
+#   E esp-tls-mbedtls: mbedtls_ssl_setup returned -0x7F00   (SSL_ALLOC_FAILED)
+#   W ota_install: open failed: ESP_ERR_HTTP_CONNECT
+#
+# i.e. the panel could download and paint a 1.3 MB frame and then not open the
+# TLS connection for its own update. Moving these to PSRAM is the supported fix
+# and costs a little throughput on a path that is already network-bound.
+#
+# Kconfig makes this depend on SPIRAM, so boards without it (the XIAO C3) drop
+# the option silently rather than mis-building.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 # HKDF-SHA256 for the cloud relay's frame-key derivation (relay_crypto.c).
 # Off by default in ESP-IDF; ~1 KB of code. Using mbedTLS's vetted RFC 5869
 # implementation rather than hand-rolling it over HMAC.
