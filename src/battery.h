@@ -26,6 +26,36 @@ int battery_read_mv(void);
 /* Map a Li-Po cell voltage (mV) to a 0-100% state-of-charge estimate. */
 int battery_pct(int mv);
 
+/* ---------- always-on eligibility ---------- */
+
+/* True when this board may advertise `can_stay_awake` to the server, i.e. when
+ * it is running from a supply that can sustain a continuous Wi-Fi association.
+ *
+ * This is a statement about POWER, not about the SoC. Every board here is
+ * capable of staying awake; almost none of them should, because they are
+ * battery panels and a held association flattens the pack in hours.
+ *
+ * There is no VBUS or mains sense anywhere in this firmware, and the one signal
+ * that looks like it would do -- usb_serial_jtag_is_connected() -- detects a USB
+ * DATA HOST, not power. A panel on a wall charger reports disconnected, which is
+ * exactly the deployment always-on exists for, so it is the wrong signal and is
+ * deliberately not used here.
+ *
+ * So the base answer is a board-header assertion, BOARD_MAINS_POWERED, meaning
+ * "this board is wired such that continuous Wi-Fi is sustainable". Runtime can
+ * only ever RETRACT it: if a cell is visible and is running down, we stop
+ * advertising the capability and fall back to deep sleep whatever the server
+ * thinks, because protecting the pack outranks honouring the setting.
+ *
+ * A board that does not define BOARD_MAINS_POWERED always answers false, so
+ * adding always-on to a panel is a deliberate one-line change to its header. */
+bool power_can_stay_awake(void);
+
+/* True once a visible cell has fallen far enough that always-on must stop.
+ * Separated from power_can_stay_awake() so the run loop can log WHY it is
+ * dropping out, and so the threshold has exactly one definition. */
+bool power_battery_critical(void);
+
 #ifdef BATTERY_DEBUG_SWEEP
 /* Diagnostic: loop forever logging raw + calibrated mV across every ADC1
  * channel (with the board's load switch enabled), to identify the real

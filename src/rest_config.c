@@ -29,6 +29,7 @@ static const char *TAG = "rest_cfg";
 #define NVS_KEY_COL_RV     "col_rv"     /* last server-announced version */
 #define NVS_KEY_TZ         "tz"         /* IANA timezone (proto2) */
 #define NVS_KEY_KIOSK      "kiosk"      /* always-on power policy */
+#define NVS_KEY_AWAKE_S    "awake_s"    /* poll cadence while always-on */
 /* Cloud relay (docs/relay/contract.md). Short keys: NVS caps them at 15 chars. */
 #define NVS_KEY_RLY_URL    "rly_url"
 #define NVS_KEY_RLY_CODE   "rly_code"
@@ -72,6 +73,7 @@ void rest_config_load(void)
 {
     memset(&s_cfg, 0, sizeof s_cfg);
     s_cfg.sleep_s = SLEEP_INTERVAL_S;
+    s_cfg.awake_poll_s = AWAKE_POLL_DEFAULT_S;
 
     /* secrets.h dev defaults, if present (server_url only; token is per-device). */
 #ifdef REST_DEFAULT_SERVER_URL
@@ -113,6 +115,13 @@ void rest_config_load(void)
         load_str(h, NVS_KEY_TZ, s_cfg.tz, sizeof s_cfg.tz);
         uint8_t ko = 0;
         if (nvs_get_u8(h, NVS_KEY_KIOSK, &ko) == ESP_OK) s_cfg.always_on = (ko != 0);
+        int32_t aw = 0;
+        /* Re-clamp on the way IN as well as on the way in from the server: a
+         * value written by an older build (or a corrupted page) must not be
+         * able to spin the poll loop on the next boot. */
+        if (nvs_get_i32(h, NVS_KEY_AWAKE_S, &aw) == ESP_OK &&
+            aw >= AWAKE_POLL_MIN_S && aw <= AWAKE_POLL_MAX_S)
+            s_cfg.awake_poll_s = aw;
 
         load_str(h, NVS_KEY_RLY_URL,  s_cfg.relay_url,     sizeof s_cfg.relay_url);
         load_str(h, NVS_KEY_RLY_CODE, s_cfg.relay_code,    sizeof s_cfg.relay_code);
@@ -200,6 +209,7 @@ esp_err_t rest_config_save(void)
                                          s_cfg.collection_srv_ver);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_TZ, s_cfg.tz);
     if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_KIOSK, s_cfg.always_on ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_i32(h, NVS_KEY_AWAKE_S, s_cfg.awake_poll_s);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_RLY_URL,  s_cfg.relay_url);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_RLY_CODE, s_cfg.relay_code);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_RLY_INST, s_cfg.relay_install);
@@ -328,6 +338,16 @@ void rest_config_set_tz(const char *tz)
 void rest_config_set_always_on(bool on)
 {
     s_cfg.always_on = on;
+}
+
+void rest_config_set_awake_poll_s(int32_t seconds)
+{
+    /* Out-of-range is IGNORED rather than clamped to the nearest bound. A
+     * server that sends 1 probably means something we do not understand, and
+     * silently running at 5 s would be a guess; keeping the last good value is
+     * the conservative reading. */
+    if (seconds >= AWAKE_POLL_MIN_S && seconds <= AWAKE_POLL_MAX_S)
+        s_cfg.awake_poll_s = seconds;
 }
 
 /* Persisted onboarding-splash state (a small standalone NVS u8, not part of the

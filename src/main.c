@@ -172,42 +172,144 @@ static int effective_sleep_s(void)
     return v;
 }
 
+/* A downloaded, decoded frame that has not been put on the glass yet.
+ *
+ * Fetching and painting used to be one indivisible step, which was fine while
+ * the only caller painted immediately. Always-on mode needs to hold a frame
+ * when the panel's repaint floor has not elapsed, so the two halves are
+ * separable -- see frame_fetch() / frame_paint() below, which are still
+ * composed into fetch_and_paint_current() with nothing in between so that every
+ * other caller behaves exactly as before. Defined here rather than beside them
+ * because the always-on loop holds one by value across iterations. */
+typedef struct {
+    uint8_t          *frame;   /* malloc'd; owned by whoever holds this */
+    rest_frame_out_t  fo;
+} pending_frame_t;
+
 /* ---------- deep sleep ---------- */
 
-#if defined(BOARD_OVERLAY_PARTIAL) && defined(BOARD_HAS_TOUCH)
-/* Kiosk mode (server config always_on): never deep-sleep; hold WiFi + SSE
- * and keep the digitizer hot, so EVERY tap is a warm tap (echo ~1 s,
- * patches ~2-3 s) and the cold-wake UX gap disappears. Heartbeats + frame
- * polls continue at the configured cadence. Escape hatches: config turns
- * it off (next heartbeat notices), or the battery drops below 15 % -- then
- * fall back to the normal deep-sleep cycle to protect the pack. Note: a
- * queued OTA is deliberately not applied mid-kiosk; it lands on the next
- * reboot/sleep cycle. */
+#ifdef BOARD_MAINS_POWERED
+#if !defined(BOARD_HAS_TOUCH) && !defined(BOARD_HAS_BUTTONS)
+#error "BOARD_MAINS_POWERED needs fetch_and_paint_current(), which is compiled \
+only for touch or button boards. Widen that guard before adding this flag."
+#endif
+
+/* Always-on mode (server config always_on): never deep-sleep, hold the Wi-Fi
+ * association, and poll on a short cadence.
+ *
+ * The point is reachability. Asleep, a device is unreachable, so a manual Send,
+ * a schedule firing or a touch lands whenever the panel next happens to wake --
+ * minutes, on the default cadence. Awake, it lands within awake_poll_s.
+ *
+ * Two cadences, deliberately independent:
+ *   - FRAME POLLS run on next_poll_s (falling back to awake_poll_s). Cheap: one
+ *     conditional GET that almost always 304s and touches nothing. The server
+ *     pulls next_poll_s forward when it knows content is about to change, which
+ *     is why we honour it rather than hardcoding awake_poll_s.
+ *   - HEARTBEATS run on AWAKE_HEARTBEAT_S. They carry battery / RSSI / IP and
+ *     drive the server's device card; at a 5 s poll cadence, sending one per
+ *     poll would be pure noise. They also re-deliver config and server_time, so
+ *     the clock re-syncs without an NTP client.
+ *
+ * Escape hatches, checked every iteration: config turns it off (adopted on the
+ * next heartbeat, no reboot), or a visible cell runs down (see
+ * power_battery_critical) -- then fall back to normal sleep cycles whatever the
+ * server thinks, because protecting the pack outranks honouring the setting.
+ *
+ * Not board-specific. Touch, SSE and the overlay engine are conditional inside;
+ * everything else runs anywhere that declares BOARD_MAINS_POWERED. A queued OTA
+ * is still deliberately not applied mid-run; it lands on the next reboot. */
 static bool fetch_and_paint_current(const char *server_url);
-static void kiosk_loop(void)
+static bool frame_fetch(const char *server_url, const char *held_etag,
+                        pending_frame_t *out);
+static void frame_paint(pending_frame_t *p);
+static void frame_discard(pending_frame_t *p);
+
+/* Poll cadence in seconds: the server's next_poll_s when it gave one, else
+ * the configured awake cadence. Re-clamped here as well as in rest_config
+ * because next_poll_s arrives on a different path and never passed through the
+ * setter. */
+static int32_t awake_poll_s(int32_t server_next_poll_s)
 {
-    ESP_LOGI(TAG, "kiosk mode: staying awake (config always_on)");
+    int32_t v = server_next_poll_s > 0 ? server_next_poll_s
+                                       : rest_config_get()->awake_poll_s;
+    if (v < AWAKE_POLL_MIN_S) v = AWAKE_POLL_MIN_S;
+    if (v > AWAKE_POLL_MAX_S) v = AWAKE_POLL_MAX_S;
+    return v;
+}
+
+static void always_on_loop(void)
+{
+    ESP_LOGI(TAG, "always-on: staying awake (config always_on, poll %d s)",
+             (int)rest_config_get()->awake_poll_s);
     if (wifi_sta_connect_stored() != ESP_OK)
         return;   /* no network: sleep normally, retry next wake */
-    if (touch_init() != ESP_OK) ESP_LOGW(TAG, "kiosk: GT911 init failed");
+#if defined(BOARD_HAS_TOUCH) && defined(BOARD_OVERLAY_PARTIAL)
+    if (touch_init() != ESP_OK) ESP_LOGW(TAG, "always-on: GT911 init failed");
+#endif
 
-    int64_t next_beat_us = 0;
+    const int64_t US = 1000000;
+    int64_t next_beat_us  = 0;      /* 0 = due now: beat once on entry */
+    int64_t next_poll_us  = 0;
+    /* Seeded with "now", not zero. The boot path fetches and paints the current
+     * frame immediately before deciding to stay awake, so the glass has just
+     * been driven when we get here. Starting at zero makes the loop believe it
+     * has never painted, and its first repaint then follows the boot paint
+     * instantly: observed on hardware as two full refreshes 10 s apart under a
+     * 30 s floor. The panel does not care which code path drove it.
+     *
+     * When the boot path did not paint, the cost is that the first change waits
+     * out one floor, which is the guarantee being made anyway. */
+    int64_t last_paint_us = esp_timer_get_time();
+    int64_t last_ok_us    = esp_timer_get_time();   /* stall guard */
+    int64_t next_heap_us  = esp_timer_get_time() + (int64_t)AWAKE_HEAP_LOG_S * US;
+    int64_t next_defer_log_us = 0;
+    int32_t server_next_poll_s = -1;
+    int      reconnect_backoff_s = 1;
+    /* A fetched frame waiting for the panel's refresh floor to elapse. At most
+     * one: a newer fetch replaces it rather than queueing behind it. */
+    pending_frame_t pending = {0};
+
     for (;;) {
         const rest_config_t *c = rest_config_get();
         /* Server config, re-read every loop: the heartbeat below adopts the
          * latest config.always_on, so turning it off takes effect on the next
          * poll with no reboot. */
-        if (!c->always_on) { ESP_LOGI(TAG, "kiosk off (config)"); break; }
-        int mv = battery_read_mv();
-        /* battery_present(): 0 mV on a board with no sense would drop out of
-         * kiosk mode immediately and permanently. */
-        if (battery_present() && battery_pct(mv) < 15 &&
-            !usb_serial_jtag_is_connected()) {
-            ESP_LOGW(TAG, "kiosk: battery %d%%; resuming sleep cycles",
-                     battery_pct(mv));
+        if (!c->always_on) { ESP_LOGI(TAG, "always-on off (config)"); break; }
+        if (power_battery_critical()) {
+            ESP_LOGW(TAG, "always-on: battery %d%%; resuming sleep cycles",
+                     battery_pct(battery_read_mv()));
             break;
         }
 
+        int64_t now = esp_timer_get_time();
+
+        /* Association health. An AP reboot, a DHCP lease change or a roam must
+         * not need a device reset, and must not hot-loop either: back off to a
+         * cap and keep trying. Everything below needs the link, so restart the
+         * iteration rather than issuing requests that are certain to fail. */
+        char ip[16] = {0};
+        if (!wifi_manager_get_sta_ip(ip, sizeof ip) || ip[0] == '\0') {
+            ESP_LOGW(TAG, "always-on: link down; reconnecting in %d s",
+                     reconnect_backoff_s);
+            vTaskDelay(pdMS_TO_TICKS(reconnect_backoff_s * 1000));
+            if (wifi_sta_connect_stored() == ESP_OK) {
+                ESP_LOGI(TAG, "always-on: link back");
+                reconnect_backoff_s = 1;
+            } else if (reconnect_backoff_s < 60) {
+                reconnect_backoff_s *= 2;
+                if (reconnect_backoff_s > 60) reconnect_backoff_s = 60;
+            }
+            /* A long outage must still reboot rather than sit here for ever. */
+            if (now - last_ok_us > (int64_t)AWAKE_STALL_REBOOT_S * US) {
+                ESP_LOGE(TAG, "always-on: no successful exchange in %d s; "
+                              "restarting", AWAKE_STALL_REBOOT_S);
+                esp_restart();
+            }
+            continue;
+        }
+
+#if defined(BOARD_HAS_TOUCH) && defined(BOARD_OVERLAY_PARTIAL)
         if (touch_int_asserted()) {
             touch_stroke_t st;
             /* The sample callback tracks a v3 slider live while the finger is
@@ -215,21 +317,34 @@ static void kiosk_loop(void)
              * spec is held. */
             touch_capture_stroke_cb(&st, TOUCH_FIRST_POINT_MS, TOUCH_CAP_MS,
                                     touch3_stroke_sample, NULL);
+            /* Touch-driven repaints COUNT toward the floor but are never
+             * deferred by it. Deferring the response to a finger would be a
+             * worse bug than driving the glass slightly hard: the whole reason
+             * this device stays awake is that a tap lands in about a second.
+             * They still stamp last_paint_us, so a poll-driven repaint cannot
+             * follow one immediately and double up on the panel. */
             if (st.valid) {
                 bool p2_poll = false;
+                bool painted = false;
                 if (touch3_try_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
                                      &p2_poll)) {
-                    if (p2_poll) fetch_and_paint_current(c->server_url);
+                    if (p2_poll) painted = fetch_and_paint_current(c->server_url);
                 } else if (proto2_try_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
                                             &p2_poll)) {
-                    if (p2_poll && fetch_and_paint_current(c->server_url)) {}
+                    if (p2_poll) painted = fetch_and_paint_current(c->server_url);
                 } else {
                     overlay_try_echo(st.x1, st.y1);
                     uint64_t ev = ++s_button_event_seq;
                     rest_set_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
                                    c->last_frame_etag, ev);
-                    fetch_and_paint_current(c->server_url);
+                    painted = fetch_and_paint_current(c->server_url);
                     rest_set_touch(0, 0, 0, 0, 0, NULL, 0);
+                }
+                if (painted) {
+                    last_paint_us = esp_timer_get_time();
+                    /* Whatever was queued is now stale: the tap fetched and
+                     * painted something newer. */
+                    if (pending.frame) frame_discard(&pending);
                 }
             }
             continue;
@@ -243,19 +358,81 @@ static void kiosk_loop(void)
         if (overlay_take_refetch()) {
             rest_config_set_frame_etag("");
             rest_config_save();
-            fetch_and_paint_current(c->server_url);
+            if (fetch_and_paint_current(c->server_url))
+                last_paint_us = esp_timer_get_time();
         }
         if (proto2_sync_pending()) proto2_sync_tail();
+#endif /* touch + overlay */
 
-        if (esp_timer_get_time() >= next_beat_us) {
-            /* Heartbeat: frame freshness + status (config/values/sync). */
-            fetch_and_paint_current(c->server_url);
-            char ip[16] = {0};
-            wifi_manager_get_sta_ip(ip, sizeof ip);
+        /* ---- frame poll ----
+         * Polling and repainting are limited by different things and must not
+         * be conflated. A poll is a conditional GET that answers 304 while the
+         * frame is unchanged and never touches the glass, so it runs on
+         * schedule, always. The panel's refresh floor bounds the PAINT only,
+         * below.
+         *
+         * Deliberately NOT a stall-guard input: frame_fetch() returns false for
+         * a 304 and for a hard network error alike, so treating it as liveness
+         * would make a total outage look healthy. The heartbeat reports its
+         * status unambiguously and is what feeds last_ok_us. */
+        now = esp_timer_get_time();
+        if (now >= next_poll_us) {
+            pending_frame_t fresh;
+            if (frame_fetch(c->server_url,
+                            pending.frame ? pending.fo.etag : NULL, &fresh)) {
+                if (pending.frame) {
+                    /* Superseded before it ever reached the glass. Replace
+                     * rather than keep the older one: the floor is about how
+                     * fast the panel may be driven, not about painting stale
+                     * content, so the panel must always land on the newest
+                     * frame. */
+                    ESP_LOGI(TAG, "always-on: held frame superseded (%s -> %s)",
+                             pending.fo.etag, fresh.fo.etag);
+                    frame_discard(&pending);
+                }
+                pending = fresh;
+            }
+            next_poll_us = esp_timer_get_time() +
+                           (int64_t)awake_poll_s(server_next_poll_s) * US;
+        }
+
+        /* ---- repaint, bounded by the panel's own floor ----
+         * The server no longer bounds repaint rate (it used to, by accident,
+         * via a slow poll cadence), and it never knew this panel's limit
+         * anyway. The device does, so the guarantee lives here.
+         *
+         * A deferred paint and a missed Send look identical from the operator's
+         * side, so a held frame is always logged with the remaining wait. It is
+         * never dropped. */
+        now = esp_timer_get_time();
+        if (pending.frame) {
+            int64_t since = now - last_paint_us;
+            if (since >= (int64_t)AWAKE_MIN_REPAINT_S * US) {
+                frame_paint(&pending);
+                last_paint_us = esp_timer_get_time();
+            } else if (now >= next_defer_log_us) {
+                int wait_s = (int)(((int64_t)AWAKE_MIN_REPAINT_S * US - since)
+                                   / US) + 1;
+                ESP_LOGI(TAG, "always-on: holding frame %s for %d s "
+                              "(panel refresh floor %d s)",
+                         pending.fo.etag, wait_s, AWAKE_MIN_REPAINT_S);
+                next_defer_log_us = now + US;   /* at most once a second */
+            }
+        }
+
+        /* ---- heartbeat ----
+         * Its own, much slower clock. Carries telemetry, and brings back config
+         * (always_on, awake_poll_s, sleep_interval_s), next_poll_s and
+         * server_time -- which is how the clock re-syncs, there being no NTP
+         * client in this firmware. */
+        now = esp_timer_get_time();
+        if (now >= next_beat_us) {
             rest_status_out_t so;
+            /* next_sleep_s / sleep_until are suppressed inside rest_post_status
+             * while always_on; the 0 here is just the unused argument. */
             if (rest_post_status(current_rssi(), ip, EPD_WIDTH, EPD_HEIGHT,
-                                 c->sleep_s, 0, FW_VERSION, &so,
-                                 8000) == REST_OK) {
+                                 0, 0, FW_VERSION, &so, 8000) == REST_OK) {
+#if defined(BOARD_HAS_TOUCH) && defined(BOARD_OVERLAY_PARTIAL)
                 if (so.overlay_values[0]) {
                     overlay_ingest_values(so.overlay_values,
                                           strlen(so.overlay_values));
@@ -270,26 +447,74 @@ static void kiosk_loop(void)
                 proto2_note_clock(so.server_time, so.local_hh, so.local_mm);
                 if (so.sync_obj[0])
                     proto2_note_sync(so.sync_obj, strlen(so.sync_obj));
+#endif
+                /* Keep the deep-sleep cadence current even though we are not
+                 * using it: it is what we fall back to the instant always_on
+                 * goes false, and it must not be stale when that happens. */
                 if (so.sleep_interval_s > 0)
                     rest_config_set_sleep_s(so.sleep_interval_s);
+                server_next_poll_s = so.next_poll_s;
+                last_ok_us = esp_timer_get_time();
+                /* The cadence actually in force, and where it came from. Worth
+                 * a line per minute: next_poll_s overrides the configured
+                 * awake cadence, so when a panel polls slower than Settings
+                 * says, this is the difference between a firmware bug and the
+                 * server still deriving the value from the sleep interval. */
+                ESP_LOGI(TAG, "always-on: next_poll_s=%d, awake_poll_s=%d "
+                              "-> polling every %d s",
+                         (int)so.next_poll_s,
+                         (int)rest_config_get()->awake_poll_s,
+                         (int)awake_poll_s(server_next_poll_s));
             }
-            int32_t beat_s = c->sleep_s > 0 ? c->sleep_s : SLEEP_INTERVAL_S;
-            next_beat_us = esp_timer_get_time() + (int64_t)beat_s * 1000000;
+            next_beat_us = esp_timer_get_time() + (int64_t)AWAKE_HEARTBEAT_S * US;
+        }
+
+        /* ---- long-uptime guards ----
+         * Deep sleep used to reset this device every cycle and hide leaks; it
+         * may now run for months. */
+        now = esp_timer_get_time();
+        if (now >= next_heap_us) {
+            ESP_LOGI(TAG, "always-on: uptime %lld min, free heap %u B (min %u B)",
+                     (long long)(now / US / 60),
+                     (unsigned)esp_get_free_heap_size(),
+                     (unsigned)esp_get_minimum_free_heap_size());
+            next_heap_us = now + (int64_t)AWAKE_HEAP_LOG_S * US;
+        }
+        if (now - last_ok_us > (int64_t)AWAKE_STALL_REBOOT_S * US) {
+            /* Nothing has succeeded for half an hour while the link is up, so
+             * the loop itself is wedged. A reset returns to always-on mode;
+             * sitting here shows a stale frame for ever. */
+            ESP_LOGE(TAG, "always-on: no successful exchange in %d s; restarting",
+                     AWAKE_STALL_REBOOT_S);
+            esp_restart();
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
+    /* Leaving always-on: a frame still waiting on the floor goes to the glass
+     * now rather than being thrown away. The next thing this device does is
+     * deep-sleep, so dropping it would strand the panel on older content until
+     * the next wake -- the one case where honouring the floor costs more than
+     * it protects. */
+    if (pending.frame) {
+        ESP_LOGI(TAG, "always-on: painting held frame %s before sleeping",
+                 pending.fo.etag);
+        frame_paint(&pending);
+    }
+#if defined(BOARD_HAS_TOUCH) && defined(BOARD_OVERLAY_PARTIAL)
     sse_stop();
+#endif
     wifi_sta_stop();
 }
-#endif /* kiosk */
+#endif /* BOARD_MAINS_POWERED */
 
 static void sleep_forever_or_until_timer(void)
 {
-#if defined(BOARD_OVERLAY_PARTIAL) && defined(BOARD_HAS_TOUCH)
-    /* Kiosk power policy: server config opted this device out of deep sleep
-     * (config.always_on, read on every /status poll). Runs until config or low
-     * battery says otherwise, then sleeps. */
-    if (rest_config_get()->always_on) kiosk_loop();
+#ifdef BOARD_MAINS_POWERED
+    /* Always-on power policy: server config opted this device out of deep sleep
+     * (config.always_on, read on every /status poll). Runs until config or a
+     * draining cell says otherwise, then falls through to the normal sleep
+     * below on sleep_interval_s -- no reboot needed either way. */
+    if (rest_config_get()->always_on) always_on_loop();
 #endif
 
     /* Card off before every deep sleep (and before a dev-loop restart);
@@ -556,38 +781,83 @@ static bootstrap_res_t rest_bootstrap(uint16_t pw, uint16_t ph, const char *mac,
  * repeated interactions don't pay reconnect/boot latency. The touch/button
  * params must already be set on the REST client. Returns true if a new frame
  * was painted. */
-static bool fetch_and_paint_current(const char *server_url)
+/* Fetch + decode the current frame. True means `out` owns a frame that must
+ * eventually reach frame_paint() or frame_discard(). False covers 304, 204 and
+ * every error alike: nothing new, nothing allocated.
+ *
+ * held_etag, when non-NULL, is the etag of a frame already fetched and waiting
+ * on the repaint floor. It exists because If-None-Match necessarily carries the
+ * etag of what is ON THE GLASS, not what we are holding -- that is what lets a
+ * held frame be superseded safely. The consequence is that every poll during a
+ * deferral is a 200 for the frame we already have, and on this panel that is
+ * 1.3 MB re-downloaded per poll. Comparing etags before touching the body turns
+ * that back into metadata-only round trips. */
+static bool frame_fetch(const char *server_url, const char *held_etag,
+                        pending_frame_t *out)
 {
-    rest_frame_out_t fo;
-    if (rest_get_frame(&fo, 8000) != REST_OK) return false;   /* 304/204/err: nothing new */
+    memset(out, 0, sizeof *out);
+    if (rest_get_frame(&out->fo, 8000) != REST_OK) return false;
+    if (held_etag && held_etag[0] && out->fo.etag[0] &&
+        strcmp(held_etag, out->fo.etag) == 0)
+        return false;   /* already holding exactly this frame */
     /* A 200 body carries the freshest button_wake_s; adopt it mid-window too. */
-    if (fo.button_wake_s >= 0) rest_config_set_button_wake_s(fo.button_wake_s);
+    if (out->fo.button_wake_s >= 0)
+        rest_config_set_button_wake_s(out->fo.button_wake_s);
     char fullurl[512];
-    resolve_url(server_url, fo.url, fullurl, sizeof fullurl);
+    resolve_url(server_url, out->fo.url, fullurl, sizeof fullurl);
     fetched_image_t img;
     if (image_fetch(fullurl, &img) != ESP_OK) return false;
-    uint8_t *frame = NULL;
-    if (image_decode_to_frame(&img, fullurl, &frame) != ESP_OK) frame = NULL;
+    if (image_decode_to_frame(&img, fullurl, &out->frame) != ESP_OK)
+        out->frame = NULL;
     free(img.data);
-    if (!frame) return false;
-    overlay_frame_downloaded(fo.etag);   /* refresh spec for the new digest */
-    proto2_frame_downloaded(fo.etag, fo.manifest_digest, fo.manifest_url);
-    touch3_frame_downloaded(fo.etag, fo.layout_digest);
+    if (!out->frame) return false;
+    /* "Downloaded" hooks fire here, not at paint time: they re-anchor specs to
+     * the new digest, which the overlay and touch engines need as soon as the
+     * bytes exist, whether or not the floor lets us paint yet. */
+    overlay_frame_downloaded(out->fo.etag);
+    proto2_frame_downloaded(out->fo.etag, out->fo.manifest_digest,
+                            out->fo.manifest_url);
+    touch3_frame_downloaded(out->fo.etag, out->fo.layout_digest);
+    return true;
+}
+
+/* Put a fetched frame on the glass and release it. Consumes `p`. */
+static void frame_paint(pending_frame_t *p)
+{
     ESP_ERROR_CHECK(epd_port_init());
     epd_init();
     /* v3 draws its controls INTO the frame the server left blank there, so one
      * refresh shows image + controls together (touch-v3 firmware-spec §4). */
-    touch3_compose(frame);
-    epd_display(frame);
+    touch3_compose(p->frame);
+    epd_display(p->frame);
     epd_sleep();
-    if (fo.etag[0]) rest_config_set_frame_etag(fo.etag);
+    /* The etag is stored HERE rather than at fetch time, which is what makes a
+     * deferred frame safe: a frame that was fetched and then superseded before
+     * it ever reached the glass must not leave its etag behind as the thing we
+     * send If-None-Match for. */
+    if (p->fo.etag[0]) rest_config_set_frame_etag(p->fo.etag);
     /* Keep the overlay buffers current so follow-up echoes and schema-2
      * patch applications in this same linger window composite onto the
      * frame actually on glass (frame freed only after the copy). */
-    overlay_after_paint(frame, fo.etag);
-    proto2_frame_painted(fo.etag);   /* server-wins: clears the ledger */
-    touch3_after_paint(fo.etag);     /* note the layout on glass, reset hygiene */
-    free(frame);
+    overlay_after_paint(p->frame, p->fo.etag);
+    proto2_frame_painted(p->fo.etag);   /* server-wins: clears the ledger */
+    touch3_after_paint(p->fo.etag);     /* note the layout on glass, reset hygiene */
+    free(p->frame);
+    p->frame = NULL;
+}
+
+/* Release a fetched frame without painting it (superseded while held). */
+static void frame_discard(pending_frame_t *p)
+{
+    free(p->frame);
+    p->frame = NULL;
+}
+
+static bool fetch_and_paint_current(const char *server_url)
+{
+    pending_frame_t p;
+    if (!frame_fetch(server_url, NULL, &p)) return false;
+    frame_paint(&p);
     return true;
 }
 #endif /* BOARD_HAS_TOUCH || BOARD_HAS_BUTTONS */

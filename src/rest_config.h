@@ -50,6 +50,14 @@ typedef struct {
                                    * this device; SSE push viable). Admin choice
                                    * -- the firmware adds only a low-battery
                                    * escape hatch. */
+    int32_t awake_poll_s;         /* server config: poll cadence WHILE awake, in
+                                   * seconds. Distinct from sleep_s, which stays
+                                   * the deep-sleep cadence and is what we fall
+                                   * back to the moment always_on goes false.
+                                   * Server bounds it to 5..300; we re-clamp
+                                   * (AWAKE_POLL_MIN_S..MAX) because trusting a
+                                   * config blob unconditionally is one bad
+                                   * write away from a tight poll loop. */
     /* ---- cloud relay (docs/relay/contract.md) ----
      * A relay panel never reaches the home instance: it polls a per-device
      * mailbox on a Worker and decrypts frames locally. These coexist with the
@@ -170,6 +178,12 @@ void rest_config_set_tz(const char *tz);
 
 /* Kiosk (always-on) flag from server config. Persist with rest_config_save. */
 void rest_config_set_always_on(bool on);
+
+/* Awake poll cadence from server config, in seconds. Clamped to
+ * AWAKE_POLL_MIN_S..AWAKE_POLL_MAX_S; anything outside that is ignored and the
+ * previous value kept, so a malformed config cannot spin the poll loop.
+ * Persist with rest_config_save(). */
+void rest_config_set_awake_poll_s(int32_t seconds);
 
 /* Persisted onboarding-splash state (0 = none/fresh, board-defined otherwise),
  * used to repaint connect-status splashes only when the state changes. */
