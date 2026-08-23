@@ -1,173 +1,104 @@
 #!/usr/bin/env bash
 #
-# Cut a GitHub release for the current FW_VERSION in platformio.ini.
+# Cut a release.
 #
-# What it does:
-#   1. Reads FW_VERSION from platformio.ini.
-#   2. Refuses to run if the working tree is dirty or if origin/main is ahead.
-#   3. Builds the firmware fresh.
-#   4. Copies the four .bin artifacts into release/<version>/ and writes
-#      SHA256SUMS alongside them.
-#   5. Tags vX.Y.Z (if not already tagged) and pushes the tag.
-#   6. Creates / updates the GitHub release with the artifacts attached.
+#   tools/release.sh 1.19.0 notes.md "the Sticky reports its battery"
 #
-# Usage:
-#   tools/release.sh                 # build, tag, release using FW_VERSION
-#   tools/release.sh --notes-only    # just print suggested release notes
+# Arguments: version (no leading v), a file holding the release notes, and an
+# optional one-line summary that becomes the release title after the tag.
 #
+# WHAT THIS DOES, AND WHAT IT DELIBERATELY DOES NOT.
+#
+# Building and publishing happen in CI: .github/workflows/release.yml fires on
+# the published release, builds every target in its matrix, merges each into a
+# factory image, publishes the images plus catalog.json to the R2 bucket the
+# tesserae.ink flasher reads, and (after review, in the ota-signing environment)
+# signs the OTA descriptors. That is fifteen targets and a signing step; none of
+# it can usefully be reproduced from a laptop.
+#
+# So the only part that has to happen locally is deciding that the tree is fit
+# to release, and creating the tag. That is all this script does. It is mostly
+# guardrails, which is the point: the previous version of this script built one
+# environment by hand and attached four .bin files, and had drifted so far that
+# it would have tagged v99.0.0-bench (the version it parsed out of the bench
+# env's build flags) using an ENV name that no longer exists.
+#
+# THE VERSION IS THE TAG. Nothing in the repo records it. release.yml bakes
+# FW_VERSION from the tag it was triggered by, which is why this script takes
+# the version as an argument and refuses to guess.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# The macro is written as -DFW_VERSION=\"X.Y.Z\" in platformio.ini so the
-# escaped quotes survive PlatformIO's shell-parsing. Strip backslashes from
-# the captured field before using it as a tag name.
-VERSION=$(awk -F'"' '/-DFW_VERSION/ {gsub(/\\/, "", $2); print $2; exit}' platformio.ini)
-if [[ -z "${VERSION:-}" ]]; then
-    echo "error: couldn't parse FW_VERSION from platformio.ini" >&2
-    exit 1
-fi
-TAG="v${VERSION}"
+die() { echo "error: $*" >&2; exit 1; }
 
-if [[ "${1:-}" == "--notes-only" ]]; then
-    echo "## tesserae-device-esp32-bin ${TAG}"
-    echo
-    git log --pretty=format:"- %s" "${TAG}~1..HEAD" 2>/dev/null \
-        || git log --pretty=format:"- %s" -20
-    exit 0
+VERSION="${1:-}"
+NOTES_FILE="${2:-}"
+SUMMARY="${3:-}"
+
+if [[ -z "$VERSION" || -z "$NOTES_FILE" ]]; then
+    cat >&2 <<'EOF'
+usage: tools/release.sh <version> <notes-file> [summary]
+
+  version     X.Y.Z, no leading v. This becomes the tag, and CI bakes it into
+              FW_VERSION. Nothing in the repo records it.
+  notes-file  file holding the release notes body
+  summary     optional one-liner; the title becomes "vX.Y.Z: <summary>"
+
+example: tools/release.sh 1.19.0 notes.md "the Sticky reports its battery"
+EOF
+    exit 1
 fi
 
 # --- guardrails -------------------------------------------------------------
-if [[ -n "$(git status --porcelain)" ]]; then
-    echo "error: working tree is dirty; commit/stash first" >&2
-    git status --short >&2
-    exit 1
-fi
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || die "version must be X.Y.Z with no leading v (got '${VERSION}')"
+TAG="v${VERSION}"
+
+[[ -f "$NOTES_FILE" && -s "$NOTES_FILE" ]] \
+    || die "notes file '${NOTES_FILE}' is missing or empty"
+
+[[ -z "$(git status --porcelain)" ]] \
+    || { git status --short >&2; die "working tree is dirty; commit or stash first"; }
+
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+[[ "$BRANCH" == "main" ]] \
+    || die "on branch '${BRANCH}'; releases are cut from main"
 
 git fetch origin --quiet
-if ! git merge-base --is-ancestor origin/main HEAD; then
-    echo "error: origin/main has commits this branch doesn't; pull/rebase first" >&2
-    exit 1
-fi
+[[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] \
+    || die "main and origin/main differ; pull or push first"
 
-PIO="${PIO:-$HOME/.platformio/penv/bin/pio}"
-ENV="${ENV:-tesserae-device-esp32-bin}"
+! git rev-parse "$TAG" >/dev/null 2>&1 \
+    || die "tag ${TAG} already exists"
 
-# --- secrets.h isolation ----------------------------------------------------
-# secrets.h is #include'd by app_config.h, so any compile-time defines in it
-# get baked into the firmware as string literals (in .rodata) and would ship
-# in the release artifacts. Move it aside for the build and restore on exit.
-# A trap covers crashes, ^C, and any non-zero exit.
-SECRETS="include/secrets.h"
-SECRETS_BAK="include/.secrets.h.release-backup.$$"
-if [[ -f "$SECRETS" ]]; then
-    echo "==> moving ${SECRETS} aside for the build"
-    mv "$SECRETS" "$SECRETS_BAK"
-    trap 'mv "$SECRETS_BAK" "$SECRETS" 2>/dev/null || true' EXIT
-fi
+gh release view "$TAG" >/dev/null 2>&1 \
+    && die "release ${TAG} already exists"
 
-# --- build ------------------------------------------------------------------
-echo "==> building ${ENV} for FW_VERSION=${VERSION}"
-"$PIO" run -e "$ENV" >/dev/null
+TITLE="$TAG"
+[[ -n "$SUMMARY" ]] && TITLE="${TAG}: ${SUMMARY}"
 
-# --- secrets-leak scan ------------------------------------------------------
-# Defense in depth: even if the move-aside above somehow failed, this catches
-# any string literal from the (now-stashed) secrets.h that ended up baked
-# into firmware.bin. Anything 4+ chars long is checked; shorter strings risk
-# false-positive matches in unrelated code.
-if [[ -f "$SECRETS_BAK" ]]; then
-    echo "==> scanning firmware.bin for any string literal from secrets.h"
-    LEAKED=0
-    # grep -oE '"[^"]*"' pulls quoted literals out of the C source; sort -u
-    # de-dupes. Then peel off the quotes with tr and length-filter.
-    while IFS= read -r needle; do
-        [[ ${#needle} -ge 4 ]] || continue
-        if strings ".pio/build/${ENV}/firmware.bin" | grep -qF -- "$needle"; then
-            echo "  LEAK: '$needle' from ${SECRETS} appears in firmware.bin" >&2
-            LEAKED=1
-        fi
-    done < <(grep -oE '"[^"]+"' "$SECRETS_BAK" | tr -d '"' | sort -u)
-    if (( LEAKED )); then
-        echo "error: aborting release; secrets leaked into firmware.bin" >&2
-        exit 1
-    fi
-    echo "  clean: no secrets.h literals found in firmware.bin"
-fi
+# --- confirm ----------------------------------------------------------------
+# Publishing is one-way: it triggers the flasher publish to R2 and queues OTA
+# signing, so the last chance to notice a wrong version or stale notes is here.
+cat >&2 <<EOF
 
-BUILD_DIR=".pio/build/${ENV}"
-for f in bootloader.bin partitions.bin firmware.bin firmware.factory.bin; do
-    [[ -f "$BUILD_DIR/$f" ]] || { echo "error: missing $BUILD_DIR/$f" >&2; exit 1; }
-done
+  tag      ${TAG}
+  title    ${TITLE}
+  commit   $(git log --oneline -1)
+  notes    ${NOTES_FILE} ($(wc -l < "$NOTES_FILE" | tr -d ' ') lines)
 
-OUT_DIR="release/${VERSION}"
-mkdir -p "$OUT_DIR"
-cp "$BUILD_DIR"/bootloader.bin       "$OUT_DIR/"
-cp "$BUILD_DIR"/partitions.bin       "$OUT_DIR/"
-cp "$BUILD_DIR"/firmware.bin         "$OUT_DIR/"
-cp "$BUILD_DIR"/firmware.factory.bin "$OUT_DIR/"
-
-(cd "$OUT_DIR" && shasum -a 256 *.bin > SHA256SUMS)
-echo "==> artifacts:"
-ls -la "$OUT_DIR/"
-echo "==> SHA256SUMS:"
-cat "$OUT_DIR/SHA256SUMS"
-
-# --- tag --------------------------------------------------------------------
-if git rev-parse "$TAG" >/dev/null 2>&1; then
-    echo "==> tag ${TAG} already exists; skipping tag step"
-else
-    echo "==> tagging ${TAG}"
-    git tag -a "$TAG" -m "$TAG"
-    git push origin "$TAG"
-fi
+Publishing builds and ships every target to the flasher. Continue? [y/N]
+EOF
+read -r reply
+[[ "$reply" == "y" || "$reply" == "Y" ]] || die "aborted"
 
 # --- release ----------------------------------------------------------------
-if gh release view "$TAG" >/dev/null 2>&1; then
-    echo "==> release ${TAG} already exists; uploading (clobbering) assets"
-    gh release upload "$TAG" "$OUT_DIR"/*.bin "$OUT_DIR/SHA256SUMS" --clobber
-else
-    echo "==> creating GitHub release ${TAG}"
-    NOTES=$(mktemp)
-    {
-        echo "## Flashing"
-        echo
-        echo '`firmware.factory.bin` is the combined image; flash it to offset 0 with esptool:'
-        echo
-        echo '```bash'
-        echo 'esptool.py --chip esp32s3 --port /dev/cu.usbmodem... \\'
-        echo '    write_flash 0x0 firmware.factory.bin'
-        echo '```'
-        echo
-        echo 'Or flash the three pieces separately at their native offsets:'
-        echo
-        echo '```bash'
-        echo 'esptool.py --chip esp32s3 --port /dev/cu.usbmodem... \\'
-        echo '    write_flash 0x0     bootloader.bin \\'
-        echo '                0x8000  partitions.bin \\'
-        echo '                0x10000 firmware.bin'
-        echo '```'
-        echo
-        echo "## Checksums"
-        echo
-        echo '```'
-        cat "$OUT_DIR/SHA256SUMS"
-        echo '```'
-        echo
-        echo "## Changes"
-        echo
-        if PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null); then
-            git log --pretty=format:"- %s" "${PREV_TAG}..${TAG}^"
-        else
-            git log --pretty=format:"- %s"
-        fi
-    } > "$NOTES"
+gh release create "$TAG" \
+    --target main \
+    --title "$TITLE" \
+    --notes-file "$NOTES_FILE"
 
-    gh release create "$TAG" \
-        --title "$TAG" \
-        --notes-file "$NOTES" \
-        "$OUT_DIR"/*.bin "$OUT_DIR/SHA256SUMS"
-    rm -f "$NOTES"
-fi
-
-echo "==> done"
+echo "==> published ${TAG}; watch the build with:"
+echo "    gh run watch \$(gh run list --workflow=release.yml --limit 1 --json databaseId -q '.[0].databaseId')"

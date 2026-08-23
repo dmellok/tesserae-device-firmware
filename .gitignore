@@ -25,14 +25,20 @@ dependencies.lock
 .DS_Store
 
 # Local secrets file (template lives at include/secrets.example.h).
-# `secrets.h.*` covers backups left behind by tools/release.sh and the
-# travel-setup move-aside pattern (secrets.h.bak, secrets.h.release-backup.*).
+# `secrets.h.*` covers backups left behind by the move-aside pattern
+# (secrets.h.bak, secrets.h.release-backup.*).
 secrets.h
 secrets.h.*
 !secrets.example.h
 
-# Release artifacts staged by tools/release.sh; final copies live in GitHub Releases
+# Release artifacts, from back when releases were built and staged locally.
+# Nothing writes here now (CI builds and publishes, see .github/workflows/
+# release.yml), but old working copies still have the directory.
 /release/
+
+# Python bytecode from the tools/ scripts
+__pycache__/
+*.pyc
 
 # macOS Finder duplicate artifacts ("name 2.ext", "name 3.ext", ...) --
 # never track these
