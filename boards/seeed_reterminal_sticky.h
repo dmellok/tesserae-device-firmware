@@ -38,12 +38,26 @@
 #define EPD_SPI_HOST   SPI2_HOST
 #define EPD_SPI_HZ     (4 * 1000 * 1000)
 
-/* Panel geometry. 800x480, 2bpp packed = 4 px/byte. Byte-identical in shape to
- * the E1001 gray build, which is why no server-side work was needed: the
- * renderer, the .bin packer and the gray_4 gamut already exist. */
-#define EPD_WIDTH      800
-#define EPD_HEIGHT     480
+/* Panel geometry, in FRAME coordinates: what the server renders and what the
+ * user sees. 480x800 portrait, 2bpp packed = 4 px/byte.
+ *
+ * The CONTROLLER scans 800x480 landscape. The glass is mounted rotated, so the
+ * driver transposes on the way out (see ssd1677_gray.c) rather than the server
+ * rendering sideways content. Confirmed on hardware: a selftest drawn as
+ * horizontal bands in controller space came out as vertical columns reading
+ * left to right, which is a 90-degree mount.
+ *
+ * The buffer is the same 96000 bytes either way, so this is purely a question
+ * of which axis is which -- and it matches the 480x800 the server already has
+ * recorded for this hardware. */
+#define EPD_WIDTH      480
+#define EPD_HEIGHT     800
 #define EPD_BUF_BYTES  ((EPD_WIDTH * EPD_HEIGHT) / 4)   /* 2bpp packed = 96000 */
+
+/* Controller scan geometry, always landscape regardless of how it is mounted.
+ * Used for the RAM window and the gate/source setup, never for the frame. */
+#define EPD_PANEL_SCAN_W  800
+#define EPD_PANEL_SCAN_H  480
 
 /* 4-gray palette (linear), matching the E1001 gray board. */
 #define EPD_COL_BLACK      0x0
@@ -96,6 +110,12 @@
 #define SD_SPI_SHARED_BUS  1
 #define SD_PIN_MISO   12
 #define SD_PIN_CS     8
+/* The slot is POWER-GATED. Without driving this high the card is simply
+ * unpowered and every mount ends in ESP_ERR_TIMEOUT, which reads like a missing
+ * or faulty card rather than a missing pin. Not in Seeed's published GPIO table;
+ * from CrossPoint's Sticky board profile, which lists SD_PWR_EN alongside the
+ * bus pins. */
+#define SD_PIN_EN     10
 
 /* MCU tier: ESP32-S3 + 8 MB PSRAM. */
 #define MCU_TIER_S3_OCTAL_PSRAM 1

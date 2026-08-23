@@ -12,6 +12,7 @@
 
 #include "drivers/ssd1677_gray.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "driver/gpio.h"
@@ -45,6 +46,18 @@ static const char *TAG = "epd_ssd1677";
  * The mono path uses 0xF7; 0xD7 is the grayscale variant, which drives the
  * OTP waveform table rather than the black/white one. */
 #define SSD_UPD_GRAY    0xd7
+
+/* Update-control byte for a full MONO refresh. Differs from the grayscale one
+ * by the load-temperature bit: the gray path must NOT reload temperature,
+ * because the fixed value written to 0x1A is what selects the 4-gray waveform.
+ * Used only for the conditioning clear below, which wants a proper clearing
+ * waveform rather than the gray one. */
+#define SSD_UPD_MONO    0xf7
+
+/* See ssd1677_init() for why this defaults off. */
+#ifndef SSD1677_CONDITION_CLEAR
+#define SSD1677_CONDITION_CLEAR 0
+#endif
 
 static spi_device_handle_t s_spi;
 static bool s_port_inited = false;
@@ -142,24 +155,56 @@ static void hw_reset(void)
 #define GRAY_P1_BIT(g) ((((g) >> 1) & 1) ^ 1)   /* 0x24 */
 #define GRAY_P2_BIT(g) (((g) & 1) ^ 1)          /* 0x26 */
 
-/* Stream one 1bpp plane derived from the 2bpp frame. */
+/* Hold the SPI bus for a whole frame.
+ *
+ * CS is driven by hand here, and a full plane is 48000 bytes sent as a dozen
+ * chunked transactions with CS held LOW throughout. On this board the microSD
+ * shares SCLK and MOSI with the panel, so any SD transaction that interleaves
+ * between our chunks goes out while the panel is still selected -- and the panel
+ * takes it as image data. The result is snow, and it appears ONLY once something
+ * else is using the bus, which is why the no-networking selftest rendered
+ * perfectly while real frames did not.
+ *
+ * spi_device_acquire_bus() blocks other devices for the duration, which is the
+ * guarantee a hand-driven CS needs and does not otherwise have. */
+static void bus_hold(void)    { spi_device_acquire_bus(s_spi, portMAX_DELAY); }
+static void bus_release(void) { spi_device_release_bus(s_spi); }
+
+/* One 2bpp pixel out of the frame, in FRAME coordinates. */
+static inline uint8_t frame_px(const uint8_t *image, int fx, int fy)
+{
+    const uint8_t b = image[(size_t)fy * (EPD_WIDTH / 4) + (fx >> 2)];
+    return (uint8_t)((b >> ((3 - (fx & 3)) * 2)) & 0x3);
+}
+
+/* Stream one 1bpp plane, transposing the frame onto the controller's scan.
+ *
+ * The controller always scans landscape (SCAN_W x SCAN_H) whatever the glass is
+ * mounted like. This panel is mounted at 90 degrees, so a controller row is a
+ * frame COLUMN: while emitting controller row cy we walk cx and read frame pixel
+ * (fx = cy, fy = cx).
+ *
+ * The direction was fixed on hardware rather than guessed. A pattern drawn as
+ * horizontal bands in controller space appeared as vertical columns reading
+ * black on the LEFT, which pins fx to cy without an inversion; had it been
+ * mirrored the black band would have come out on the right.
+ *
+ * This walks the frame with a 120-byte stride instead of sequentially. That is
+ * the cost of doing the rotation here, and it is the right place for it: the
+ * alternative is the server rendering sideways content for one panel. */
 static void gray_send_plane(uint8_t plane_cmd, const uint8_t *image, int plane)
 {
-    uint8_t row[EPD_WIDTH / 8];
-    const uint8_t *in = image;
+    uint8_t row[EPD_PANEL_SCAN_W / 8];
 
     gpio_set_level(EPD_PIN_CS, 0);
     send_cmd(plane_cmd);
-    for (int y = 0; y < EPD_HEIGHT; y++) {
-        for (int b = 0; b < EPD_WIDTH / 8; b++) {
+    for (int cy = 0; cy < EPD_PANEL_SCAN_H; cy++) {
+        for (int b = 0; b < EPD_PANEL_SCAN_W / 8; b++) {
             uint8_t o = 0;
-            for (int k = 0; k < 2; k++) {          /* 2 input bytes -> 8 px */
-                uint8_t v = *in++;
-                for (int p = 0; p < 4; p++) {
-                    uint8_t g = (uint8_t)((v >> (6 - 2 * p)) & 0x3);
-                    uint8_t bit = (plane == 1) ? GRAY_P1_BIT(g) : GRAY_P2_BIT(g);
-                    o = (uint8_t)((o << 1) | (bit & 1));
-                }
+            for (int k = 0; k < 8; k++) {
+                uint8_t g   = frame_px(image, cy, b * 8 + k);
+                uint8_t bit = (plane == 1) ? GRAY_P1_BIT(g) : GRAY_P2_BIT(g);
+                o = (uint8_t)((o << 1) | (bit & 1));
             }
             row[b] = o;
         }
@@ -171,7 +216,7 @@ static void gray_send_plane(uint8_t plane_cmd, const uint8_t *image, int plane)
 /* Emit `rows` solid plane rows (caller has sent the plane command, CS low). */
 static void gray_send_solid_rows(uint8_t fill, int rows)
 {
-    uint8_t row[EPD_WIDTH / 8];
+    uint8_t row[EPD_PANEL_SCAN_W / 8];
     memset(row, fill, sizeof row);
     for (int y = 0; y < rows; y++) send_data(row, sizeof row);
 }
@@ -256,117 +301,231 @@ static void ssd1677_init(void)
     cmd_data(SSD_BORDER, BORDER, sizeof BORDER);
 
     /* Driver output: gate count is HEIGHT-1, little-endian, then a mode byte. */
-    const uint8_t drv[] = {(uint8_t)((EPD_HEIGHT - 1) & 0xff),
-                           (uint8_t)((EPD_HEIGHT - 1) >> 8), 0x02};
+    const uint8_t drv[] = {(uint8_t)((EPD_PANEL_SCAN_H - 1) & 0xff),
+                           (uint8_t)((EPD_PANEL_SCAN_H - 1) >> 8), 0x02};
     cmd_data(SSD_DRV_OUTPUT, drv, sizeof drv);
 
     static const uint8_t ENTRY[] = {0x03};       /* X inc, Y inc */
     cmd_data(SSD_DATA_ENTRY, ENTRY, sizeof ENTRY);
 
     const uint8_t xwin[] = {0x00, 0x00,
-                            (uint8_t)((EPD_WIDTH - 1) & 0xff),
-                            (uint8_t)((EPD_WIDTH - 1) >> 8)};
+                            (uint8_t)((EPD_PANEL_SCAN_W - 1) & 0xff),
+                            (uint8_t)((EPD_PANEL_SCAN_W - 1) >> 8)};
     cmd_data(SSD_RAM_X, xwin, sizeof xwin);
     const uint8_t ywin[] = {0x00, 0x00,
-                            (uint8_t)((EPD_HEIGHT - 1) & 0xff),
-                            (uint8_t)((EPD_HEIGHT - 1) >> 8)};
+                            (uint8_t)((EPD_PANEL_SCAN_H - 1) & 0xff),
+                            (uint8_t)((EPD_PANEL_SCAN_H - 1) >> 8)};
     cmd_data(SSD_RAM_Y, ywin, sizeof ywin);
 
     static const uint8_t TSENS[] = {0x80};       /* internal temperature sensor */
     cmd_data(SSD_TEMP_SENSOR, TSENS, sizeof TSENS);
-
-    /* Fixed temperature for the grayscale waveform. The 4-gray OTP table is
-     * selected by a written temperature rather than the measured one, exactly
-     * like TSSET on the UC8179 gen2 path -- so this is waveform selection, not
-     * compensation, and must not be swapped for a live sensor reading. */
-    static const uint8_t TWRITE[] = {0x67, 0x00};
-    cmd_data(SSD_TEMP_WRITE, TWRITE, sizeof TWRITE);
 
     static const uint8_t ZERO2[] = {0x00, 0x00};
     cmd_data(SSD_RAM_X_ADDR, ZERO2, sizeof ZERO2);
     cmd_data(SSD_RAM_Y_ADDR, ZERO2, sizeof ZERO2);
     wait_idle();
 
-    ESP_LOGI(TAG, "init complete (SSD1677 4-gray, %dx%d)", EPD_WIDTH, EPD_HEIGHT);
+    /* ORDER MATTERS, and getting it wrong looks like static rather than like a
+     * mistake. The conditioning clear runs a MONO update (0xF7), and that byte
+     * includes the load-temperature step -- so it reloads the measured
+     * temperature and discards any waveform selection made before it. Selecting
+     * 4-gray first and clearing second therefore leaves the panel driving two
+     * grayscale planes through a mono LUT, which paints noise.
+     *
+     * Clear first, select second. Seeed's examples do exactly this, in this
+     * order: fillScreen(WHITE) + update(), and only then initGrayMode(). */
+    /* A white conditioning pass before the grayscale paint, off by default.
+     *
+     * Seeed's grayscale examples do this, and e-paper genuinely can ghost when a
+     * gray waveform paints over unrelated content. It was added here chasing a
+     * "ghosted, then snow" symptom that turned out to be an unpowered SD card
+     * corrupting the shared SPI bus (see SD_PIN_EN in the board header), not a
+     * waveform problem at all -- so it is kept, documented, and NOT paid for
+     * until a real ghosting case is observed on this panel.
+     *
+     * Enabling it costs a second full refresh on every wake, roughly doubling
+     * panel time. If ghosting does show up across successive differing frames,
+     * this is the switch. Note the ORDER below matters: the clear runs a mono
+     * update, which reloads temperature and would discard a 4-gray waveform
+     * selection made before it. */
+#if SSD1677_CONDITION_CLEAR
+    panel_condition_white();
+#endif
+
+    /* Fixed temperature: selects the 4-gray OTP waveform rather than
+     * compensating for ambient, exactly like TSSET on the UC8179 gen2 path. It
+     * survives because the gray refresh (0xD7) omits the load-temperature step
+     * that the mono clear above performs. Must not be swapped for a live sensor
+     * reading, and must not be issued before the clear. */
+    static const uint8_t TWRITE[] = {0x67, 0x00};
+    cmd_data(SSD_TEMP_WRITE, TWRITE, sizeof TWRITE);
+    cmd_data(SSD_RAM_X_ADDR, ZERO2, sizeof ZERO2);
+    cmd_data(SSD_RAM_Y_ADDR, ZERO2, sizeof ZERO2);
+    wait_idle();
+
+    ESP_LOGI(TAG, "init complete (SSD1677 4-gray, scan %dx%d, frame %dx%d)",
+             EPD_PANEL_SCAN_W, EPD_PANEL_SCAN_H, EPD_WIDTH, EPD_HEIGHT);
 }
 
-/* Refresh an already-loaded frame. */
-static void trigger_refresh(void)
+/* Refresh an already-loaded frame with the given update-control byte. */
+static void trigger_refresh_mode(uint8_t mode, const char *what)
 {
-    static const uint8_t UPD[] = {SSD_UPD_GRAY};
+    const uint8_t upd[] = {mode};
     int64_t t0 = esp_timer_get_time();
-    cmd_data(SSD_UPD_CTRL, UPD, sizeof UPD);
+    cmd_data(SSD_UPD_CTRL, upd, sizeof upd);
     cmd_data(SSD_TRIGGER, NULL, 0);
     wait_idle();
-    ESP_LOGI(TAG, "refresh done (%lld ms)",
+    ESP_LOGI(TAG, "%s done (%lld ms)", what,
              (long long)((esp_timer_get_time() - t0) / 1000));
 }
 
+static void trigger_refresh(void) { trigger_refresh_mode(SSD_UPD_GRAY, "refresh"); }
+
+/* Drive the whole panel white with the MONO waveform, leaving it conditioned
+ * for a grayscale paint.
+ *
+ * The 4-gray waveform is not a clearing waveform. It omits the load-temperature
+ * step so the fixed 0x1A selection stands, and it assumes it is starting from
+ * white -- so painting it straight over existing content leaves the old image
+ * ghosting through and the levels short of fully developed. That is exactly how
+ * this looked on first bring-up: the selftest stripes still visible under the
+ * next frame, and everything fuzzy.
+ *
+ * Seeed's own grayscale examples do this and it is easy to miss, because it
+ * lives in their example flow rather than their driver:
+ *
+ *     epaper.fillScreen(TFT_WHITE);
+ *     epaper.update();                    // mono clear, THEN
+ *     epaper.initGrayMode(GRAY_LEVEL4);
+ *
+ * Costs one extra refresh per wake. Correctness first; if that proves too slow
+ * on battery, the place to optimise is skipping it when the panel is known to
+ * already be white, not dropping it. */
+#if SSD1677_CONDITION_CLEAR
+static void panel_condition_white(void)
+{
+    bus_hold();
+    /* White is (0,0) in both planes -- see the encoding table above. */
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(SSD_DTM1);
+    gray_send_solid_rows(GRAY_P1_BIT(3) ? 0xFF : 0x00, EPD_PANEL_SCAN_H);
+    gpio_set_level(EPD_PIN_CS, 1);
+
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(SSD_DTM2);
+    gray_send_solid_rows(GRAY_P2_BIT(3) ? 0xFF : 0x00, EPD_PANEL_SCAN_H);
+    gpio_set_level(EPD_PIN_CS, 1);
+
+    trigger_refresh_mode(SSD_UPD_MONO, "conditioning clear");
+    bus_release();
+}
+#endif /* SSD1677_CONDITION_CLEAR */
+
 static void ssd1677_display(const uint8_t *image)
 {
+    bus_hold();
     gray_send_plane(SSD_DTM1, image, 1);
     gray_send_plane(SSD_DTM2, image, 2);
     trigger_refresh();
+    bus_release();
 }
 
 static void ssd1677_clear(uint8_t color)
 {
+    bus_hold();
     uint8_t g  = (uint8_t)(color & 0x3);
     uint8_t p1 = GRAY_P1_BIT(g) ? 0xFF : 0x00;
     uint8_t p2 = GRAY_P2_BIT(g) ? 0xFF : 0x00;
 
     gpio_set_level(EPD_PIN_CS, 0);
     send_cmd(SSD_DTM1);
-    gray_send_solid_rows(p1, EPD_HEIGHT);
+    gray_send_solid_rows(p1, EPD_PANEL_SCAN_H);
     gpio_set_level(EPD_PIN_CS, 1);
 
     gpio_set_level(EPD_PIN_CS, 0);
     send_cmd(SSD_DTM2);
-    gray_send_solid_rows(p2, EPD_HEIGHT);
+    gray_send_solid_rows(p2, EPD_PANEL_SCAN_H);
     gpio_set_level(EPD_PIN_CS, 1);
 
     trigger_refresh();
+    bus_release();
 }
 
-/* Bring-up: 4 horizontal bands, black -> dark -> light -> white. Even spacing
- * between the two mid greys is the thing to judge; if the ends are swapped the
- * plane encoding above is inverted for this glass. */
+/* Bring-up: four bands in FRAME coordinates, black at the top through white at
+ * the bottom, plus a black wedge in the top-left corner.
+ *
+ * Built as a real frame and pushed through ssd1677_display() rather than
+ * streamed straight at the controller, so the selftest exercises the SAME
+ * rotation the production path uses. A selftest that bypasses the transform
+ * cannot tell you the transform is right, which is exactly the gap the first
+ * bring-up hit: bands drawn in controller space came out as columns and could
+ * not say which way round the other axis went.
+ *
+ * What to look for, with the panel upright:
+ *   bands top to bottom, black first  -> frame Y is correct
+ *   corner wedge at the TOP-LEFT      -> frame X is correct, no mirror
+ * Either one wrong pins which axis to invert. */
 static void ssd1677_show_color_bars(void)
 {
+    uint8_t *frame = malloc(EPD_BUF_BYTES);
+    if (!frame) {
+        ESP_LOGE(TAG, "selftest: out of memory for a %u byte frame",
+                 (unsigned)EPD_BUF_BYTES);
+        return;
+    }
     const int BAND_H = EPD_HEIGHT / 4;
+    const int stride = EPD_WIDTH / 4;
 
-    gpio_set_level(EPD_PIN_CS, 0);
-    send_cmd(SSD_DTM1);
-    for (int g = 0; g < 4; g++)
-        gray_send_solid_rows(GRAY_P1_BIT(g) ? 0xFF : 0x00, BAND_H);
-    gpio_set_level(EPD_PIN_CS, 1);
+    for (int fy = 0; fy < EPD_HEIGHT; fy++) {
+        int band = fy / BAND_H;
+        if (band > 3) band = 3;
+        uint8_t g = (uint8_t)band;              /* 0 = black .. 3 = white */
+        uint8_t fill = (uint8_t)((g << 6) | (g << 4) | (g << 2) | g);
+        memset(frame + (size_t)fy * stride, fill, stride);
+    }
+    /* Bottom half: FINE detail, which is the thing bands cannot test.
+     *
+     * A uniform block has every byte in the row identical, so a wrong stride,
+     * a reversed bit order or an off-by-one in the transpose is completely
+     * invisible in it -- the bands rendered perfectly while real content came
+     * out as snow, which is exactly that gap.
+     *
+     * Left column pair: 1px vertical black/white stripes, which exercise bit
+     * ORDER within a byte. Right: 1px horizontal stripes, which exercise the
+     * row STRIDE. Clean lines mean the packing is right; moire, smearing or
+     * noise localises which of the two is wrong. */
+    for (int fy = EPD_HEIGHT / 2; fy < EPD_HEIGHT; fy++) {
+        for (int fx = 0; fx < EPD_WIDTH; fx++) {
+            int black = (fx < EPD_WIDTH / 2) ? (fx & 1) : (fy & 1);
+            uint8_t g = black ? 0 : 3;
+            size_t i = (size_t)fy * stride + (fx >> 2);
+            int sh = (3 - (fx & 3)) * 2;
+            frame[i] = (uint8_t)((frame[i] & ~(0x3 << sh)) | (g << sh));
+        }
+    }
 
-    gpio_set_level(EPD_PIN_CS, 0);
-    send_cmd(SSD_DTM2);
-    for (int g = 0; g < 4; g++)
-        gray_send_solid_rows(GRAY_P2_BIT(g) ? 0xFF : 0x00, BAND_H);
-    gpio_set_level(EPD_PIN_CS, 1);
+    /* Orientation wedge: a WHITE square in the frame's top-left corner.
+     *
+     * White, not black: it sits inside band 0, which is black, so a black wedge
+     * is invisible -- which is exactly how the first version of this shipped.
+     * Against band 0 it reads in every orientation, so its position identifies
+     * both axes at once however the glass turns out to be mounted. */
+    const int WEDGE = (EPD_WIDTH < EPD_HEIGHT ? EPD_WIDTH : EPD_HEIGHT) / 10;
+    for (int fy = 0; fy < WEDGE; fy++)
+        memset(frame + (size_t)fy * stride, 0xff, WEDGE / 4);
 
-    trigger_refresh();
+    ssd1677_display(frame);
+    free(frame);
 }
 
-/* Transport check: alternating pixels on both planes. */
+/* Transport check: alternating pixels across the whole frame. */
 static void ssd1677_show_palette_sweep(void)
 {
-    uint8_t row[EPD_WIDTH / 8];
-    memset(row, 0xAA, sizeof row);
-
-    gpio_set_level(EPD_PIN_CS, 0);
-    send_cmd(SSD_DTM1);
-    for (int y = 0; y < EPD_HEIGHT; y++) send_data(row, sizeof row);
-    gpio_set_level(EPD_PIN_CS, 1);
-
-    gpio_set_level(EPD_PIN_CS, 0);
-    send_cmd(SSD_DTM2);
-    for (int y = 0; y < EPD_HEIGHT; y++) send_data(row, sizeof row);
-    gpio_set_level(EPD_PIN_CS, 1);
-
-    trigger_refresh();
+    uint8_t *frame = malloc(EPD_BUF_BYTES);
+    if (!frame) return;
+    memset(frame, 0x36, EPD_BUF_BYTES);   /* 00 11 01 10 -> visible texture */
+    ssd1677_display(frame);
+    free(frame);
 }
 
 static void ssd1677_sleep(void)
