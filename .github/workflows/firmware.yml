@@ -95,6 +95,7 @@ jobs:
           - seeed-reterminal-e1001-gray-legacy
           - seeed-reterminal-e1002
           - seeed-reterminal-e1003
+          - seeed-reterminal-sticky
           - seeed-reterminal-e1004
           - waveshare-photopainter-73
           - seeed-ee02

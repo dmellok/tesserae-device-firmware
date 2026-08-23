@@ -49,6 +49,7 @@ jobs:
           - { env: seeed-reterminal-e1001-gray-legacy, kind: seeed_reterminal_e1001_gray_legacy, chip: esp32s3 }
           - { env: seeed-reterminal-e1002,    kind: seeed_reterminal_e1002, chip: esp32s3 }
           - { env: seeed-reterminal-e1003,    kind: seeed_reterminal_e1003, chip: esp32s3 }
+          - { env: seeed-reterminal-sticky,   kind: seeed_reterminal_sticky, chip: esp32s3 }
           - { env: seeed-reterminal-e1004,    kind: seeed_reterminal_e1004, chip: esp32s3 }
           - { env: seeed-ee02,                kind: seeed_ee02, chip: esp32s3 }
           - { env: xiao-epaper-75,            kind: xiao_epaper_75, chip: esp32s3 }
