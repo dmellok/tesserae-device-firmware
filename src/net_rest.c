@@ -988,19 +988,24 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     char url[256];
     snprintf(url, sizeof url, "%s/api/v1/device/%s/status", c->server_url, rest_config_device_id());
 
-    int mv = battery_read_mv();
-    if (battery_present())
+    /* Sampled once into locals: on a fuel-gauge board these are I2C reads, and
+     * battery_present() is answered by the same read rather than being a
+     * compile-time constant, so it was previously called twice per heartbeat. */
+    const bool have_battery = battery_present();
+    const int  mv  = battery_read_mv();
+    const int  pct = battery_read_pct();
+    if (have_battery)
         ESP_LOGI(TAG, "status: battery=%d mV (%d%%), rssi=%d, ip=%s",
-                 mv, battery_pct(mv), rssi, ip ? ip : "");
+                 mv, pct, rssi, ip ? ip : "");
     else
         ESP_LOGI(TAG, "status: battery=none, rssi=%d, ip=%s", rssi, ip ? ip : "");
     cJSON *o = cJSON_CreateObject();
     /* OMIT rather than send 0 where the board cannot measure its cell. A zero
      * is a real reading everywhere else, so the server would render a flat
      * battery on every frame; an absent field is unambiguous. */
-    if (battery_present()) {
+    if (have_battery) {
         cJSON_AddNumberToObject(o, "battery_mv", mv);
-        cJSON_AddNumberToObject(o, "battery_pct", battery_pct(mv));
+        cJSON_AddNumberToObject(o, "battery_pct", pct);
     }
     cJSON_AddNumberToObject(o, "rssi", rssi);
     cJSON_AddStringToObject(o, "ip", ip ? ip : "");

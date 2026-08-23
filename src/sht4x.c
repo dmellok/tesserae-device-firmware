@@ -11,9 +11,7 @@
 #include "driver/i2c_master.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#ifdef BOARD_HAS_TOUCH
-#include "i2c_bus.h"   /* shared bus: this board also carries a GT911 */
-#endif
+#include "i2c_bus.h"
 
 #define SHT4X_CMD_MEASURE_HIGH_PRECISION  0xFD
 #define SHT4X_RESPONSE_BYTES              6
@@ -39,24 +37,12 @@ static esp_err_t sht4x_init(void)
 {
     if (s_sensor != NULL) return ESP_OK;
 
-#ifdef BOARD_HAS_TOUCH
-    /* This board shares the I2C bus with the GT911 touch controller, which may
-     * have created it already; get-or-create so both can coexist on port 0. */
+    /* Get-or-create: on several boards this bus is shared -- with the GT911
+     * touch controller on the E1003, with the BQ27220 fuel gauge on the Sticky
+     * -- and whichever driver runs first must be the one that creates it. */
     esp_err_t err = i2c_bus_get(BOARD_SHT4X_I2C_PORT, BOARD_SHT4X_I2C_SDA,
                                 BOARD_SHT4X_I2C_SCL, &s_bus);
     if (err != ESP_OK) return err;
-#else
-    i2c_master_bus_config_t bus_cfg = {
-        .i2c_port = BOARD_SHT4X_I2C_PORT,
-        .sda_io_num = BOARD_SHT4X_I2C_SDA,
-        .scl_io_num = BOARD_SHT4X_I2C_SCL,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags = { .enable_internal_pullup = true },
-    };
-    esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_bus);
-    if (err != ESP_OK) return err;
-#endif
 
     i2c_device_config_t device_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
@@ -64,14 +50,9 @@ static esp_err_t sht4x_init(void)
         .scl_speed_hz = BOARD_SHT4X_I2C_HZ,
     };
     err = i2c_master_bus_add_device(s_bus, &device_cfg, &s_sensor);
-    if (err != ESP_OK) {
-#ifndef BOARD_HAS_TOUCH
-        /* Sole owner of this bus -> tear it down. When shared with the GT911
-         * (BOARD_HAS_TOUCH) the touch driver owns the bus lifetime; leave it. */
-        i2c_del_master_bus(s_bus);
-#endif
-        s_bus = NULL;
-    }
+    /* The helper owns the bus lifetime, so a failed add_device leaves it up for
+     * the other drivers on it rather than tearing it down under them. */
+    if (err != ESP_OK) s_bus = NULL;
     return err;
 }
 

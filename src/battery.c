@@ -1,9 +1,15 @@
 #include "battery.h"
 #include "app_config.h"   /* pulls board.h -> BOARD_BATTERY_* */
+#include "bq27220.h"
 
 bool battery_present(void)
 {
-#if defined(BOARD_BATTERY_PMIC) || defined(BOARD_BATTERY_ADC_CHANNEL)
+#if defined(BOARD_BATTERY_GAUGE_I2C)
+    /* Runtime rather than a board fact, unlike the other two backends: the
+     * gauge is certainly fitted, but it NACKs while busy or unconfigured, and
+     * publishing 0 mV in that window reads as a flat cell. See bq27220.h. */
+    return bq27220_available();
+#elif defined(BOARD_BATTERY_PMIC) || defined(BOARD_BATTERY_ADC_CHANNEL)
     return true;
 #else
     return false;
@@ -21,6 +27,18 @@ int battery_pct(int mv)
     return (mv - 3300) * 30 / 400;
 }
 
+int battery_read_pct(void)
+{
+#if defined(BOARD_BATTERY_GAUGE_I2C)
+    /* Prefer the gauge's own figure. It coulomb-counts, so it accounts for load
+     * and for the pack's actual capacity; battery_pct() can only read a resting
+     * voltage off a generic curve and is wrong under load in both directions. */
+    return bq27220_battery_pct();
+#else
+    return battery_pct(battery_read_mv());
+#endif
+}
+
 /* ---------- always-on eligibility (see battery.h for why it is shaped so) ---- */
 
 bool power_battery_critical(void)
@@ -29,7 +47,7 @@ bool power_battery_critical(void)
      * keeps a board with no divider (the XIAO C3 panel) from reading 0 mV and
      * dropping out of always-on immediately and permanently. */
     if (!battery_present()) return false;
-    return battery_pct(battery_read_mv()) < AWAKE_BATTERY_MIN_PCT;
+    return battery_read_pct() < AWAKE_BATTERY_MIN_PCT;
 }
 
 bool power_can_stay_awake(void)
@@ -44,7 +62,18 @@ bool power_can_stay_awake(void)
 #endif
 }
 
-#if defined(BOARD_BATTERY_PMIC)
+#if defined(BOARD_BATTERY_GAUGE_I2C)
+
+/* Gauge boards (reTerminal Sticky): a BQ27220 on I2C, no sense divider to any
+ * ADC pin. The mV is the gauge's Voltage(); the percentage does NOT come
+ * through battery_pct() -- see battery_read_pct() above. */
+
+int battery_read_mv(void)
+{
+    return bq27220_battery_mv();
+}
+
+#elif defined(BOARD_BATTERY_PMIC)
 
 /* PMIC boards (Waveshare PhotoPainter): battery comes from the AXP2101 fuel
  * gauge over I2C, not an ADC divider. pmic_init() is idempotent, so calling it

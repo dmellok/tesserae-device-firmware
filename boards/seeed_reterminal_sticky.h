@@ -86,10 +86,24 @@
 #define TESSERAE_RELAY_MODEL   "esp32_bw_client"
 #define TESSERAE_RELAY_GAMUT   "gray_4"
 
-/* Battery: the Sticky has a BQ27220 fuel gauge on I2C rather than a divider to
- * an ADC pin, so battery_present() is false until that driver exists. Reporting
- * nothing is correct meanwhile: a 0 mV reading would render as a permanently
- * flat cell (see the XIAO C3 panel for the same decision). */
+/* Battery: a TI BQ27220 fuel gauge on I2C, NOT a divider to an ADC pin -- there
+ * is no such divider on this board, so the ADC backend can never work here.
+ *
+ * Address and bus are from CrossPoint's Sticky board profile, which puts the
+ * gauge at 0x55 on the sensor bus at 400 kHz. That is the same physical bus as
+ * the SHT40 below, so both go through i2c_bus_get(); the differing clock rates
+ * are fine, since speed is a per-device property in the IDF 5 I2C master API.
+ *
+ * The BQ25616 charger drives a CHARGE_STATE line on GPIO40. Nothing reports a
+ * charging flag today, so it is left unwired rather than guessed at: the gauge
+ * can answer the same question from the sign of AverageCurrent() if we ever
+ * want it, without a polarity assumption to get wrong. */
+#define BOARD_BATTERY_GAUGE_I2C    1
+#define BOARD_BATTERY_GAUGE_PORT   0
+#define BOARD_BATTERY_GAUGE_SDA    1
+#define BOARD_BATTERY_GAUGE_SCL    0
+#define BOARD_BATTERY_GAUGE_HZ     400000
+#define BOARD_BATTERY_GAUGE_ADDR   0x55
 
 /* Onboard SHT40 on the sensor I2C bus, shared with the IMU, RTC and gauge. */
 #define BOARD_HAS_SHT4X            1
