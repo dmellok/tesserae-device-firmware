@@ -1,10 +1,16 @@
 /*
  * battery.h: optional Li-Po battery telemetry for the status heartbeat.
  *
- * The ADC channel is board-specific, so it is supplied by the board header via
- * BOARD_BATTERY_ADC_CHANNEL (+ optional BOARD_BATTERY_DIVIDER and
- * BOARD_VBAT_SWITCH_PIN). Boards that don't define a channel report 0 mV, which
- * the server treats as "unknown" rather than "empty".
+ * Three backends, one per way a board can see its cell, selected by what the
+ * board header defines:
+ *
+ *   BOARD_BATTERY_ADC_CHANNEL   divided cell voltage on an ADC pin (+ optional
+ *                               BOARD_BATTERY_DIVIDER, BOARD_VBAT_SWITCH_PIN)
+ *   BOARD_BATTERY_PMIC          AXP2101 PMIC over I2C  (pmic.c)
+ *   BOARD_BATTERY_GAUGE_I2C     BQ27220 fuel gauge over I2C  (bq27220.c)
+ *
+ * A board that defines none of them reports no battery at all, which is a real
+ * configuration rather than a gap: see battery_present().
  *
  * Lifted from the old heartbeat.c (Waveshare 13.3E6 ADC reference).
  */
@@ -12,12 +18,16 @@
 
 #include <stdbool.h>
 
-/* True when this board can actually measure its cell.
+/* True when this board can actually measure its cell RIGHT NOW.
  *
- * Check this before acting on battery_read_mv(). A board with no sense reports
- * 0 mV, which is indistinguishable from a flat cell, and treating it as a
- * reading means "0%" everywhere: the XIAO C3 panel has a battery but no divider
- * to any ADC pin, so it can never report one. */
+ * Check this before acting on battery_read_mv() or battery_read_pct(). A board
+ * with no sense reports 0 mV, which is indistinguishable from a flat cell, and
+ * treating it as a reading means "0%" everywhere: the XIAO C3 panel has a
+ * battery but no divider to any ADC pin, so it can never report one.
+ *
+ * On the ADC and PMIC boards this is a compile-time fact. On a gauge board it
+ * is answered at runtime, because a gauge that is busy or unconfigured declines
+ * to reply, and we would rather publish nothing than a fictional flat cell. */
 bool battery_present(void);
 
 /* Battery rail in millivolts, or 0 if this board has no configured sense. */
@@ -25,6 +35,15 @@ int battery_read_mv(void);
 
 /* Map a Li-Po cell voltage (mV) to a 0-100% state-of-charge estimate. */
 int battery_pct(int mv);
+
+/* This board's state of charge, 0-100.
+ *
+ * Prefer this over battery_pct(battery_read_mv()). On a fuel-gauge board it
+ * returns the gauge's coulomb-counted figure, which knows the pack's real
+ * capacity and the current draw; the voltage curve is only an approximation
+ * standing in where there is nothing better. Falls back to that curve on every
+ * other board, so callers need not care which they are on. */
+int battery_read_pct(void);
 
 /* ---------- always-on eligibility ---------- */
 

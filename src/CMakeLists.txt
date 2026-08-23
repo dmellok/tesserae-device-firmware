@@ -25,6 +25,7 @@ idf_component_register(
         "panel/drivers/ssd1677_gray.c"
         "battery.c"
         "pmic.c"
+        "bq27220.c"
         "sht4x.c"
         "shtc3.c"
         "i2c_bus.c"

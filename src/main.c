@@ -278,7 +278,7 @@ static void always_on_loop(void)
         if (!c->always_on) { ESP_LOGI(TAG, "always-on off (config)"); break; }
         if (power_battery_critical()) {
             ESP_LOGW(TAG, "always-on: battery %d%%; resuming sleep cycles",
-                     battery_pct(battery_read_mv()));
+                     battery_read_pct());
             break;
         }
 

@@ -394,7 +394,7 @@ bool relay_post_status(int rssi, const char *ip, uint16_t panel_w,
     char body[512];
     if (!relay_build_status_body(body, sizeof body, c->relay_device,
                                  fw_version, panel_w, panel_h, ip, rssi,
-                                 mv, mv > 0 ? battery_pct(mv) : 0,
+                                 mv, mv > 0 ? battery_read_pct() : 0,
                                  have_btn ? btn : NULL, btn_ev)) {
         ESP_LOGE(TAG, "could not build the status body");
         return false;
