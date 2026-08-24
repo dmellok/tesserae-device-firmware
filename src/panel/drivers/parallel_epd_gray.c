@@ -102,6 +102,16 @@ static const char *TAG = "epd_par";
 static const uint8_t s_matrix[] = EPD_PAR_GRAY_MATRIX;
 #define GRAY_PASSES  ((int)(sizeof(s_matrix) / 16))
 
+/* Optional candidate matrix under evaluation. When the board defines it, the
+ * selftest paints the two matrices side by side, one per half of the scan
+ * axis, so a single flash judges a retune. Normal display keeps using
+ * EPD_PAR_GRAY_MATRIX until the candidate is promoted. */
+#ifdef EPD_PAR_GRAY_MATRIX_B
+static const uint8_t s_matrix_b[] = EPD_PAR_GRAY_MATRIX_B;
+_Static_assert(sizeof(s_matrix_b) == sizeof(s_matrix),
+               "candidate grey matrix must match the shipped matrix's size");
+#endif
+
 _Static_assert(EPD_WIDTH % 8 == 0, "parallel EPD needs a width divisible by 8");
 _Static_assert(EPD_BUF_BYTES == (size_t)EPD_WIDTH * EPD_HEIGHT / 2,
                "parallel_epd_gray is a 4bpp driver; EPD_BUF_BYTES must be W*H/2");
@@ -128,6 +138,10 @@ static uint8_t *s_line[2];
  * output byte. Built once from s_matrix. */
 static uint8_t *s_code_hi;   /* GRAY_PASSES * 256 */
 static uint8_t *s_code_lo;
+#ifdef EPD_PAR_GRAY_MATRIX_B
+static uint8_t *s_code_hi_b;
+static uint8_t *s_code_lo_b;
+#endif
 
 static volatile bool s_dma_done = true;
 
@@ -247,6 +261,19 @@ static void power(bool on)
 /* Passes                                                             */
 /* ------------------------------------------------------------------ */
 
+static void build_code_tables(const uint8_t *matrix, uint8_t *hi, uint8_t *lo)
+{
+    for (int pass = 0; pass < GRAY_PASSES; pass++) {
+        for (int i = 0; i < 256; i++) {
+            uint8_t left  = matrix[(i >> 4) * GRAY_PASSES + pass];
+            uint8_t right = matrix[(i & 0x0F) * GRAY_PASSES + pass];
+            uint8_t pair  = (uint8_t)((left << 2) | right);
+            lo[pass * 256 + i] = pair;
+            hi[pass * 256 + i] = (uint8_t)(pair << 4);
+        }
+    }
+}
+
 /* `count` passes of one uniform drive code over the whole panel. Both the
  * black/white clear cycle and the final discharge are this. */
 static void uniform_passes(uint8_t code, int count)
@@ -318,6 +345,34 @@ static void gray_passes_bands(const uint8_t *level_per_row)
     }
 }
 
+#ifdef EPD_PAR_GRAY_MATRIX_B
+/* As gray_passes_bands(), but the first half of each row is driven by the
+ * shipped matrix and the second half by the candidate, so one selftest frame
+ * compares the two tunings on the same glass under the same light. */
+static void gray_passes_bands_ab(const uint8_t *level_per_row)
+{
+    const int half = ROW_BYTES / 2;
+    for (int pass = 0; pass < GRAY_PASSES; pass++) {
+        const uint8_t *hi_a = s_code_hi + pass * 256;
+        const uint8_t *lo_a = s_code_lo + pass * 256;
+        const uint8_t *hi_b = s_code_hi_b + pass * 256;
+        const uint8_t *lo_b = s_code_lo_b + pass * 256;
+        row_start();
+        int slot = 0;
+        for (int y = 0; y < EPD_HEIGHT; y++) {
+            uint8_t g = (uint8_t)(level_per_row[y] & 0x0F);
+            uint8_t src = (uint8_t)((g << 4) | g);
+            memset(s_line[slot], (uint8_t)(hi_a[src] | lo_a[src]), half);
+            memset(s_line[slot] + half, (uint8_t)(hi_b[src] | lo_b[src]),
+                   ROW_BYTES - half);
+            write_row(s_line[slot], y != 0);
+            slot ^= 1;
+        }
+        pass_end();
+    }
+}
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Driver entry points                                                */
 /* ------------------------------------------------------------------ */
@@ -361,15 +416,18 @@ static esp_err_t par_port_init(void)
     /* source byte i = pixels (i >> 4, i & 0xF), left pixel first. In an output
      * byte the MSB pair is the leftmost pixel, so the left source pixel's code
      * sits two bits above the right one. */
-    for (int pass = 0; pass < GRAY_PASSES; pass++) {
-        for (int i = 0; i < 256; i++) {
-            uint8_t left  = s_matrix[(i >> 4) * GRAY_PASSES + pass];
-            uint8_t right = s_matrix[(i & 0x0F) * GRAY_PASSES + pass];
-            uint8_t pair  = (uint8_t)((left << 2) | right);
-            s_code_lo[pass * 256 + i] = pair;
-            s_code_hi[pass * 256 + i] = (uint8_t)(pair << 4);
-        }
+    build_code_tables(s_matrix, s_code_hi, s_code_lo);
+#ifdef EPD_PAR_GRAY_MATRIX_B
+    s_code_hi_b = malloc((size_t)GRAY_PASSES * 256);
+    s_code_lo_b = malloc((size_t)GRAY_PASSES * 256);
+    if (!s_code_hi_b || !s_code_lo_b) {
+        ESP_LOGE(TAG, "OOM (candidate-matrix code tables)");
+        free(s_code_hi_b); free(s_code_lo_b);
+        s_code_hi_b = s_code_lo_b = NULL;   /* selftest falls back to A only */
+    } else {
+        build_code_tables(s_matrix_b, s_code_hi_b, s_code_lo_b);
     }
+#endif
 
     /* The i80 driver insists on a D/C pin it will never need here, so the
      * board donates an unused GPIO to absorb it (FastEPD does the same). */
@@ -448,6 +506,15 @@ static void par_show_color_bars(void)
     }
     power(true);
     clear_cycle();
+#ifdef EPD_PAR_GRAY_MATRIX_B
+    if (s_code_hi_b) {
+        gray_passes_bands_ab(rows);
+        uniform_passes(CODE_NEUTRAL, 1);
+        ESP_LOGI(TAG, "grey ramp done (split: first half of each row = "
+                      "shipped matrix, second half = candidate B)");
+        return;
+    }
+#endif
     gray_passes_bands(rows);
     uniform_passes(CODE_NEUTRAL, 1);
     ESP_LOGI(TAG, "grey ramp done");
