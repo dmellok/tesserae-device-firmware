@@ -361,6 +361,11 @@ static void always_on_loop(void)
             if (fetch_and_paint_current(c->server_url))
                 last_paint_us = esp_timer_get_time();
         }
+        /* A superseded frame is ordinary new content, so it goes through the
+         * normal poll rather than painting here: the poll is conditional and
+         * the digest really did change, so it returns 200 without dropping
+         * the ETag, and the queued frame still waits on the refresh floor. */
+        if (overlay_take_stale()) next_poll_us = 0;
         if (proto2_sync_pending()) proto2_sync_tail();
 #endif /* touch + overlay */
 
@@ -2630,10 +2635,16 @@ void app_main(void)
                 proto2_flush_reports();
                 touch3_flush_reports();
                 proto2_linger_tick();   /* local:clock minute re-blit */
-                if (overlay_take_refetch()) {
-                    /* The digest never changes under schema 2, so the forced
-                     * repaint needs the cached ETag dropped to get a 200. */
-                    rest_config_set_frame_etag("");
+                bool forced = overlay_take_refetch();
+                bool stale  = overlay_take_stale();
+                if (forced || stale) {
+                    /* The digest never changes under schema 2, so a forced
+                     * repaint needs the cached ETag dropped to get a 200. A
+                     * stale-frame refetch keeps its ETag: the digest moved,
+                     * so the conditional GET answers 200 on its own, and
+                     * holding it means a frame that lands back on the old
+                     * digest mid-fetch still 304s. */
+                    if (forced) rest_config_set_frame_etag("");
                     cfg_dirty = true;
                     if (fetch_and_paint_current(rest_config_get()->server_url)) {
                         /* The fallback full repaint can outlive the linger

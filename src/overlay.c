@@ -358,6 +358,34 @@ void overlay_draw_slot(uint8_t *fb, const uint8_t *base, int fb_w, int fb_h,
 
 /* ---------- patch documents (schema 2) ---------- */
 
+bool overlay_frame_stale(const char *json, size_t len,
+                         char *out_digest, size_t cap)
+{
+    if (!json || !len || !out_digest || cap <= OVERLAY_DIGEST_HEX) return false;
+    out_digest[0] = '\0';
+
+    cJSON *root = cJSON_ParseWithLength(json, len);
+    if (!root) return false;
+
+    bool ok = false;
+    const cJSON *stale = cJSON_GetObjectItemCaseSensitive(root, "stale");
+    if (cJSON_IsTrue(stale)) {
+        char digest[OVERLAY_DIGEST_HEX + 1] = {0};
+        /* The digest is not optional: without it there is nothing to
+         * compare against the glass, and a bare flag would refetch on
+         * every poll of the window. */
+        if (copy_str(digest, sizeof digest,
+                     cJSON_GetObjectItemCaseSensitive(root, "frame_digest")) &&
+            digest16_ok(digest)) {
+            strcpy(out_digest, digest);
+            ok = true;
+        }
+    }
+
+    cJSON_Delete(root);
+    return ok;
+}
+
 static bool patch_rect_ok(const overlay_patch_rect_t *r, int pw, int ph,
                           int bpp, uint32_t blob_bytes)
 {

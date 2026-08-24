@@ -57,6 +57,13 @@ void overlay_ingest_patches(const char *json, size_t len);
  * Poll from the linger loop right after overlay_linger_poll(). */
 bool overlay_take_refetch(void);
 
+/* True once (clears on read) when /frame/data reported the server's live
+ * frame has moved past the one on glass (server #242). Ordinary new content,
+ * not a failed action: a deep-sleep window should fetch and paint it before
+ * sleeping, while the always-on loop should just bring its next frame poll
+ * forward and let the panel's refresh floor bound the paint. */
+bool overlay_take_stale(void);
+
 /* Call every ~1 s from the touch-linger window (radio up, awake): poll
  * GET /frame/data, apply values + patches, partial-refresh what changed.
  * NEVER called outside the awake window -- the device must not wake for
@@ -94,6 +101,7 @@ static inline void overlay_after_paint(const uint8_t *f, const char *d) { (void)
 static inline void overlay_ingest_values(const char *j, size_t l) { (void)j; (void)l; }
 static inline void overlay_ingest_patches(const char *j, size_t l) { (void)j; (void)l; }
 static inline bool overlay_take_refetch(void) { return false; }
+static inline bool overlay_take_stale(void) { return false; }
 static inline void overlay_linger_poll(void) { }
 static inline uint8_t *overlay_work_fb(bool *full) { if (full) *full = false; return (uint8_t *)0; }
 static inline uint8_t *overlay_base_fb(void) { return (uint8_t *)0; }

@@ -55,6 +55,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A touch display that is already awake now picks up a whole new dashboard
+  rather than sleeping through it. After a tap the display stays awake for its
+  touch linger window, watching for small changes it can paint as rectangles,
+  but a change too big for that arrives as a new frame instead, and nothing
+  told the display to go and get one. Tapping a button that rewrites most of
+  the screen therefore did nothing visible until the next scheduled wake, up to
+  a full sleep interval later. The server now says when the frame on screen has
+  been superseded (Tesserae v0.360.0), and the display fetches it before the
+  window closes. Mains-powered displays bring their next scheduled check
+  forward instead, so the panel's own refresh limit still governs how often the
+  screen is driven. Displays showing a Deck page or Album photo from their own
+  card are left alone.
 - Fixed the XIAO 7.5" ePaper Panel reporting an empty battery. It has a cell
   but no way to measure it, and it was sending a literal zero, which reads as
   flat rather than unknown. It now omits the reading entirely, so nothing shows

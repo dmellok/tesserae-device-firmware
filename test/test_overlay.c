@@ -325,6 +325,39 @@ int main(void)
         CHECK(!overlay_patch_rect_intersects(&ir, 100, 150, 10, 10));
     }
 
+    /* ---- stale-frame signal (server #242) ---- */
+    {
+        char d[OVERLAY_DIGEST_HEX + 1];
+        const char OK_DOC[] =
+            "{\"seq\":9,\"values\":{},\"stale\":true,"
+            "\"frame_digest\":\"00112233445566aa\"}";
+        CHECK(overlay_frame_stale(OK_DOC, sizeof OK_DOC - 1, d, sizeof d));
+        CHECK(strcmp(d, "00112233445566aa") == 0);
+
+        /* An ordinary values document says nothing about staleness. */
+        const char PLAIN[] = "{\"seq\":9,\"values\":{\"k\":\"1\"}}";
+        CHECK(!overlay_frame_stale(PLAIN, sizeof PLAIN - 1, d, sizeof d));
+
+        /* stale:false is not stale; the flag must be a real true. */
+        const char OFF[] =
+            "{\"stale\":false,\"frame_digest\":\"00112233445566aa\"}";
+        CHECK(!overlay_frame_stale(OFF, sizeof OFF - 1, d, sizeof d));
+
+        /* No digest, or a malformed one, is dropped whole: refetching on a
+         * bare flag would repaint on every poll of the window. */
+        const char BARE[] = "{\"stale\":true}";
+        CHECK(!overlay_frame_stale(BARE, sizeof BARE - 1, d, sizeof d));
+        const char UPPER[] =
+            "{\"stale\":true,\"frame_digest\":\"00112233445566AA\"}";
+        CHECK(!overlay_frame_stale(UPPER, sizeof UPPER - 1, d, sizeof d));
+        const char SHORT[] = "{\"stale\":true,\"frame_digest\":\"0011\"}";
+        CHECK(!overlay_frame_stale(SHORT, sizeof SHORT - 1, d, sizeof d));
+
+        /* Malformed JSON and a too-small buffer are refusals, not crashes. */
+        CHECK(!overlay_frame_stale("{\"stale\":", 9, d, sizeof d));
+        CHECK(!overlay_frame_stale(OK_DOC, sizeof OK_DOC - 1, d, OVERLAY_DIGEST_HEX));
+    }
+
     printf("%d tests, %d failures\n", tests, fails);
     return fails ? 1 : 0;
 }

@@ -130,6 +130,19 @@ int overlay_text_width(const overlay_atlas_t *a, const char *text);
 uint32_t overlay_values_apply(overlay_spec_t *s, const char *json, size_t len,
                               int64_t *last_seq);
 
+/* ---- stale-frame signal ----
+ *
+ * A /frame/data response may carry {"stale": true, "frame_digest": "<newer>"}:
+ * the server's live frame for this device has moved past the one on glass.
+ * Only the awake windows poll /frame/data, and they do not poll /frame, so
+ * without this a frame minted mid-window (a reconcile too big to patch, an
+ * external push) waited for the next timer wake (server #242). Copies the
+ * newer digest into `out_digest` (cap must be > OVERLAY_DIGEST_HEX) and
+ * returns true; false when the field is absent, not true, or the digest is
+ * malformed. */
+bool overlay_frame_stale(const char *json, size_t len,
+                         char *out_digest, size_t cap);
+
 /* ---- patch documents (schema 2: post-action frame patches) ----
  *
  * After a touch action the server re-renders the page headless, diffs the

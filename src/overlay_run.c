@@ -60,6 +60,14 @@ static int64_t  s_patch_seq = -1;
  * normal /frame poll -- the contract's only sanctioned fallback. */
 static bool     s_refetch;
 
+/* Set when /frame/data says the server's live frame has moved past the one on
+ * glass. Kept apart from s_refetch because the two want different responses:
+ * a failed patch has to paint NOW (someone is watching a half-applied
+ * action), while a superseded frame is ordinary new content and the always-on
+ * loop should route it through its own poll + refresh floor rather than
+ * repaint on the spot. */
+static bool     s_stale;
+
 /* Hygiene counter survives deep sleep so repeated wake-echoes on the same
  * frame still trigger a full-quality pass. */
 RTC_DATA_ATTR static overlay_hygiene_t s_hygiene;
@@ -606,6 +614,13 @@ bool overlay_take_refetch(void)
     return r;
 }
 
+bool overlay_take_stale(void)
+{
+    bool r = s_stale;
+    s_stale = false;
+    return r;
+}
+
 uint8_t *overlay_work_fb(bool *full)
 {
     if (full) *full = s_work && !s_sparse;
@@ -665,6 +680,18 @@ void overlay_linger_poll(void)
     rest_status_t st = rest_get_frame_data(digest, buf, OVERLAY_DATA_MAX,
                                            &len, 3000);
     if (st == REST_OK) {         /* incl. 404: silently dormant */
+        /* Superseded frame: nothing else in this body is worth applying.
+         * The values belong to the frame we are about to replace whole, and
+         * a slot redraw first would cost a partial refresh for one poll's
+         * worth of glass. */
+        char newer[OVERLAY_DIGEST_HEX + 1];
+        if (overlay_frame_stale(buf, len, newer, sizeof newer) &&
+            strcmp(newer, digest) != 0) {
+            ESP_LOGI(TAG, "server frame moved %s -> %s; refetching", digest, newer);
+            s_stale = true;
+            free(buf);
+            return;
+        }
         overlay_ingest_values(buf, len);
         overlay_ingest_patches(buf, len);
 #if BOARD_HAS_TOUCH
