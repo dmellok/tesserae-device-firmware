@@ -39,6 +39,7 @@ idf_component_register(
         "ble_setup.c"
         "provisioning.c"
         "button_report.c"
+        "buzzer.c"
         "net_rest.c"
         "relay.c"
         "relay_crypto.c"

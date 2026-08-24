@@ -94,6 +94,13 @@
  * E1001-3 baseboard: here Left=GPIO4, Right=GPIO3, Refresh=GPIO5 (on the E1001-3
  * it's Left=5/Right=4/Refresh=3). All clear of this board's panel pins (note
  * GPIO2 = EPD_PIN_CS_S, so the EE02's GPIO2 key does not apply). See buttons.h. */
+/* Passive piezo on the reTerminal E baseboard, driven by LEDC PWM: frequency
+ * sets the pitch, duty sets the loudness (server #258). Pin per Seeed's own
+ * ESPHome cookbook for this series, which also names the buttons on GPIO3/4/5
+ * exactly as this header does. Sounded locally on an input so the user gets
+ * confirmation before the e-ink repaint, which takes seconds. */
+#define BOARD_BUZZER_PIN           45
+
 #define BOARD_BTN_REFRESH_PIN  5
 #define BOARD_BTN_RIGHT_PIN    3
 #define BOARD_BTN_LEFT_PIN     4

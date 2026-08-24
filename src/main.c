@@ -31,7 +31,8 @@
 
 #include "app_config.h"
 #include "nvs_flash.h"      /* factory-reset erase (20 s refresh-button hold) */
-#include "buttons.h"        /* front-button wake/report (header-only; no-op if none) */
+#include "buttons.h"       /* front-button wake/report (header-only; no-op if none) */
+#include "buzzer.h"        /* piezo feedback on an input (no-op without a buzzer) */
 #include "deck_run.h"       /* SD deck cache: local nav + sync (no-op w/o card) */
 #include "collection_run.h" /* offline Album: SD playback + collection sync */
 #include "overlay_run.h"    /* local overlay render mode (no-op w/o partial panel) */
@@ -324,6 +325,7 @@ static void always_on_loop(void)
              * They still stamp last_paint_us, so a poll-driven repaint cannot
              * follow one immediately and double up on the panel. */
             if (st.valid) {
+                buzzer_feedback();   /* same reason as the wake path (#258) */
                 bool p2_poll = false;
                 bool painted = false;
                 if (touch3_try_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
@@ -514,6 +516,7 @@ static void always_on_loop(void)
 
 static void sleep_forever_or_until_timer(void)
 {
+    buzzer_idle();   /* never leave the piezo driven across a sleep (#258) */
 #ifdef BOARD_MAINS_POWERED
     /* Always-on power policy: server config opted this device out of deep sleep
      * (config.always_on, read on every /status poll). Runs until config or a
@@ -1140,6 +1143,7 @@ void app_main(void)
         ESP_LOGI(TAG, "woke on '%s' button: report + refresh (event %llu)",
                  button_name(woke_btn), (unsigned long long)ev);
         rest_set_button(button_name(woke_btn), ev);
+        buzzer_feedback();   /* confirm the press now, not after the repaint (#258) */
     }
 
 #ifdef BATTERY_DEBUG_SWEEP
@@ -1949,6 +1953,11 @@ void app_main(void)
                 ESP_LOGI(TAG, "touch (%d,%d)->(%d,%d) %ums",
                          touch_st.x0, touch_st.y0, touch_st.x1, touch_st.y1,
                          (unsigned)touch_st.ms);
+                /* Audible confirmation, before anything else happens
+                 * (#258): this wake still has a dispatch, a render and an
+                 * e-ink flash ahead of it, which is precisely the wait the
+                 * beep exists to cover. */
+                buzzer_feedback();
                 /* Touch v3 first: with a spec held for the layout on glass the
                  * device drew the controls and owns hit-testing + feedback;
                  * the /interact report queues until the radio is up. Then
@@ -2431,6 +2440,24 @@ void app_main(void)
                 }
             }
 #endif
+#ifdef BOARD_BUZZER_PIN
+            /* Buzzer config, same channel and the same absent-means-keep rule
+             * as the touch fields above (#258). */
+            if (so.beep_enabled >= 0 || so.beep_volume >= 0 || so.beep_tone[0]) {
+                const rest_config_t *bc = rest_config_get();
+                bool    en  = (so.beep_enabled >= 0) ? (so.beep_enabled != 0) : bc->beep_enabled;
+                int32_t vol = (so.beep_volume  >= 0) ? so.beep_volume        : bc->beep_volume;
+                const char *tone = so.beep_tone[0] ? so.beep_tone : bc->beep_tone;
+                if (en != bc->beep_enabled || vol != bc->beep_volume ||
+                    strcmp(tone, bc->beep_tone) != 0) {
+                    rest_config_set_beep(en, tone, vol);
+                    cfg_dirty = true;
+                    ESP_LOGI(TAG, "beep config: enabled=%d tone=%s volume=%ld",
+                             en, rest_config_get()->beep_tone,
+                             (long)rest_config_get()->beep_volume);
+                }
+            }
+#endif
 #if BOARD_OVERLAY_PARTIAL
             /* overlay_values may ride the status response; patches too, but
              * those are deferred until after the paint (see pending_patches). */
@@ -2663,6 +2690,7 @@ void app_main(void)
             touch_capture_stroke_cb(&st, TOUCH_FIRST_POINT_MS, TOUCH_CAP_MS,
                                     touch3_stroke_sample, NULL);
             if (!st.valid) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
+            buzzer_feedback();   /* same reason as the wake path (#258) */
             bool p2_poll = false;
             if (touch3_try_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
                                  &p2_poll)) {
@@ -2727,6 +2755,7 @@ void app_main(void)
             ESP_LOGI(TAG, "window press '%s' (event %llu)", button_name(b),
                      (unsigned long long)ev);
             rest_set_button(button_name(b), ev);
+            buzzer_feedback();
             /* Like the wake press: a manual press forces a repaint (200, not 304). */
             rest_config_set_frame_etag("");
             if (fetch_and_paint_current(rest_config_get()->server_url)) cfg_dirty = true;

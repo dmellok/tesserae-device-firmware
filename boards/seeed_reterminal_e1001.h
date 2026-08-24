@@ -83,6 +83,13 @@
  * VERIFIED on E1001 hardware by button icon (serial log, 2026-07-03): the
  * left/right/refresh keys report left/right/refresh respectively. Physical order
  * left-to-right is Left, Right, Refresh (green on the end, not the middle). */
+/* Passive piezo on the reTerminal E baseboard, driven by LEDC PWM: frequency
+ * sets the pitch, duty sets the loudness (server #258). Pin per Seeed's own
+ * ESPHome cookbook for this series, which also names the buttons on GPIO3/4/5
+ * exactly as this header does. Sounded locally on an input so the user gets
+ * confirmation before the e-ink repaint, which takes seconds. */
+#define BOARD_BUZZER_PIN           45
+
 #define BOARD_BTN_REFRESH_PIN  3
 #define BOARD_BTN_RIGHT_PIN    4
 #define BOARD_BTN_LEFT_PIN     5

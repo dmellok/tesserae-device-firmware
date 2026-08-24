@@ -84,6 +84,11 @@ typedef struct {
     int      touch_enabled;     /* config.touch_enabled: -1 absent, else 0/1 */
     int32_t  touch_linger_s;    /* config.touch_linger_s: -1 absent */
 #endif
+#ifdef BOARD_BUZZER_PIN
+    int      beep_enabled;      /* config.beep_enabled: -1 absent, else 0/1 */
+    int32_t  beep_volume;       /* config.beep_volume: -1 absent */
+    char     beep_tone[12];     /* config.beep_tone: "" absent */
+#endif
 #if TESSERAE_OTA_CAPABILITY_ENABLED
     bool     ota_present;       /* response contained a top-level ota field */
     ota_verify_reason_t ota_reason;

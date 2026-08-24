@@ -980,6 +980,11 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     out->touch_enabled = -1;
     out->touch_linger_s = -1;
 #endif
+#ifdef BOARD_BUZZER_PIN
+    out->beep_enabled = -1;
+    out->beep_volume  = -1;
+    out->beep_tone[0] = '\0';
+#endif
 #if BOARD_OVERLAY_PARTIAL
     out->local_hh = out->local_mm = -1;
 #endif
@@ -1104,6 +1109,13 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         if (cJSON_IsBool(te))        out->touch_enabled = cJSON_IsTrue(te) ? 1 : 0;
         else if (cJSON_IsNumber(te)) out->touch_enabled = te->valueint ? 1 : 0;
         out->touch_linger_s = json_get_int(cfg, "touch_linger_s", -1);
+#endif
+#ifdef BOARD_BUZZER_PIN
+        cJSON *be = cJSON_GetObjectItemCaseSensitive(cfg, "beep_enabled");
+        if (cJSON_IsBool(be))        out->beep_enabled = cJSON_IsTrue(be) ? 1 : 0;
+        else if (cJSON_IsNumber(be)) out->beep_enabled = be->valueint ? 1 : 0;
+        out->beep_volume = json_get_int(cfg, "beep_volume", -1);
+        json_get_str(cfg, "beep_tone", out->beep_tone, sizeof out->beep_tone);
 #endif
         char tz[40] = {0};
         json_get_str(cfg, "tz", tz, sizeof tz);

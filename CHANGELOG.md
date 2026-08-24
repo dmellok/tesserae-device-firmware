@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Displays in the reTerminal E series can now beep when you touch them or press
+  a button. E-ink takes seconds to repaint, so until it does there is nothing to
+  tell the person standing at the display that it heard them. The buzzer on the
+  board sounds the moment the input registers, before the server is contacted at
+  all, and the tone and volume are yours to choose from the display's settings
+  in Tesserae. Off unless you turn it on. Needs Tesserae v0.362.0 or later.
 - Added support for the M5Stack PaperS3, the 4.7" touch e-ink handheld. This is
   the first display here whose screen has no controller chip of its own: the
   ESP32-S3 drives the glass directly and the sixteen grey levels come from a

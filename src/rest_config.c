@@ -44,6 +44,13 @@ static const char *TAG = "rest_cfg";
 #define NVS_KEY_TOUCH_EN   "touch_en"
 #define NVS_KEY_TOUCH_LIN  "touch_lin"
 #endif
+#ifdef BOARD_BUZZER_PIN
+/* Separate from the touch block on purpose: the mono reTerminals carry the
+ * buzzer without a touchscreen, so these keys must exist there too. */
+#define NVS_KEY_BEEP_EN    "beep_en"
+#define NVS_KEY_BEEP_TONE  "beep_tone"
+#define NVS_KEY_BEEP_VOL   "beep_vol"
+#endif
 
 static rest_config_t s_cfg;
 static bool          s_loaded;
@@ -74,6 +81,14 @@ void rest_config_load(void)
     memset(&s_cfg, 0, sizeof s_cfg);
     s_cfg.sleep_s = SLEEP_INTERVAL_S;
     s_cfg.awake_poll_s = AWAKE_POLL_DEFAULT_S;
+#ifdef BOARD_BUZZER_PIN
+    /* Silent until an operator asks for sound: a panel that starts beeping
+     * after a firmware update, unannounced, is worse than a silent one. The
+     * tone/volume defaults only decide what it sounds like once enabled. */
+    s_cfg.beep_enabled = false;
+    s_cfg.beep_volume  = 60;
+    set_str(s_cfg.beep_tone, sizeof s_cfg.beep_tone, "beep");
+#endif
 
     /* secrets.h dev defaults, if present (server_url only; token is per-device). */
 #ifdef REST_DEFAULT_SERVER_URL
@@ -99,6 +114,18 @@ void rest_config_load(void)
         if (nvs_get_u8(h, NVS_KEY_TOUCH_EN, &te) == ESP_OK) s_cfg.touch_enabled = (te != 0);
         int32_t tl = 0;
         if (nvs_get_i32(h, NVS_KEY_TOUCH_LIN, &tl) == ESP_OK && tl >= 0) s_cfg.touch_linger_s = tl;
+#endif
+#ifdef BOARD_BUZZER_PIN
+        uint8_t be = 0;
+        if (nvs_get_u8(h, NVS_KEY_BEEP_EN, &be) == ESP_OK) s_cfg.beep_enabled = (be != 0);
+        /* Via a temp: load_str blanks the destination when the key is absent,
+         * which would wipe the default tone name on a device that has never
+         * been told one. */
+        char bt[sizeof s_cfg.beep_tone];
+        load_str(h, NVS_KEY_BEEP_TONE, bt, sizeof bt);
+        if (bt[0]) set_str(s_cfg.beep_tone, sizeof s_cfg.beep_tone, bt);
+        int32_t bv = -1;
+        if (nvs_get_i32(h, NVS_KEY_BEEP_VOL, &bv) == ESP_OK && bv >= 0) s_cfg.beep_volume = bv;
 #endif
         load_str(h, NVS_KEY_DECK_ID, s_cfg.deck_id,         sizeof s_cfg.deck_id);
         load_str(h, NVS_KEY_DECK_PG, s_cfg.deck_page,       sizeof s_cfg.deck_page);
@@ -195,6 +222,11 @@ esp_err_t rest_config_save(void)
 #if BOARD_HAS_TOUCH
     if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_TOUCH_EN, s_cfg.touch_enabled ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_i32(h, NVS_KEY_TOUCH_LIN, s_cfg.touch_linger_s);
+#ifdef BOARD_BUZZER_PIN
+    if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_BEEP_EN, s_cfg.beep_enabled ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_BEEP_TONE, s_cfg.beep_tone);
+    if (err == ESP_OK) err = nvs_set_i32(h, NVS_KEY_BEEP_VOL, s_cfg.beep_volume);
+#endif
 #endif
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DECK_ID, s_cfg.deck_id);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DECK_PG, s_cfg.deck_page);
@@ -293,6 +325,17 @@ void rest_config_set_touch(bool enabled, int32_t linger_s)
     if (linger_s > 60) linger_s = 60;
     s_cfg.touch_enabled  = enabled;
     s_cfg.touch_linger_s = linger_s;
+}
+#endif
+
+#ifdef BOARD_BUZZER_PIN
+void rest_config_set_beep(bool enabled, const char *tone, int32_t volume)
+{
+    if (volume < 0)   volume = 0;
+    if (volume > 100) volume = 100;   /* server bounds it too; belt and braces */
+    s_cfg.beep_enabled = enabled;
+    s_cfg.beep_volume  = volume;
+    if (tone && tone[0]) set_str(s_cfg.beep_tone, sizeof s_cfg.beep_tone, tone);
 }
 #endif
 
