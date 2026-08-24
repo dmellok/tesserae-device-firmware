@@ -61,6 +61,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Fixed physical button presses not beeping on displays where the beep was
+  turned on. Touches sounded correctly; presses did not. A press is handled
+  almost at the top of boot, before the display or the network exist, and the
+  setting it reads lives in flash that had not been initialised yet, so it read
+  as switched off. Flash now comes up first and a press reads the real setting.
 - A touch display that is already awake now picks up a whole new dashboard
   rather than sleeping through it. After a tap the display stays awake for its
   touch linger window, watching for small changes it can paint as rectangles,

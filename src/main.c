@@ -1123,6 +1123,19 @@ void app_main(void)
      * panel refreshes. No-op on boards without a slot. See sdcard.h. */
     sdcard_quiesce();
 
+    /* NVS up front, because the button beep below is the first thing that asks
+     * rest_config_get() for an answer and it cannot get a true one otherwise:
+     * the lazy load behind it opens NVS, that open fails until the partition is
+     * initialised (which wifi_manager does, hundreds of lines later), and the
+     * config then reads as defaults with the beep off. On a deep-sleep button
+     * wake that made the press silent while touch, which happens after the
+     * explicit load, sounded correctly. Idempotent and cheap; wifi_manager
+     * still owns the erase-and-retry path if this fails here. */
+    esp_err_t nvs_early = nvs_flash_init();
+    if (nvs_early != ESP_OK)
+        ESP_LOGW(TAG, "early nvs init: %s (config reads defaults until wifi init)",
+                 esp_err_to_name(nvs_early));
+
     esp_reset_reason_t reset_reason = esp_reset_reason();
     bool settings_mode = detect_settings_mode(reset_reason);
     /* A "first boot" (power-on, RESET button, or the reboot right after a portal
