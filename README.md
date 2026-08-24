@@ -32,6 +32,7 @@ one board (and thus one driver) per PlatformIO environment.
 | [Seeed **XIAO ePaper Display Board — EE04**](https://www.seeedstudio.com/XIAO-ePaper-Display-Board-EE04-p-6560.html) + 7.3" Spectra-6 (50-pin) | Spectra-6, single | UC81xx | 800×480, 4bpp | `spectra6_spi_single` | `seeed-ee04-73e6` |
 | [Waveshare **ESP32-S3-ePaper-13.3E6**](https://www.waveshare.com/esp32-s3-epaper-13.3e6.htm) | Spectra-6, dual-controller | UC81xx ×2 | 1200×1600, 4bpp | `spectra6_spi_dual` | `waveshare-133e6` |
 | [Waveshare **PhotoPainter 7.3"**](https://www.waveshare.com/esp32-s3-photopainter.htm) | Spectra-6, single | ED2208-GCA | 800×480, 4bpp | `spectra6_spi_single` | `waveshare-photopainter-73` |
+| [**M5Stack PaperS3**](https://docs.m5stack.com/en/core/PaperS3) | Grayscale (4.7") | none (raw parallel glass) | 960×540, 4bpp gray | `parallel_epd_gray` | `m5stack-papers3` |
 
 The four reTerminals, the PhotoPainter, the EE02, and the TRMNL 7.5" kit have been
 verified end-to-end on real hardware; the Waveshare 13.3E6 is the seed target and
@@ -54,10 +55,22 @@ board header:
 - The **TRMNL 7.5" OG DIY Kit** shares the E1001's `mono_spi` driver (same
   800×480 mono panel), with its own pin map.
 
+The exception is the **M5Stack PaperS3**, which needed a driver family of its
+own because it is the first panel here with no controller chip. `parallel_epd_gray`
+shifts 2-bit drive codes into the panel's source driver over the ESP32-S3's
+LCD/i80 bus and walks the gate driver by hand on SPV/CKV; the 16 grey levels come
+from a per-level pass matrix in the board header rather than a controller's
+waveform flash, so retuning the greys is a table edit. Every other epdiy-class
+board (Inkplate, LilyGo T5, epdiy V7) has this same shape, so the next one is a
+pin map plus a matrix. Sequences ported from bitbank2's FastEPD. **Not yet
+confirmed on physical hardware**: flash `m5stack-papers3-selftest` and judge
+the 16 grey bands first.
+
 The three XIAO ESP32-S3 boards (PhotoPainter, EE02, TRMNL 7.5") are **native-USB**
 (no CH340), so their console runs on USB-Serial-JTAG via
 `sdkconfig.usbjtag.defaults` — which also frees UART0 (GPIO43/44) on the boards
-that route those pins to the panel.
+that route those pins to the panel. The **PaperS3** takes the same base for the
+same reason: it is native-USB too, though it is not a XIAO board.
 
 **Touch (reTerminal E1003 only).** The E1003's onboard **GT911** capacitive
 digitiser can be enabled per-device from the server (Tesserae >= 0.140.0). It is
@@ -180,6 +193,7 @@ format the firmware expects for that kind:
 | `seeed_reterminal_e1001_gray` | 2bpp packed 4-gray (4 px/byte, MSB-first, 0b00=black..0b11=white) | 96000 B |
 | `xiao_epaper_75_bwr` | 2bpp packed BWR (4 px/byte, MSB-first, 0=black 1=white 2=red, 3 reserved) | 96000 B |
 | `seeed_reterminal_e1003` | 4bpp packed grayscale (0=black…0xF=white) | 1314144 B |
+| `m5stack_papers3` | 4bpp packed grayscale (0=black…0xF=white) | 259200 B |
 
 The PhotoPainter reuses the E1002's 800×480 4bpp format exactly (render normally
 — the **180° rotation is done on-device**, so do not pre-rotate on the server).

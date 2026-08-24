@@ -23,6 +23,7 @@ idf_component_register(
         "panel/drivers/mono_spi.c"
         "panel/drivers/it8951_gray.c"
         "panel/drivers/ssd1677_gray.c"
+        "panel/drivers/parallel_epd_gray.c"
         "battery.c"
         "pmic.c"
         "bq27220.c"
@@ -77,6 +78,7 @@ idf_component_register(
         ${TESSERAE_EMBED_FILES}
     REQUIRES
         driver
+        esp_lcd
         bt
         app_update
         esp_adc

@@ -104,6 +104,7 @@ jobs:
           - xiao-epaper-75-c3
           - seeed-ee04-75
           - seeed-ee04-73e6
+          - m5stack-papers3
     steps:
       - uses: actions/checkout@v4
 

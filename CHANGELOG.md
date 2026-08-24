@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Added support for the M5Stack PaperS3, the 4.7" touch e-ink handheld. This is
+  the first display here whose screen has no controller chip of its own: the
+  ESP32-S3 drives the glass directly and the sixteen grey levels come from a
+  waveform table in the firmware rather than from the panel. Greyscale tuning is
+  therefore a firmware change rather than a panel setting, and partial refresh is
+  not available yet, so this display does not offer tap feedback or on-device
+  touch controls. The touch digitiser is present but not yet enabled: the board
+  gives the processor no touch reset line, which the existing touch driver needs.
+  Not yet confirmed on physical hardware; flash the `m5stack-papers3-selftest`
+  build first and check the sixteen grey bands are evenly spaced.
 - Added support for the Seeed XIAO 7.5" ePaper Panel, the all-in-one display
   built around a XIAO ESP32-C3. This is a different board from the XIAO ePaper
   7.5" kit already listed, which pairs an ESP32-S3 with a separate driver
