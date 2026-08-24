@@ -87,7 +87,7 @@ typedef struct {
 #ifdef BOARD_BUZZER_PIN
     int      beep_enabled;      /* config.beep_enabled: -1 absent, else 0/1 */
     int32_t  beep_volume;       /* config.beep_volume: -1 absent */
-    char     beep_tone[12];     /* config.beep_tone: "" absent */
+    char     beep_pattern[96];  /* config.beep_pattern: "" absent */
 #endif
 #if TESSERAE_OTA_CAPABILITY_ENABLED
     bool     ota_present;       /* response contained a top-level ota field */

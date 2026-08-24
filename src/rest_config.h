@@ -34,10 +34,11 @@ typedef struct {
     int32_t touch_linger_s;       /* server config: stay awake N s after a touch (0-60) */
 #endif
 #ifdef BOARD_BUZZER_PIN
-    /* Buzzer feedback (#258). Tone is stored as the server's NAME, not a
-     * frequency: the board owns each tone's pitch and envelope. */
+    /* Buzzer feedback (#258). The server sends the notes, not a tone name:
+     * "freq:ms" steps, comma separated, 0 Hz meaning a rest. Sized for the
+     * eight notes the contract allows. */
     bool    beep_enabled;         /* server config: sound the piezo on an input */
-    char    beep_tone[12];        /* server config: click | beep | chirp | low */
+    char    beep_pattern[96];     /* server config: e.g. "1800:30,2600:40" */
     int32_t beep_volume;          /* server config: drive strength, 0-100 percent */
 #endif
     /* Deck cache nav state (SD-card decks; deck.h). The RTC copy in main.c is
@@ -166,9 +167,9 @@ void rest_config_set_button_wake_s(int32_t s);
 void rest_config_set_touch(bool enabled, int32_t linger_s);
 #endif
 #ifdef BOARD_BUZZER_PIN
-/* Buzzer feedback (#258). An empty/NULL tone leaves the stored one alone,
- * so a config block that omits it cannot blank the name. */
-void rest_config_set_beep(bool enabled, const char *tone, int32_t volume);
+/* Buzzer feedback (#258). An empty/NULL pattern leaves the stored one alone,
+ * so a config block that omits it cannot blank the tone. */
+void rest_config_set_beep(bool enabled, const char *pattern, int32_t volume);
 #endif
 
 /* Deck nav state mutators (NULL leaves a field unchanged; "" clears). RAM

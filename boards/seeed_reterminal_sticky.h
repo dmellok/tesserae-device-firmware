@@ -114,6 +114,12 @@
 #define BOARD_SHT4X_I2C_ADDR       0x44
 
 /* Front buttons. The AI/power key doubles as the wake button. */
+/* Passive buzzer, driven by LEDC PWM: frequency sets the pitch, duty sets the
+ * loudness (server #258). NOT the same pin as the reTerminal E series, which
+ * puts it on 45 -- this is per Seeed's own Sticky hardware overview, whose
+ * button pins (4/5/6) match the three defined just below. */
+#define BOARD_BUZZER_PIN           48
+
 #define BOARD_BTN_REFRESH_PIN  4    /* AI / power */
 #define BOARD_BTN_LEFT_PIN     5    /* up   */
 #define BOARD_BTN_RIGHT_PIN    6    /* down */

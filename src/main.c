@@ -2443,17 +2443,17 @@ void app_main(void)
 #ifdef BOARD_BUZZER_PIN
             /* Buzzer config, same channel and the same absent-means-keep rule
              * as the touch fields above (#258). */
-            if (so.beep_enabled >= 0 || so.beep_volume >= 0 || so.beep_tone[0]) {
+            if (so.beep_enabled >= 0 || so.beep_volume >= 0 || so.beep_pattern[0]) {
                 const rest_config_t *bc = rest_config_get();
                 bool    en  = (so.beep_enabled >= 0) ? (so.beep_enabled != 0) : bc->beep_enabled;
                 int32_t vol = (so.beep_volume  >= 0) ? so.beep_volume        : bc->beep_volume;
-                const char *tone = so.beep_tone[0] ? so.beep_tone : bc->beep_tone;
+                const char *pat = so.beep_pattern[0] ? so.beep_pattern : bc->beep_pattern;
                 if (en != bc->beep_enabled || vol != bc->beep_volume ||
-                    strcmp(tone, bc->beep_tone) != 0) {
-                    rest_config_set_beep(en, tone, vol);
+                    strcmp(pat, bc->beep_pattern) != 0) {
+                    rest_config_set_beep(en, pat, vol);
                     cfg_dirty = true;
                     ESP_LOGI(TAG, "beep config: enabled=%d tone=%s volume=%ld",
-                             en, rest_config_get()->beep_tone,
+                             en, rest_config_get()->beep_pattern,
                              (long)rest_config_get()->beep_volume);
                 }
             }

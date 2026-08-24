@@ -31,31 +31,47 @@ static const char *TAG = "buzzer";
  * the scale below is the audible part of it. */
 #define BUZZER_DUTY_FULL  (BUZZER_DUTY_MAX / 2)
 
-/* One tone is up to two steps, so a chirp can rise without needing a
- * sequencer. Frequencies sit in the 1.2-2.6 kHz band where a small piezo is
- * loudest; a step with freq 0 is unused. */
-typedef struct {
-    const char *name;
-    struct { int freq; int ms; } step[2];
-} buzzer_tone_t;
+/* Envelope the device enforces regardless of what the server sends. The
+ * pattern plays on the input path, blocking it, so the ceiling is about how
+ * long someone will stand with a finger on the glass; the frequency band is
+ * what a small piezo actually reproduces. The server validates the same
+ * bounds before storing, and neither side trusts the other. */
+#define BUZZER_MAX_NOTES     8
+#define BUZZER_MAX_TOTAL_MS  1000
+#define BUZZER_NOTE_MAX_MS   500
+#define BUZZER_FREQ_MIN_HZ   200
+#define BUZZER_FREQ_MAX_HZ   8000
 
-static const buzzer_tone_t TONES[] = {
-    { "click", { { 2400, 12 }, { 0, 0 } } },
-    { "beep",  { { 2000, 60 }, { 0, 0 } } },
-    { "chirp", { { 1800, 30 }, { 2600, 40 } } },
-    { "low",   { { 1200, 60 }, { 0, 0 } } },
-};
-#define TONE_DEFAULT 1   /* "beep" */
+/* Played when the server sends nothing usable: still feedback, which is the
+ * point of the feature, rather than a silent panel and a puzzled user. */
+#define BUZZER_FALLBACK      "2000:60"
 
 static bool s_ready;
 
-static const buzzer_tone_t *tone_by_name(const char *name)
+/* Read one "freq:ms" note, returning the character after it, or NULL at the
+ * end of the string / on malformed input. Values clamp rather than reject: a
+ * note that is merely too long or too shrill should still sound. */
+static const char *parse_note(const char *p, int *freq, int *ms)
 {
-    if (name && name[0]) {
-        for (size_t i = 0; i < sizeof TONES / sizeof TONES[0]; i++)
-            if (strcmp(TONES[i].name, name) == 0) return &TONES[i];
+    char *end = NULL;
+    long f = strtol(p, &end, 10);
+    if (end == p || *end != ':') return NULL;
+    p = end + 1;
+    long d = strtol(p, &end, 10);
+    if (end == p) return NULL;
+
+    if (f != 0) {
+        if (f < BUZZER_FREQ_MIN_HZ) f = BUZZER_FREQ_MIN_HZ;
+        if (f > BUZZER_FREQ_MAX_HZ) f = BUZZER_FREQ_MAX_HZ;
     }
-    return &TONES[TONE_DEFAULT];
+    if (d < 1) d = 1;
+    if (d > BUZZER_NOTE_MAX_MS) d = BUZZER_NOTE_MAX_MS;
+    *freq = (int)f;
+    *ms   = (int)d;
+
+    while (*end == ' ') end++;
+    if (*end == ',') return end + 1;
+    return (*end == '\0') ? end : NULL;   /* trailing junk: stop cleanly */
 }
 
 static esp_err_t buzzer_start(int freq)
@@ -90,32 +106,50 @@ static void buzzer_duty(int duty)
     ledc_update_duty(BUZZER_MODE, BUZZER_CHANNEL);
 }
 
-void buzzer_play(const char *tone_name, int volume)
+void buzzer_play(const char *pattern, int volume)
 {
     if (volume <= 0) return;
     if (volume > 100) volume = 100;
     int duty = BUZZER_DUTY_FULL * volume / 100;
     if (duty <= 0) return;
 
-    const buzzer_tone_t *tone = tone_by_name(tone_name);
-    for (size_t i = 0; i < sizeof tone->step / sizeof tone->step[0]; i++) {
-        int freq = tone->step[i].freq, ms = tone->step[i].ms;
-        if (freq <= 0 || ms <= 0) break;
+    const char *p = (pattern && pattern[0]) ? pattern : BUZZER_FALLBACK;
+    const char *cursor = p;
+    int played = 0, total_ms = 0;
+    for (int n = 0; cursor && *cursor && n < BUZZER_MAX_NOTES; n++) {
+        int freq = 0, ms = 0;
+        cursor = parse_note(cursor, &freq, &ms);
+        if (!cursor) break;                        /* malformed from here on */
+        if (total_ms + ms > BUZZER_MAX_TOTAL_MS) break;
+        total_ms += ms;
+        if (freq == 0) {                           /* a rest */
+            buzzer_duty(0);
+            vTaskDelay(pdMS_TO_TICKS(ms));
+            played++;
+            continue;
+        }
         if (buzzer_start(freq) != ESP_OK) {
             ESP_LOGW(TAG, "ledc setup failed; no sound this wake");
             return;
         }
         buzzer_duty(duty);
         vTaskDelay(pdMS_TO_TICKS(ms));
+        played++;
     }
     buzzer_duty(0);
+    if (!played && p != BUZZER_FALLBACK) {
+        /* Nothing parsed. A tone the operator typed is worth a log line, then
+         * fall back rather than leave the input unacknowledged. */
+        ESP_LOGW(TAG, "unplayable tone \"%s\"; using the default", p);
+        buzzer_play(BUZZER_FALLBACK, volume);
+    }
 }
 
 void buzzer_feedback(void)
 {
     const rest_config_t *c = rest_config_get();
     if (!c->beep_enabled) return;
-    buzzer_play(c->beep_tone, c->beep_volume);
+    buzzer_play(c->beep_pattern, c->beep_volume);
 }
 
 void buzzer_idle(void)
