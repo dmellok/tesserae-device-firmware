@@ -90,36 +90,39 @@
     /* 14 */ 2, 2, 1, 2, 2, 1, 2, 2, \
     /* 15 */ 2, 2, 2, 2, 2, 2, 2, 2 }
 
-/* Candidate retune of the matrix above, painted side by side with it by the
- * selftest (first half of the scan axis = shipped matrix, second half = this
- * one) and NOT used for normal display until a photo confirms it.
+/* Candidate retune, round 2 (issue #21), painted by the selftest on the
+ * bottom half of the lettered ramp sheet (top half = shipped matrix) and NOT
+ * used for normal display until the reporter's letter ordering confirms it.
  *
- * Derivation: band luminances measured from the issue #21 bring-up photos
- * (selftest bars + palette swatch, two independent shots) fit a per-pass
- * weighted-impulse model at R^2 = 0.94 on this unit. Both photos show the
- * same defects: levels 5-6 dip under 4, 8 lands hot, 9 collapses darker than
- * 4, and 10-11 lag. Those are the rows that lean on late-pass cancellation,
- * which is where per-unit variation bites hardest. The rows below move only
- * levels 4, 6, 8, 9, 10, 11 (seven code flips total; every other row is
- * byte-identical to the shipped matrix) and the model puts the resulting
- * ramp monotone with the dips gone. If the photo agrees, promote this to
- * EPD_PAR_GRAY_MATRIX; if not, the measurement + refit loop repeats. */
+ * Round 1's model-derived candidate fixed the level-9 collapse but overshot
+ * level 6 badly and pinched 7..9 into one tone: its single code flips
+ * realised 2-4x the shift the linear pass-weight model predicted, and
+ * inconsistently between rows, so the glass response is state-dependent and
+ * extrapolating new pass patterns is not trustworthy. This table therefore
+ * invents no patterns at all. The two rounds of photos provide measured
+ * tones for 22 distinct patterns on this unit; each level below is the
+ * already-measured pattern whose tone lands closest to that level's target,
+ * reassigned so the ramp is monotone in MEASURED tone through level 14.
+ * Known residuals: no measured pattern falls between levels 7 and 8 (that
+ * step stays a little wide), and 14/15 stay nearly merged (on this glass
+ * eight straight lightens measures no lighter than the mixed level-13/14
+ * patterns). Full derivation: notes/papers3-gray-matrix-tuning.md. */
 #define EPD_PAR_GRAY_MATRIX_B { \
     /*  0 */ 1, 1, 1, 1, 1, 1, 1, 1, \
     /*  1 */ 2, 2, 1, 1, 2, 1, 1, 1, \
     /*  2 */ 2, 2, 1, 1, 1, 1, 2, 1, \
-    /*  3 */ 2, 2, 1, 1, 2, 2, 1, 1, \
-    /*  4 */ 2, 2, 2, 1, 1, 1, 2, 1, \
-    /*  5 */ 2, 2, 1, 1, 1, 2, 2, 1, \
-    /*  6 */ 2, 2, 1, 1, 2, 2, 1, 2, \
-    /*  7 */ 2, 2, 2, 1, 2, 1, 1, 2, \
-    /*  8 */ 2, 2, 2, 1, 2, 1, 2, 1, \
+    /*  3 */ 2, 2, 2, 1, 1, 1, 2, 1, \
+    /*  4 */ 1, 1, 1, 1, 1, 1, 2, 2, \
+    /*  5 */ 2, 2, 1, 1, 2, 2, 1, 1, \
+    /*  6 */ 2, 2, 1, 1, 2, 1, 1, 2, \
+    /*  7 */ 2, 2, 1, 1, 1, 1, 2, 2, \
+    /*  8 */ 2, 2, 2, 2, 1, 1, 2, 1, \
     /*  9 */ 2, 1, 2, 1, 1, 1, 2, 2, \
-    /* 10 */ 2, 2, 1, 2, 1, 1, 2, 2, \
-    /* 11 */ 1, 1, 2, 1, 2, 1, 2, 2, \
-    /* 12 */ 2, 2, 1, 1, 2, 1, 2, 2, \
-    /* 13 */ 2, 1, 1, 2, 2, 1, 2, 2, \
-    /* 14 */ 2, 2, 1, 2, 2, 1, 2, 2, \
+    /* 10 */ 2, 2, 2, 2, 2, 1, 2, 1, \
+    /* 11 */ 1, 1, 1, 1, 2, 1, 2, 2, \
+    /* 12 */ 2, 2, 1, 2, 1, 1, 2, 2, \
+    /* 13 */ 2, 2, 1, 1, 2, 1, 2, 2, \
+    /* 14 */ 2, 1, 1, 2, 2, 1, 2, 2, \
     /* 15 */ 2, 2, 2, 2, 2, 2, 2, 2 }
 
 /* VCOM is fixed in this board's supply (-1.6 V per FastEPD's panel def); there

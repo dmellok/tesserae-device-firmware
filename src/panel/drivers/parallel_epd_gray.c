@@ -51,6 +51,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Selftest sheet letters. font8x8_basic.h holds a definition, not a
+ * declaration, and splash.c already owns the one copy of the array. */
+extern char font8x8_basic[128][8];
+
 #include "driver/gpio.h"
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
@@ -300,6 +304,18 @@ static void clear_cycle(void)
 /* The grey waveform: GRAY_PASSES passes over the 4bpp frame. Each source byte
  * holds two pixels and each output byte four, so eight source bytes make four
  * output bytes -- unrolled by four to keep the pointer arithmetic honest. */
+static inline void translate_row(uint8_t *d, const uint8_t *s,
+                                 const uint8_t *hi, const uint8_t *lo)
+{
+    for (int n = 0; n < ROW_BYTES; n += 4) {
+        d[n + 0] = (uint8_t)(hi[s[0]] | lo[s[1]]);
+        d[n + 1] = (uint8_t)(hi[s[2]] | lo[s[3]]);
+        d[n + 2] = (uint8_t)(hi[s[4]] | lo[s[5]]);
+        d[n + 3] = (uint8_t)(hi[s[6]] | lo[s[7]]);
+        s += 8;
+    }
+}
+
 static void gray_passes(const uint8_t *fb)
 {
     for (int pass = 0; pass < GRAY_PASSES; pass++) {
@@ -308,16 +324,8 @@ static void gray_passes(const uint8_t *fb)
         row_start();
         int slot = 0;
         for (int y = 0; y < EPD_HEIGHT; y++) {
-            uint8_t *d = s_line[slot];
-            const uint8_t *s = fb + (size_t)y * SRC_PITCH;
-            for (int n = 0; n < ROW_BYTES; n += 4) {
-                d[n + 0] = (uint8_t)(hi[s[0]] | lo[s[1]]);
-                d[n + 1] = (uint8_t)(hi[s[2]] | lo[s[3]]);
-                d[n + 2] = (uint8_t)(hi[s[4]] | lo[s[5]]);
-                d[n + 3] = (uint8_t)(hi[s[6]] | lo[s[7]]);
-                s += 8;
-            }
-            write_row(d, y != 0);
+            translate_row(s_line[slot], fb + (size_t)y * SRC_PITCH, hi, lo);
+            write_row(s_line[slot], y != 0);
             slot ^= 1;
         }
         pass_end();
@@ -345,33 +353,73 @@ static void gray_passes_bands(const uint8_t *level_per_row)
     }
 }
 
-#ifdef EPD_PAR_GRAY_MATRIX_B
-/* As gray_passes_bands(), but the first half of each row is driven by the
- * shipped matrix and the second half by the candidate, so one selftest frame
- * compares the two tunings on the same glass under the same light. */
-static void gray_passes_bands_ab(const uint8_t *level_per_row)
+/* ------------------------------------------------------------------ */
+/* Selftest sheet: scrambled, lettered ramp bars                       */
+/* ------------------------------------------------------------------ */
+
+/* 16 vertical bars, one per grey level, in bit-reversed level order so no two
+ * numerically adjacent levels sit next to each other on the glass. Letters
+ * A..P (screen position order) sit under each bar on a white strip, so a
+ * human can report the ramp as a letter ordering, darkest to lightest. That
+ * ordinal report is immune to the photo lighting gradients that bias
+ * luminance measurement, and the scramble turns any residual gradient into
+ * noise rather than bias. Top half of the sheet is the shipped matrix,
+ * bottom half the candidate (when the board defines one). */
+#define SHEET_BARS     16
+#define SHEET_BAR_W    (EPD_WIDTH / SHEET_BARS)
+#define SHEET_STRIP_H  44
+#define SHEET_DIV_H    4
+#define SHEET_GLYPH_S  4                        /* font8x8 scale: 32 px glyphs */
+
+static const uint8_t k_sheet_perm[SHEET_BARS] =
+    { 0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15 };
+
+/* Set one 4bpp pixel in a source row (high nibble = left pixel of the pair). */
+static void sheet_px(uint8_t *row, int x, uint8_t g)
 {
-    const int half = ROW_BYTES / 2;
+    uint8_t *b = &row[x >> 1];
+    if (x & 1) *b = (uint8_t)((*b & 0xF0) | g);
+    else       *b = (uint8_t)((*b & 0x0F) | (uint8_t)(g << 4));
+}
+
+/* One frame of the sheet. bars_src is the (single) source row every bar row
+ * shares; strip_src is SHEET_STRIP_H rows of letter strip, reused for both
+ * strips; black_src is the divider row. */
+static void gray_passes_sheet(const uint8_t *bars_src, const uint8_t *strip_src,
+                              const uint8_t *black_src)
+{
+    const int ts0 = (EPD_HEIGHT - 2 * SHEET_STRIP_H - SHEET_DIV_H) / 2;
+    const int ts1 = ts0 + SHEET_STRIP_H;        /* top strip end / divider   */
+    const int dv1 = ts1 + SHEET_DIV_H;          /* divider end / bottom bars */
+    const int bs0 = EPD_HEIGHT - SHEET_STRIP_H; /* bottom strip start        */
+
     for (int pass = 0; pass < GRAY_PASSES; pass++) {
         const uint8_t *hi_a = s_code_hi + pass * 256;
         const uint8_t *lo_a = s_code_lo + pass * 256;
-        const uint8_t *hi_b = s_code_hi_b + pass * 256;
-        const uint8_t *lo_b = s_code_lo_b + pass * 256;
+        const uint8_t *hi_b = hi_a, *lo_b = lo_a;
+#ifdef EPD_PAR_GRAY_MATRIX_B
+        if (s_code_hi_b) {
+            hi_b = s_code_hi_b + pass * 256;
+            lo_b = s_code_lo_b + pass * 256;
+        }
+#endif
         row_start();
         int slot = 0;
         for (int y = 0; y < EPD_HEIGHT; y++) {
-            uint8_t g = (uint8_t)(level_per_row[y] & 0x0F);
-            uint8_t src = (uint8_t)((g << 4) | g);
-            memset(s_line[slot], (uint8_t)(hi_a[src] | lo_a[src]), half);
-            memset(s_line[slot] + half, (uint8_t)(hi_b[src] | lo_b[src]),
-                   ROW_BYTES - half);
+            const uint8_t *src;
+            if      (y < ts0) src = bars_src;
+            else if (y < ts1) src = strip_src + (size_t)(y - ts0) * SRC_PITCH;
+            else if (y < dv1) src = black_src;
+            else if (y < bs0) src = bars_src;
+            else              src = strip_src + (size_t)(y - bs0) * SRC_PITCH;
+            translate_row(s_line[slot], src,
+                          y < dv1 ? hi_a : hi_b, y < dv1 ? lo_a : lo_b);
             write_row(s_line[slot], y != 0);
             slot ^= 1;
         }
         pass_end();
     }
 }
-#endif
 
 /* ------------------------------------------------------------------ */
 /* Driver entry points                                                */
@@ -493,31 +541,67 @@ static void par_clear(uint8_t color)
     ESP_LOGI(TAG, "clear to level %u done", g);
 }
 
-/* Diagnostic: 16 horizontal bands, black at the top through white at the
- * bottom. Even spacing means the matrix is tuned for this glass; a band that
- * collapses into its neighbour is the entry to retune. */
+/* Diagnostic: the scrambled, lettered ramp sheet (see gray_passes_sheet).
+ * If the matrix is tuned for this glass, sorting the bars darkest to
+ * lightest reads out the letter sequence logged below; any deviation names
+ * the exact levels to retune, with no photometry involved. */
 static void par_show_color_bars(void)
 {
-    uint8_t rows[EPD_HEIGHT];
-    const int band = EPD_HEIGHT / 16;
-    for (int y = 0; y < EPD_HEIGHT; y++) {
-        int g = y / band;
-        rows[y] = (uint8_t)(g > 15 ? 15 : g);
-    }
-    power(true);
-    clear_cycle();
-#ifdef EPD_PAR_GRAY_MATRIX_B
-    if (s_code_hi_b) {
-        gray_passes_bands_ab(rows);
+    uint8_t bars_src[SRC_PITCH];
+    uint8_t black_src[SRC_PITCH];
+    uint8_t *strip = malloc((size_t)SHEET_STRIP_H * SRC_PITCH);
+
+    if (!strip) {                       /* fall back to the plain ramp */
+        uint8_t rows[EPD_HEIGHT];
+        const int band = EPD_HEIGHT / 16;
+        for (int y = 0; y < EPD_HEIGHT; y++) {
+            int g = y / band;
+            rows[y] = (uint8_t)(g > 15 ? 15 : g);
+        }
+        power(true);
+        clear_cycle();
+        gray_passes_bands(rows);
         uniform_passes(CODE_NEUTRAL, 1);
-        ESP_LOGI(TAG, "grey ramp done (split: first half of each row = "
-                      "shipped matrix, second half = candidate B)");
+        ESP_LOGI(TAG, "grey ramp done (no RAM for the lettered sheet)");
         return;
     }
-#endif
-    gray_passes_bands(rows);
+
+    for (int x = 0; x < EPD_WIDTH; x++)
+        sheet_px(bars_src, x, k_sheet_perm[x / SHEET_BAR_W]);
+    memset(black_src, 0x00, sizeof black_src);          /* level 0 divider */
+    memset(strip, 0xFF, (size_t)SHEET_STRIP_H * SRC_PITCH);  /* white strip */
+
+    const int gx0 = (SHEET_BAR_W - 8 * SHEET_GLYPH_S) / 2;
+    const int gy0 = (SHEET_STRIP_H - 8 * SHEET_GLYPH_S) / 2;
+    for (int pos = 0; pos < SHEET_BARS; pos++) {
+        const char *g = font8x8_basic['A' + pos];       /* LSB = leftmost */
+        for (int row = 0; row < 8; row++)
+            for (int col = 0; col < 8; col++) {
+                if (!((g[row] >> col) & 1)) continue;
+                for (int dy = 0; dy < SHEET_GLYPH_S; dy++) {
+                    uint8_t *r = strip +
+                        (size_t)(gy0 + row * SHEET_GLYPH_S + dy) * SRC_PITCH;
+                    for (int dx = 0; dx < SHEET_GLYPH_S; dx++)
+                        sheet_px(r, pos * SHEET_BAR_W + gx0 +
+                                    col * SHEET_GLYPH_S + dx, 0);
+                }
+            }
+    }
+
+    power(true);
+    clear_cycle();
+    gray_passes_sheet(bars_src, strip, black_src);
     uniform_passes(CODE_NEUTRAL, 1);
-    ESP_LOGI(TAG, "grey ramp done");
+    free(strip);
+
+    ESP_LOGI(TAG, "lettered ramp sheet done: bars A..P left to right = levels "
+                  "0,8,4,12,2,10,6,14,1,9,5,13,3,11,7,15");
+    ESP_LOGI(TAG, "a perfect ramp sorts darkest->lightest as "
+                  "A I E M C K G O B J F N D L H P"
+#ifdef EPD_PAR_GRAY_MATRIX_B
+                  " (top half = shipped matrix, bottom half = candidate)"
+#endif
+                  );
 }
 
 static void par_show_palette_sweep(void) { par_show_color_bars(); }
