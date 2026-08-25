@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Added support for the Seeed XIAO ePaper Display Board EE05 with the 2.13"
+  quadruple-colour panel (black, white, yellow and red; issue #29). This is the
+  first four-colour panel here that takes a single interleaved colour buffer
+  rather than separate ink planes, so it arrives with a new JD79676 panel
+  driver. The panel's controller drives 128 columns but only 122 reach the
+  glass; the server is told about the hidden columns and pads the frame, so the
+  firmware streams it unchanged. Not yet confirmed on physical hardware; flash
+  the `seeed-ee05-selftest` build first. Its test pattern doubles as the
+  bring-up questionnaire: which edge swallows the hidden columns, whether the
+  colour order is right, and which way the rows run can all be read off a
+  photo of the glass.
 - Displays in the reTerminal E series can now beep when you touch them or press
   a button. E-ink takes seconds to repaint, so until it does there is nothing to
   tell the person standing at the display that it heard them. The buzzer on the
