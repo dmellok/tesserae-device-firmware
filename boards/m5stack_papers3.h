@@ -90,7 +90,7 @@
     /* 14 */ 2, 2, 1, 2, 2, 1, 2, 2, \
     /* 15 */ 2, 2, 2, 2, 2, 2, 2, 2 }
 
-/* Candidate retune, round 2 (issue #21), painted by the selftest on the
+/* Candidate retune, round 3 (issue #21), painted by the selftest on the
  * bottom half of the lettered ramp sheet (top half = shipped matrix) and NOT
  * used for normal display until the reporter's letter ordering confirms it.
  *
@@ -99,25 +99,34 @@
  * realised 2-4x the shift the linear pass-weight model predicted, and
  * inconsistently between rows, so the glass response is state-dependent and
  * extrapolating new pass patterns is not trustworthy. This table therefore
- * invents no patterns at all. The two rounds of photos provide measured
- * tones for 22 distinct patterns on this unit; each level below is the
- * already-measured pattern whose tone lands closest to that level's target,
+ * invents no patterns at all: every row is an already-measured pattern,
  * reassigned so the ramp is monotone in MEASURED tone through level 14.
+ *
+ * Round 2 (the reporter's per-half photo, both his ODS and an independent
+ * measurement of the same image) confirmed that reassignment but left three
+ * misorders, fixed here: levels 4/5 swapped (their round-2 tones were 109.8
+ * vs 103.8, inverted), and 7/8/9 rotated one step so their tones ascend
+ * (124.8 / 150.8 / 154.0; the round-2 assignment read 154.0 / 124.8 /
+ * 150.8). The reporter's own on-device edit tried the opposite 7/8/9
+ * rotation, and his eyes-only ordering (level 9 landing right after 6)
+ * is what pinned down the correct direction. Not taken from his diff:
+ * an 11/12 swap (the two datasets disagree on that pair by under 1%,
+ * i.e. it is a tie) and a 13/14 swap he tried and reverted himself.
  * Known residuals: no measured pattern falls between levels 7 and 8 (that
- * step stays a little wide), and 14/15 stay nearly merged (on this glass
- * eight straight lightens measures no lighter than the mixed level-13/14
- * patterns). Full derivation: notes/papers3-gray-matrix-tuning.md. */
+ * step stays a little wide), and 13/14 stay nearly merged (on this glass
+ * they measure inside noise of each other, likely its resolution limit).
+ * Full derivation: notes/papers3-gray-matrix-tuning.md. */
 #define EPD_PAR_GRAY_MATRIX_B { \
     /*  0 */ 1, 1, 1, 1, 1, 1, 1, 1, \
     /*  1 */ 2, 2, 1, 1, 2, 1, 1, 1, \
     /*  2 */ 2, 2, 1, 1, 1, 1, 2, 1, \
     /*  3 */ 2, 2, 2, 1, 1, 1, 2, 1, \
-    /*  4 */ 1, 1, 1, 1, 1, 1, 2, 2, \
-    /*  5 */ 2, 2, 1, 1, 2, 2, 1, 1, \
+    /*  4 */ 2, 2, 1, 1, 2, 2, 1, 1, \
+    /*  5 */ 1, 1, 1, 1, 1, 1, 2, 2, \
     /*  6 */ 2, 2, 1, 1, 2, 1, 1, 2, \
-    /*  7 */ 2, 2, 1, 1, 1, 1, 2, 2, \
-    /*  8 */ 2, 2, 2, 2, 1, 1, 2, 1, \
-    /*  9 */ 2, 1, 2, 1, 1, 1, 2, 2, \
+    /*  7 */ 2, 2, 2, 2, 1, 1, 2, 1, \
+    /*  8 */ 2, 1, 2, 1, 1, 1, 2, 2, \
+    /*  9 */ 2, 2, 1, 1, 1, 1, 2, 2, \
     /* 10 */ 2, 2, 2, 2, 2, 1, 2, 1, \
     /* 11 */ 1, 1, 1, 1, 2, 1, 2, 2, \
     /* 12 */ 2, 2, 1, 2, 1, 1, 2, 2, \

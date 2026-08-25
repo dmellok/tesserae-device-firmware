@@ -370,9 +370,14 @@ static void gray_passes_bands(const uint8_t *level_per_row)
 #define SHEET_STRIP_H  44
 #define SHEET_DIV_H    4
 #define SHEET_GLYPH_S  4                        /* font8x8 scale: 32 px glyphs */
+#define SHEET_GUTTER_W 6                        /* white margin, ordered sheet */
+#define SHEET_DWELL_MS 45000                    /* measurement-sheet hold */
 
 static const uint8_t k_sheet_perm[SHEET_BARS] =
     { 0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15 };
+
+static const uint8_t k_sheet_level_order[SHEET_BARS] =
+    { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
 
 /* Set one 4bpp pixel in a source row (high nibble = left pixel of the pair). */
 static void sheet_px(uint8_t *row, int x, uint8_t g)
@@ -541,10 +546,59 @@ static void par_clear(uint8_t color)
     ESP_LOGI(TAG, "clear to level %u done", g);
 }
 
-/* Diagnostic: the scrambled, lettered ramp sheet (see gray_passes_sheet).
- * If the matrix is tuned for this glass, sorting the bars darkest to
- * lightest reads out the letter sequence logged below; any deviation names
- * the exact levels to retune, with no photometry involved. */
+/* Build one sheet's shared bar row and letter strip. order[] is the grey
+ * level painted at each of the 16 bar positions, letters[] the glyph printed
+ * beneath each. With gutters, a white margin flanks every bar so each tone is
+ * judged against white instead of against its neighbour. */
+static void sheet_build(uint8_t *bars_src, uint8_t *strip,
+                        const uint8_t *order, const char *letters,
+                        bool gutters)
+{
+    for (int x = 0; x < EPD_WIDTH; x++) {
+        int in = x % SHEET_BAR_W;
+        bool gap = gutters && (in < SHEET_GUTTER_W ||
+                               in >= SHEET_BAR_W - SHEET_GUTTER_W);
+        sheet_px(bars_src, x, gap ? EPD_COL_WHITE : order[x / SHEET_BAR_W]);
+    }
+    memset(strip, 0xFF, (size_t)SHEET_STRIP_H * SRC_PITCH);  /* white strip */
+
+    const int gx0 = (SHEET_BAR_W - 8 * SHEET_GLYPH_S) / 2;
+    const int gy0 = (SHEET_STRIP_H - 8 * SHEET_GLYPH_S) / 2;
+    for (int pos = 0; pos < SHEET_BARS; pos++) {
+        const char *g = font8x8_basic[(unsigned char)letters[pos]];
+        for (int row = 0; row < 8; row++)       /* LSB = leftmost */
+            for (int col = 0; col < 8; col++) {
+                if (!((g[row] >> col) & 1)) continue;
+                for (int dy = 0; dy < SHEET_GLYPH_S; dy++) {
+                    uint8_t *r = strip +
+                        (size_t)(gy0 + row * SHEET_GLYPH_S + dy) * SRC_PITCH;
+                    for (int dx = 0; dx < SHEET_GLYPH_S; dx++)
+                        sheet_px(r, pos * SHEET_BAR_W + gx0 +
+                                    col * SHEET_GLYPH_S + dx, 0);
+                }
+            }
+    }
+}
+
+static void sheet_paint(const uint8_t *bars_src, const uint8_t *strip,
+                        const uint8_t *black_src)
+{
+    power(true);
+    clear_cycle();
+    gray_passes_sheet(bars_src, strip, black_src);
+    uniform_passes(CODE_NEUTRAL, 1);
+}
+
+/* Diagnostic, two frames. First the scrambled, lettered ramp sheet (see
+ * gray_passes_sheet): if the matrix is tuned for this glass, sorting the
+ * bars darkest to lightest reads out the letter sequence logged below, and
+ * any deviation names the exact levels to retune, with no photometry
+ * involved. Then, after a dwell, the same bars in level order with white
+ * gutters, which is the "does it look finished" view (#21): a monotone
+ * ramp is easy to see there but useless for measurement, which is why it
+ * comes second and the scramble exists at all. Each ordered bar keeps the
+ * letter naming its level on the scrambled sheet, so "bar J" is level 9 on
+ * both, and the ordered strip therefore spells the ideal answer. */
 static void par_show_color_bars(void)
 {
     uint8_t bars_src[SRC_PITCH];
@@ -566,35 +620,11 @@ static void par_show_color_bars(void)
         return;
     }
 
-    for (int x = 0; x < EPD_WIDTH; x++)
-        sheet_px(bars_src, x, k_sheet_perm[x / SHEET_BAR_W]);
     memset(black_src, 0x00, sizeof black_src);          /* level 0 divider */
-    memset(strip, 0xFF, (size_t)SHEET_STRIP_H * SRC_PITCH);  /* white strip */
 
-    const int gx0 = (SHEET_BAR_W - 8 * SHEET_GLYPH_S) / 2;
-    const int gy0 = (SHEET_STRIP_H - 8 * SHEET_GLYPH_S) / 2;
-    for (int pos = 0; pos < SHEET_BARS; pos++) {
-        const char *g = font8x8_basic['A' + pos];       /* LSB = leftmost */
-        for (int row = 0; row < 8; row++)
-            for (int col = 0; col < 8; col++) {
-                if (!((g[row] >> col) & 1)) continue;
-                for (int dy = 0; dy < SHEET_GLYPH_S; dy++) {
-                    uint8_t *r = strip +
-                        (size_t)(gy0 + row * SHEET_GLYPH_S + dy) * SRC_PITCH;
-                    for (int dx = 0; dx < SHEET_GLYPH_S; dx++)
-                        sheet_px(r, pos * SHEET_BAR_W + gx0 +
-                                    col * SHEET_GLYPH_S + dx, 0);
-                }
-            }
-    }
-
-    power(true);
-    clear_cycle();
-    gray_passes_sheet(bars_src, strip, black_src);
-    uniform_passes(CODE_NEUTRAL, 1);
-    free(strip);
-
-    ESP_LOGI(TAG, "lettered ramp sheet done: bars A..P left to right = levels "
+    sheet_build(bars_src, strip, k_sheet_perm, "ABCDEFGHIJKLMNOP", false);
+    sheet_paint(bars_src, strip, black_src);
+    ESP_LOGI(TAG, "scrambled sheet up: bars A..P left to right = levels "
                   "0,8,4,12,2,10,6,14,1,9,5,13,3,11,7,15");
     ESP_LOGI(TAG, "a perfect ramp sorts darkest->lightest as "
                   "A I E M C K G O B J F N D L H P"
@@ -602,6 +632,18 @@ static void par_show_color_bars(void)
                   " (top half = shipped matrix, bottom half = candidate)"
 #endif
                   );
+    ESP_LOGI(TAG, "ordered sheet follows in %d s", SHEET_DWELL_MS / 1000);
+
+    power(false);                       /* rails down across the dwell */
+    vTaskDelay(pdMS_TO_TICKS(SHEET_DWELL_MS));
+
+    sheet_build(bars_src, strip, k_sheet_level_order, "AIEMCKGOBJFNDLHP",
+                true);
+    sheet_paint(bars_src, strip, black_src);
+    free(strip);
+
+    ESP_LOGI(TAG, "ordered sheet done: levels 0..15 left to right, white "
+                  "gutters; a tuned ramp darkens strictly right to left");
 }
 
 static void par_show_palette_sweep(void) { par_show_color_bars(); }

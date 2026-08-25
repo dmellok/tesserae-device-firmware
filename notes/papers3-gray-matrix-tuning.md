@@ -137,3 +137,42 @@ cost:
    full from-gray x to-gray transition matrices, 38-57 phases in GC16 mode.
    Fixed exactly this non-monotonic symptom in epdiy issue #171. Does not
    compress into 8 passes; long-term option.
+
+## Round-2 result and candidate C2 (2026-08-26)
+
+The reporter's photo (comment 5416708006, updated with per-half data +
+v2 ODS in 5417662747) confirmed candidate C: his bottom-half ordering and
+an independent per-half measurement of the same photo agree letter for
+letter except the 11/12 pair (both datasets < 1% apart there: a tie).
+Lighting was ruled out by anchor bars: the six patterns identical in both
+halves moved <= 3 luminance units top-to-bottom, the retuned ones 16-28.
+
+Bottom-half tones (0-255 luminance, independent measurement):
+
+```
+level:   0     1     2     3     4     5     6     7     8     9    10    11    12    13    14    15
+tone :  29.6  58.6  67.2 101.9 109.8 103.8 109.8 154.0 124.8 150.8 155.8 165.5 166.5 181.5 179.1 192.9
+```
+
+Misorders: 4/5 inverted, 7/8/9 out of order (needs 124.8 / 150.8 / 154.0,
+i.e. patterns rotated one step: 7 takes old 8's, 8 old 9's, 9 old 7's),
+13/14 inside noise. The reporter hand-edited the matrix and flashed it:
+his 4/5 swap matches; his 7/8/9 rotation went the OPPOSITE way (9's
+pattern to 7), and his eyes-only ordering shows the resulting signature
+(level 9 right after 6), which is what pinned the correct direction. His
+11/12 swap chases the tie; his 13/14 swap he reverted himself ("still
+inverted"): that pair is likely this glass's resolution limit.
+
+C2 (in the board header as of this commit) = C with 4/5 swapped and 7/8/9
+rotated the ascending way. Nothing else moved. Residuals accepted: the
+124.8 -> 150.8 hole between levels 7 and 8 (no measured pattern falls in
+it; only a new waveform could) and the 13/14 tie.
+
+## Verdict loop, round 3: ordered sheet added
+
+Per the reporter's request, the selftest now paints two frames: the
+scrambled measurement sheet as before, then after 45 s (rails down during
+the dwell) the same bars in level order with white gutters, for the
+"does it look finished" check by eye. Ordered bars keep their scrambled-
+sheet letters (strip spells A I E M C K G O B J F N D L H P), so bar
+names stay stable across both sheets.
