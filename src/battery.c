@@ -52,14 +52,9 @@ bool power_battery_critical(void)
 
 bool power_can_stay_awake(void)
 {
-#ifdef BOARD_MAINS_POWERED
-    /* The board says the supply sustains continuous Wi-Fi. Believe it unless a
-     * cell we can actually see says otherwise -- that covers the mains panel
-     * whose supply was unplugged, which is the case worth retracting for. */
+    /* Advertised by every board; the operator decides (see battery.h). A cell
+     * we can actually see running down is the one thing that retracts it. */
     return !power_battery_critical();
-#else
-    return false;
-#endif
 }
 
 #if defined(BOARD_BATTERY_GAUGE_I2C)

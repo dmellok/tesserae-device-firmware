@@ -525,9 +525,10 @@ static void add_touch3_capability(cJSON *o)
  * Deliberately NOT part of the touch capability block it used to live in. It
  * used to be hardcoded true there, which meant two wrong things at once: only
  * the one board with a digitizer ever advertised it, and that board claimed the
- * capability whatever it was plugged into. It is a statement about POWER (see
- * power_can_stay_awake), it belongs to every board, and it has to be re-sent on
- * every heartbeat because a mains panel can be unplugged mid-session.
+ * capability whatever it was plugged into. Every board advertises it now (see
+ * power_can_stay_awake for why the operator, not the board header, decides),
+ * and it has to be re-sent on every heartbeat because a visible cell running
+ * down retracts it mid-session.
  *
  * Always emitted explicitly, never omitted. The server treats an absent key as
  * "no new information" and keeps its last answer, so an explicit false is the

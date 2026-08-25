@@ -47,27 +47,24 @@ int battery_read_pct(void);
 
 /* ---------- always-on eligibility ---------- */
 
-/* True when this board may advertise `can_stay_awake` to the server, i.e. when
- * it is running from a supply that can sustain a continuous Wi-Fi association.
+/* True when this device may advertise `can_stay_awake` to the server, which
+ * every board now does unless a visible cell is running down.
  *
- * This is a statement about POWER, not about the SoC. Every board here is
- * capable of staying awake; almost none of them should, because they are
- * battery panels and a held association flattens the pack in hours.
+ * The capability used to be a board-header assertion (BOARD_MAINS_POWERED,
+ * E1003 only), on the theory that only a board KNOWN to be mains-wired should
+ * offer a mode that flattens a battery in hours. But there is no VBUS or
+ * mains sense anywhere in this firmware -- the one signal that looks like it
+ * would do, usb_serial_jtag_is_connected(), detects a USB DATA HOST, not
+ * power, and a panel on a wall charger reports disconnected. Since the
+ * firmware cannot tell a wall-wart from a cell, the choice belongs to the
+ * operator, who can: any panel may be set to stay awake, and the setting
+ * stays off by default.
  *
- * There is no VBUS or mains sense anywhere in this firmware, and the one signal
- * that looks like it would do -- usb_serial_jtag_is_connected() -- detects a USB
- * DATA HOST, not power. A panel on a wall charger reports disconnected, which is
- * exactly the deployment always-on exists for, so it is the wrong signal and is
- * deliberately not used here.
- *
- * So the base answer is a board-header assertion, BOARD_MAINS_POWERED, meaning
- * "this board is wired such that continuous Wi-Fi is sustainable". Runtime can
- * only ever RETRACT it: if a cell is visible and is running down, we stop
- * advertising the capability and fall back to deep sleep whatever the server
- * thinks, because protecting the pack outranks honouring the setting.
- *
- * A board that does not define BOARD_MAINS_POWERED always answers false, so
- * adding always-on to a panel is a deliberate one-line change to its header. */
+ * Runtime still RETRACTS the capability: if a cell is visible and drops below
+ * AWAKE_BATTERY_MIN_PCT we stop advertising it and fall back to deep sleep
+ * whatever the server thinks, because protecting the pack outranks honouring
+ * the setting. So the worst an inadvisable always-on costs a battery panel is
+ * charge down to that floor, not the whole pack. */
 bool power_can_stay_awake(void);
 
 /* True once a visible cell has fallen far enough that always-on must stop.

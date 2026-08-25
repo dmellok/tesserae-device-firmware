@@ -198,8 +198,9 @@
 /* MCU tier: ESP32-S3 + 8 MB octal PSRAM (M5 spec sheet). */
 #define MCU_TIER_S3_OCTAL_PSRAM 1
 
-/* Battery-powered handheld, so no BOARD_MAINS_POWERED: always-on is not on
- * offer for a 1800 mAh cell. */
+/* Battery-powered handheld (1800 mAh cell). Stay-awake is offered anyway,
+ * like every board: the operator decides, and a visible cell below the
+ * critical floor retracts it (see power_can_stay_awake in battery.h). */
 
 /* Selected panel driver: Family F, raw parallel glass in 16-level grey. */
 #define PANEL_DRIVER_PARALLEL_EPD_GRAY 1
