@@ -69,57 +69,31 @@
  * lightens. Assumes the panel starts from white, which the driver's clear
  * cycle guarantees.
  *
- * This is FastEPD's u8M5Matrix, measured on this glass at 20 C. It is the one
- * table to reach for if the ramp comes out uneven: an entry that is 1 where it
- * should be 2 shows up as two adjacent bands collapsing into one tone. */
+ * Retuned from FastEPD's u8M5Matrix over the issue #21 measurement rounds:
+ * every row is a pattern already measured on this glass, reassigned so the
+ * ramp is monotone in measured tone. Level 9 deliberately reuses level 8's
+ * pattern: no measured pattern sits reliably between 8 and 10 (realised
+ * tones there shift with surrounding content), so that pair renders as a
+ * tie rather than risking an inversion. Other accepted residuals: the 7-8
+ * step is a little wide, and 13/14 measure inside noise of each other
+ * (likely the glass's resolution limit). Full derivation:
+ * notes/papers3-gray-matrix-tuning.md. */
 #define EPD_PAR_GRAY_MATRIX { \
     /*  0 */ 1, 1, 1, 1, 1, 1, 1, 1, \
     /*  1 */ 2, 2, 1, 1, 2, 1, 1, 1, \
     /*  2 */ 2, 2, 1, 1, 1, 1, 2, 1, \
-    /*  3 */ 2, 2, 1, 1, 2, 2, 1, 1, \
-    /*  4 */ 2, 2, 2, 2, 1, 1, 2, 1, \
-    /*  5 */ 2, 2, 1, 1, 1, 2, 2, 1, \
+    /*  3 */ 2, 2, 2, 1, 1, 1, 2, 1, \
+    /*  4 */ 2, 2, 1, 1, 2, 2, 1, 1, \
+    /*  5 */ 1, 1, 1, 1, 1, 1, 2, 2, \
     /*  6 */ 2, 2, 1, 1, 2, 1, 1, 2, \
-    /*  7 */ 2, 2, 2, 1, 2, 1, 1, 2, \
-    /*  8 */ 2, 2, 2, 2, 2, 1, 2, 1, \
-    /*  9 */ 1, 1, 1, 1, 1, 1, 2, 2, \
-    /* 10 */ 2, 2, 1, 1, 1, 1, 2, 2, \
-    /* 11 */ 1, 1, 1, 1, 2, 1, 2, 2, \
-    /* 12 */ 2, 2, 1, 1, 2, 1, 2, 2, \
-    /* 13 */ 2, 1, 1, 2, 2, 1, 2, 2, \
-    /* 14 */ 2, 2, 1, 2, 2, 1, 2, 2, \
-    /* 15 */ 2, 2, 2, 2, 2, 2, 2, 2 }
-
-/* Candidate retune of the matrix above, painted side by side with it by the
- * selftest (first half of the scan axis = shipped matrix, second half = this
- * one) and NOT used for normal display until a photo confirms it.
- *
- * Derivation: band luminances measured from the issue #21 bring-up photos
- * (selftest bars + palette swatch, two independent shots) fit a per-pass
- * weighted-impulse model at R^2 = 0.94 on this unit. Both photos show the
- * same defects: levels 5-6 dip under 4, 8 lands hot, 9 collapses darker than
- * 4, and 10-11 lag. Those are the rows that lean on late-pass cancellation,
- * which is where per-unit variation bites hardest. The rows below move only
- * levels 4, 6, 8, 9, 10, 11 (seven code flips total; every other row is
- * byte-identical to the shipped matrix) and the model puts the resulting
- * ramp monotone with the dips gone. If the photo agrees, promote this to
- * EPD_PAR_GRAY_MATRIX; if not, the measurement + refit loop repeats. */
-#define EPD_PAR_GRAY_MATRIX_B { \
-    /*  0 */ 1, 1, 1, 1, 1, 1, 1, 1, \
-    /*  1 */ 2, 2, 1, 1, 2, 1, 1, 1, \
-    /*  2 */ 2, 2, 1, 1, 1, 1, 2, 1, \
-    /*  3 */ 2, 2, 1, 1, 2, 2, 1, 1, \
-    /*  4 */ 2, 2, 2, 1, 1, 1, 2, 1, \
-    /*  5 */ 2, 2, 1, 1, 1, 2, 2, 1, \
-    /*  6 */ 2, 2, 1, 1, 2, 2, 1, 2, \
-    /*  7 */ 2, 2, 2, 1, 2, 1, 1, 2, \
-    /*  8 */ 2, 2, 2, 1, 2, 1, 2, 1, \
+    /*  7 */ 2, 2, 2, 2, 1, 1, 2, 1, \
+    /*  8 */ 2, 1, 2, 1, 1, 1, 2, 2, \
     /*  9 */ 2, 1, 2, 1, 1, 1, 2, 2, \
-    /* 10 */ 2, 2, 1, 2, 1, 1, 2, 2, \
-    /* 11 */ 1, 1, 2, 1, 2, 1, 2, 2, \
-    /* 12 */ 2, 2, 1, 1, 2, 1, 2, 2, \
-    /* 13 */ 2, 1, 1, 2, 2, 1, 2, 2, \
-    /* 14 */ 2, 2, 1, 2, 2, 1, 2, 2, \
+    /* 10 */ 2, 2, 2, 2, 2, 1, 2, 1, \
+    /* 11 */ 1, 1, 1, 1, 2, 1, 2, 2, \
+    /* 12 */ 2, 2, 1, 2, 1, 1, 2, 2, \
+    /* 13 */ 2, 2, 1, 1, 2, 1, 2, 2, \
+    /* 14 */ 2, 1, 1, 2, 2, 1, 2, 2, \
     /* 15 */ 2, 2, 2, 2, 2, 2, 2, 2 }
 
 /* VCOM is fixed in this board's supply (-1.6 V per FastEPD's panel def); there
@@ -195,8 +169,9 @@
 /* MCU tier: ESP32-S3 + 8 MB octal PSRAM (M5 spec sheet). */
 #define MCU_TIER_S3_OCTAL_PSRAM 1
 
-/* Battery-powered handheld, so no BOARD_MAINS_POWERED: always-on is not on
- * offer for a 1800 mAh cell. */
+/* Battery-powered handheld (1800 mAh cell). Stay-awake is offered anyway,
+ * like every board: the operator decides, and a visible cell below the
+ * critical floor retracts it (see power_can_stay_awake in battery.h). */
 
 /* Selected panel driver: Family F, raw parallel glass in 16-level grey. */
 #define PANEL_DRIVER_PARALLEL_EPD_GRAY 1

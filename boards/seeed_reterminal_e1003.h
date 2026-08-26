@@ -166,23 +166,10 @@
  * there is no always-on GPIO here.
  */
 
-/* This panel may advertise can_stay_awake, i.e. it is expected to run from a
- * supply that sustains a continuous Wi-Fi association.
- *
- * NOT a statement that the SoC is capable -- every board here is. It is a
- * statement about POWER, and it is the reason this board and not the others:
- * the E1003 is the interactive wall panel, and always-on is what makes a tap
- * land in about a second instead of whenever it next happens to wake.
- *
- * The firmware can only retract this, never grant it: if the cell is visible
- * and drops below AWAKE_BATTERY_MIN_PCT the capability is withdrawn and the
- * device returns to deep sleep regardless of server config (see
- * power_can_stay_awake). So asserting it on a panel that turns out to be on
- * battery costs charge down to that floor, not the whole pack.
- *
- * Adding always-on to another panel is exactly this one line. Nothing else in
- * the run loop is board-specific. */
-#define BOARD_MAINS_POWERED 1
+/* Historical note: this board used to be the only one to define
+ * BOARD_MAINS_POWERED, which gated the `can_stay_awake` capability. Every
+ * board now advertises it (the operator decides; see power_can_stay_awake in
+ * battery.h), so the flag is gone and nothing here is always-on specific. */
 
 /* Selected panel driver: Family D, IT8951 grayscale over SPI. */
 #define PANEL_DRIVER_IT8951_GRAY 1

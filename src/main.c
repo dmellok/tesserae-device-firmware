@@ -190,12 +190,6 @@ typedef struct {
 
 /* ---------- deep sleep ---------- */
 
-#ifdef BOARD_MAINS_POWERED
-#if !defined(BOARD_HAS_TOUCH) && !defined(BOARD_HAS_BUTTONS)
-#error "BOARD_MAINS_POWERED needs fetch_and_paint_current(), which is compiled \
-only for touch or button boards. Widen that guard before adding this flag."
-#endif
-
 /* Always-on mode (server config always_on): never deep-sleep, hold the Wi-Fi
  * association, and poll on a short cadence.
  *
@@ -218,9 +212,10 @@ only for touch or button boards. Widen that guard before adding this flag."
  * power_battery_critical) -- then fall back to normal sleep cycles whatever the
  * server thinks, because protecting the pack outranks honouring the setting.
  *
- * Not board-specific. Touch, SSE and the overlay engine are conditional inside;
- * everything else runs anywhere that declares BOARD_MAINS_POWERED. A queued OTA
- * is still deliberately not applied mid-run; it lands on the next reboot. */
+ * Not board-specific: compiled for every board, offered to every board (see
+ * power_can_stay_awake in battery.h). Touch, SSE and the overlay engine are
+ * conditional inside. A queued OTA is still deliberately not applied mid-run;
+ * it lands on the next reboot. */
 static bool fetch_and_paint_current(const char *server_url);
 static bool frame_fetch(const char *server_url, const char *held_etag,
                         pending_frame_t *out);
@@ -513,18 +508,15 @@ static void always_on_loop(void)
 #endif
     wifi_sta_stop();
 }
-#endif /* BOARD_MAINS_POWERED */
 
 static void sleep_forever_or_until_timer(void)
 {
     buzzer_idle();   /* never leave the piezo driven across a sleep (#258) */
-#ifdef BOARD_MAINS_POWERED
     /* Always-on power policy: server config opted this device out of deep sleep
      * (config.always_on, read on every /status poll). Runs until config or a
      * draining cell says otherwise, then falls through to the normal sleep
      * below on sleep_interval_s -- no reboot needed either way. */
     if (rest_config_get()->always_on) always_on_loop();
-#endif
 
     /* Card off before every deep sleep (and before a dev-loop restart);
      * no-op when nothing is mounted. */
@@ -788,12 +780,11 @@ static bootstrap_res_t rest_bootstrap(uint16_t pw, uint16_t ph, const char *mac,
     return res;
 }
 
-#if BOARD_HAS_TOUCH || defined(BOARD_HAS_BUTTONS)
 /* Fetch the current frame and paint it if the server returned a new one. Used
- * inside the touch-linger and button-wake windows, where WiFi is kept up so
- * repeated interactions don't pay reconnect/boot latency. The touch/button
- * params must already be set on the REST client. Returns true if a new frame
- * was painted. */
+ * inside the touch-linger and button-wake windows and by the always-on loop,
+ * where WiFi is kept up so repeated interactions don't pay reconnect/boot
+ * latency. Any touch/button params must already be set on the REST client.
+ * Returns true if a new frame was painted. */
 /* Fetch + decode the current frame. True means `out` owns a frame that must
  * eventually reach frame_paint() or frame_discard(). False covers 304, 204 and
  * every error alike: nothing new, nothing allocated.
@@ -873,7 +864,6 @@ static bool fetch_and_paint_current(const char *server_url)
     frame_paint(&p);
     return true;
 }
-#endif /* BOARD_HAS_TOUCH || BOARD_HAS_BUTTONS */
 
 #if BOARD_HAS_TOUCH
 /* Replay strokes queued from earlier wakes whose WiFi connect had failed. Each
@@ -2397,10 +2387,6 @@ void app_main(void)
          * server-side would go unnoticed forever. Re-ask while we hold none.
          * Gaining controls means the frame on glass was composed without them,
          * so drop the cached ETag to force a 200 + repaint on the next poll. */
-        /* BOARD_TOUCH3, not just the touch3_active() runtime check: this calls
-         * fetch_and_paint_current(), which only exists under
-         * BOARD_HAS_TOUCH || BOARD_HAS_BUTTONS, and a board with neither still
-         * has to COMPILE this block even though it is dead there. */
 #if BOARD_TOUCH3
         if (!touch3_active()) {
             touch3_poll_spec();

@@ -21,6 +21,7 @@ idf_component_register(
         "panel/drivers/spectra6_t133a01_dual.c"
         "panel/drivers/spectra6_spi_single.c"
         "panel/drivers/mono_spi.c"
+        "panel/drivers/jd79676_bwry.c"
         "panel/drivers/it8951_gray.c"
         "panel/drivers/ssd1677_gray.c"
         "panel/drivers/parallel_epd_gray.c"
