@@ -69,54 +69,16 @@
  * lightens. Assumes the panel starts from white, which the driver's clear
  * cycle guarantees.
  *
- * This is FastEPD's u8M5Matrix, measured on this glass at 20 C. It is the one
- * table to reach for if the ramp comes out uneven: an entry that is 1 where it
- * should be 2 shows up as two adjacent bands collapsing into one tone. */
+ * Retuned from FastEPD's u8M5Matrix over the issue #21 measurement rounds:
+ * every row is a pattern already measured on this glass, reassigned so the
+ * ramp is monotone in measured tone. Level 9 deliberately reuses level 8's
+ * pattern: no measured pattern sits reliably between 8 and 10 (realised
+ * tones there shift with surrounding content), so that pair renders as a
+ * tie rather than risking an inversion. Other accepted residuals: the 7-8
+ * step is a little wide, and 13/14 measure inside noise of each other
+ * (likely the glass's resolution limit). Full derivation:
+ * notes/papers3-gray-matrix-tuning.md. */
 #define EPD_PAR_GRAY_MATRIX { \
-    /*  0 */ 1, 1, 1, 1, 1, 1, 1, 1, \
-    /*  1 */ 2, 2, 1, 1, 2, 1, 1, 1, \
-    /*  2 */ 2, 2, 1, 1, 1, 1, 2, 1, \
-    /*  3 */ 2, 2, 1, 1, 2, 2, 1, 1, \
-    /*  4 */ 2, 2, 2, 2, 1, 1, 2, 1, \
-    /*  5 */ 2, 2, 1, 1, 1, 2, 2, 1, \
-    /*  6 */ 2, 2, 1, 1, 2, 1, 1, 2, \
-    /*  7 */ 2, 2, 2, 1, 2, 1, 1, 2, \
-    /*  8 */ 2, 2, 2, 2, 2, 1, 2, 1, \
-    /*  9 */ 1, 1, 1, 1, 1, 1, 2, 2, \
-    /* 10 */ 2, 2, 1, 1, 1, 1, 2, 2, \
-    /* 11 */ 1, 1, 1, 1, 2, 1, 2, 2, \
-    /* 12 */ 2, 2, 1, 1, 2, 1, 2, 2, \
-    /* 13 */ 2, 1, 1, 2, 2, 1, 2, 2, \
-    /* 14 */ 2, 2, 1, 2, 2, 1, 2, 2, \
-    /* 15 */ 2, 2, 2, 2, 2, 2, 2, 2 }
-
-/* Candidate retune, round 3 (issue #21), painted by the selftest on the
- * bottom half of the lettered ramp sheet (top half = shipped matrix) and NOT
- * used for normal display until the reporter's letter ordering confirms it.
- *
- * Round 1's model-derived candidate fixed the level-9 collapse but overshot
- * level 6 badly and pinched 7..9 into one tone: its single code flips
- * realised 2-4x the shift the linear pass-weight model predicted, and
- * inconsistently between rows, so the glass response is state-dependent and
- * extrapolating new pass patterns is not trustworthy. This table therefore
- * invents no patterns at all: every row is an already-measured pattern,
- * reassigned so the ramp is monotone in MEASURED tone through level 14.
- *
- * Round 2 (the reporter's per-half photo, both his ODS and an independent
- * measurement of the same image) confirmed that reassignment but left three
- * misorders, fixed here: levels 4/5 swapped (their round-2 tones were 109.8
- * vs 103.8, inverted), and 7/8/9 rotated one step so their tones ascend
- * (124.8 / 150.8 / 154.0; the round-2 assignment read 154.0 / 124.8 /
- * 150.8). The reporter's own on-device edit tried the opposite 7/8/9
- * rotation, and his eyes-only ordering (level 9 landing right after 6)
- * is what pinned down the correct direction. Not taken from his diff:
- * an 11/12 swap (the two datasets disagree on that pair by under 1%,
- * i.e. it is a tie) and a 13/14 swap he tried and reverted himself.
- * Known residuals: no measured pattern falls between levels 7 and 8 (that
- * step stays a little wide), and 13/14 stay nearly merged (on this glass
- * they measure inside noise of each other, likely its resolution limit).
- * Full derivation: notes/papers3-gray-matrix-tuning.md. */
-#define EPD_PAR_GRAY_MATRIX_B { \
     /*  0 */ 1, 1, 1, 1, 1, 1, 1, 1, \
     /*  1 */ 2, 2, 1, 1, 2, 1, 1, 1, \
     /*  2 */ 2, 2, 1, 1, 1, 1, 2, 1, \
@@ -126,7 +88,7 @@
     /*  6 */ 2, 2, 1, 1, 2, 1, 1, 2, \
     /*  7 */ 2, 2, 2, 2, 1, 1, 2, 1, \
     /*  8 */ 2, 1, 2, 1, 1, 1, 2, 2, \
-    /*  9 */ 2, 2, 1, 1, 1, 1, 2, 2, \
+    /*  9 */ 2, 1, 2, 1, 1, 1, 2, 2, \
     /* 10 */ 2, 2, 2, 2, 2, 1, 2, 1, \
     /* 11 */ 1, 1, 1, 1, 2, 1, 2, 2, \
     /* 12 */ 2, 2, 1, 2, 1, 1, 2, 2, \

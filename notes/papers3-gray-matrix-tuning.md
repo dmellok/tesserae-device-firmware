@@ -176,3 +176,48 @@ the dwell) the same bars in level order with white gutters, for the
 "does it look finished" check by eye. Ordered bars keep their scrambled-
 sheet letters (strip spells A I E M C K G O B J F N D L H P), so bar
 names stay stable across both sheets.
+
+## Round 3 result (2026-08-26, comment 5423825693)
+
+Reporter's morning-daylight photos of both sheets, C2 on the bottom half.
+His eye claims ("K,G darker than M,C; J and N darker than O,B") decode to
+levels 5,6 < 3,4 and 9,11 < 7,8. His eye report is taken as authoritative
+per the thread's standing commitment (and his closing line, "not that I
+need perfect grey ramp but trying to make it ready for anyone's to use",
+reads as loop fatigue: do not request a round 4).
+
+Photo medians below are secondary evidence only (iPhone local tone
+mapping can shift regional tones by more than the level gaps; where they
+disagree with the reporter's eyes, the eyes win). For what they are
+worth (median per bar, flat bars confirmed by sub-bar sampling;
+scrambled / ordered are separate photos, exposures differ):
+
+```
+level:      0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15
+scr top:   23   40   52   66   84   81   74   94   99   78   94  107  113  118  118  123
+scr C2 :   17   30   38   57   60   71   67   87   94   84  104  104  108  115  115  130
+ord top:   15   31   40   63   89   81   70   94  109   70   92   97  125  133  137  126
+ord C2 :    9   26   33   60   62   66   70   93   98   89  124  100  124  133  140  146
+```
+
+C2 bottom-half residuals:
+
+- Levels 0-8 and 12-15 are monotone on the ordered (sign-off) sheet.
+- Level 9 renders below BOTH 7 and 8 on both sheets (consistent, real).
+  The A10 pattern assigned to 9 realised ~0.59 normalised here vs 0.76
+  when the same pattern sat at level 7 in round 2, with no code change.
+- 10/11 disagree between sheets: dead tie on scrambled (104/104),
+  inverted on ordered (124/100). A8's realised tone moves ~0.10
+  normalised with context.
+
+Conclusion: pattern tones on this glass are context-dependent enough that
+reassignment cannot reliably order the midtones; the approach has hit
+its floor, and the reporter is done with tuning rounds. Decision
+2026-08-26: close the loop. Promote the candidate with level 9 given
+level 8's pattern (turns the inversion he flagged into a tie, safe by
+construction), leave the rest untouched, and escalate to the M5GFX
+lut_quality port (section above) as the real fix. That port is also the
+honest answer to "ready for anyone to use": a matrix tuned to one unit's
+photos was never going to generalise across units. No further testing to
+be requested from the reporter; he flashes the vendor-table release when
+it lands, or not.
