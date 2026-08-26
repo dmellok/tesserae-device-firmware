@@ -42,6 +42,8 @@
 #  include "seeed_ee04_73e6.h"
 #elif defined(TESSERAE_BOARD_M5STACK_PAPERS3)
 #  include "m5stack_papers3.h"
+#elif defined(TESSERAE_BOARD_XTEINK_X4)
+#  include "xteink_x4.h"
 #else
 #  error "No TESSERAE_BOARD_* selected. Set one in platformio.ini build_flags."
 #endif

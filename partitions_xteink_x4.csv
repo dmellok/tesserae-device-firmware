@@ -1,0 +1,21 @@
+# Xteink X4 -- TRANSCRIBED FROM THE STOCK TABLE, NOT DESIGNED.
+#
+# This board is flashed app-only at 0x10000 and keeps its factory bootloader
+# (see tools/upload_app_only.py), so the table already on the device is the one
+# that counts; this file exists so the build agrees with it. Verified against a
+# production unit: all six entries match. Check any unit of unknown provenance:
+#
+#     esptool --chip esp32c3 --port <port> read-flash 0x8000 0xc00 stock.bin
+#     python3 $IDF/components/partition_table/gen_esp32part.py stock.bin
+#
+# nvs is 0x5000 (not the 0x6000 the other tables here use) and the app slots are
+# named app0/app1 (not ota_0/ota_1). Both are what the factory table says; the
+# names are cosmetic, since every lookup goes through esp_ota_get_*.
+#
+# Name,    Type, SubType,  Offset,    Size,      Flags
+nvs,       data, nvs,      0x9000,    0x5000,
+otadata,   data, ota,      0xe000,    0x2000,
+app0,      app,  ota_0,    0x10000,   0x640000,
+app1,      app,  ota_1,    0x650000,  0x640000,
+spiffs,    data, spiffs,   0xc90000,  0x360000,
+coredump,  data, coredump, 0xff0000,  0x10000,

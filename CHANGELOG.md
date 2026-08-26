@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Added support for the Xteink X4, the 4.26" e-ink reader, turning one into a
+  dedicated Tesserae panel. Pictures are black and white. Its one usable key is
+  the power button: it wakes the display and advances to the next dashboard in a
+  rotation. Needs a Tesserae hardware entry for `xteink_x4`; the display pairs
+  without one but never receives a picture it can show.
+
+  Updating keeps the firmware the reader shipped with underneath and replaces
+  only the application, so a bad update cannot leave you with a device you can't
+  recover, and the original reader firmware can be put back. Plug in USB-C,
+  **tap the power button**, then run the update — asleep, the X4 does not appear
+  to your computer at all. See the README for the command.
+
+  Later X4 units shipped with a different display controller on otherwise
+  identical hardware; those will not refresh and need a separate build.
 - Displays in the reTerminal E series can now beep when you touch them or press
   a button. E-ink takes seconds to repaint, so until it does there is nothing to
   tell the person standing at the display that it heard them. The buzzer on the

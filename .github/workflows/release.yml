@@ -58,6 +58,12 @@ jobs:
           - { env: seeed-ee04-75,             kind: seeed_ee04_75, chip: esp32s3 }
           - { env: seeed-ee04-73e6,           kind: seeed_ee04_73e6, chip: esp32s3 }
           - { env: m5stack-papers3,           kind: m5stack_papers3, chip: esp32s3 }
+          # app_only: keeps its FACTORY bootloader and table, so no merged
+          # factory image and no web-flasher entry (both write a bootloader at
+          # 0x0, which bricks a unit with no BOOT strap). Its stock table also
+          # puts otadata at 0xe000 / app at 0x10000, not the 0x10000/0x20000 the
+          # merge below assumes. Still produces an app image, so OTA is normal.
+          - { env: xteink-x4,                 kind: xteink_x4, chip: esp32c3, app_only: true }
     steps:
       - uses: actions/checkout@v4
 
@@ -105,6 +111,7 @@ jobs:
       # UNBOOTABLE image (the v1.6.0/v1.6.1 E1004 factory bins had this bug).
       # `keep` leaves the flash mode/freq/size as the build set them.
       - name: Merge + hash
+        if: ${{ !matrix.app_only }}
         run: |
           set -euo pipefail
           v='${{ steps.ver.outputs.version }}'
