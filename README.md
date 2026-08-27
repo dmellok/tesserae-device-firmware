@@ -489,6 +489,11 @@ the factory bootloader in place keeps a bad app recoverable, keeps the vendor
 SD-card update path (the only route into a USB-locked unit), and lets the
 original firmware go back.
 
+The web flasher offers the X4 under the same rule: its catalog entry carries
+only the otadata + app parts at their stock offsets (never a bootloader, never
+a partition table), and the factory-reset mass erase is withdrawn for it, since
+a full erase would take the factory bootloader with it.
+
 **Tap the power button first.** In deep sleep the C3 powers down its
 USB-Serial-JTAG, so the port does not exist and esptool has nothing to reset.
 One tap boots it; the firmware then sees a USB data host and loops instead of

@@ -60,11 +60,12 @@ jobs:
           - { env: seeed-ee05,                kind: seeed_ee05_213_bwry, chip: esp32s3 }
           - { env: m5stack-papers3,           kind: m5stack_papers3, chip: esp32s3 }
           # app_only: keeps its FACTORY bootloader and table, so no merged
-          # factory image and no web-flasher entry (both write a bootloader at
-          # 0x0, which bricks a unit with no BOOT strap). Its stock table also
-          # puts otadata at 0xe000 / app at 0x10000, not the 0x10000/0x20000 the
-          # merge below assumes. Still produces an app image, so OTA is normal.
-          - { env: xteink-x4,                 kind: xteink_x4, chip: esp32c3, app_only: true }
+          # factory image and the flasher entry carries ONLY otadata + app parts
+          # (writing a bootloader at 0x0 bricks a unit with no BOOT strap). Its
+          # stock table also puts otadata at 0xe000 / app at 0x10000, not the
+          # 0x10000/0x20000 the merge below assumes; app_parts transcribes those
+          # offsets from partitions_xteink_x4.csv. OTA is normal.
+          - { env: xteink-x4,                 kind: xteink_x4, chip: esp32c3, app_only: true, app_parts: 'ota_data_initial.bin:0xe000 firmware.bin:0x10000' }
     steps:
       - uses: actions/checkout@v4
 
@@ -159,6 +160,40 @@ jobs:
           parts_json="$parts_json]"
           cat > "dist/$e.meta.json" <<JSON
           {"env":"$e","chipFamily":"$family","offset":0,"webSerial":true,"version":"$v","path":"$e/$v.factory.bin","sha256":"$sha","parts":$parts_json}
+          JSON
+
+      # App-only counterpart of Merge + hash: a meta.json whose parts are just
+      # otadata + app at the stock table's offsets, no factory blob and no
+      # bootloader/partition parts, so the browser flasher performs exactly the
+      # write tools/upload_app_only.py does over USB and can never touch 0x0.
+      # `appOnly` in the meta tells the flasher to hide the factory-reset
+      # (mass-erase) option, which would wipe the factory bootloader.
+      - name: Stage app-only parts + meta
+        if: ${{ matrix.app_only }}
+        run: |
+          set -euo pipefail
+          v='${{ steps.ver.outputs.version }}'
+          e='${{ matrix.env }}'
+          b=".pio/build/$e"
+          mkdir -p dist
+          case '${{ matrix.chip }}' in
+            esp32s3) family='ESP32-S3' ;;
+            esp32c3) family='ESP32-C3' ;;
+            *) echo "no chipFamily mapping for '${{ matrix.chip }}'" >&2; exit 1 ;;
+          esac
+          parts_json='['
+          sep=''
+          for p in ${{ matrix.app_parts }}; do
+            f="${p%%:*}"; off="${p##*:}"
+            name="${f%.bin}"
+            cp "$b/$f" "dist/$e-$v.part-$name.bin"
+            psha=$(shasum -a 256 "$b/$f" | awk '{print $1}')
+            parts_json="$parts_json$sep{\"name\":\"$name\",\"offset\":\"$off\",\"path\":\"$e/$v/$name.bin\",\"sha256\":\"$psha\"}"
+            sep=','
+          done
+          parts_json="$parts_json]"
+          cat > "dist/$e.meta.json" <<JSON
+          {"env":"$e","chipFamily":"$family","appOnly":true,"webSerial":true,"version":"$v","parts":$parts_json}
           JSON
 
       # The app-only OTA image (what a device streams into its inactive slot),

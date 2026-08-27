@@ -15,11 +15,12 @@ Catalog shape:
         "chipFamily": "ESP32-S3",
         "offset": 0,
         "webSerial": true,
-        "versions": [
-          {
-            "version": "v1.0.0",
-            "path": "<env>/v1.0.0.factory.bin",   # merged blob @ offset 0 (legacy)
-            "sha256": "...",
+        "appOnly": true,                           # optional: factory bootloader kept;
+        "versions": [                              # no merged blob, parts never
+          {                                        # include 0x0, flasher hides
+            "version": "v1.0.0",                   # the factory-reset mass erase
+            "path": "<env>/v1.0.0.factory.bin",   # merged blob @ offset 0 (legacy;
+            "sha256": "...",                       # absent on appOnly targets)
             "parts": [                             # offset-addressed images; flashing
               {"name": "bootloader", "offset": "0x0", "path": "...", "sha256": "..."},
               ...                                  # these (not the blob) skips the NVS
@@ -71,17 +72,29 @@ def main() -> int:
         env = m["env"]
         t = targets.setdefault(env, {})
         t["chipFamily"] = m["chipFamily"]
-        t["offset"] = m["offset"]
+        t["offset"] = m.get("offset", 0)
         t["webSerial"] = m["webSerial"]
+        # App-only boards (factory bootloader kept, e.g. the Xteink X4) ship
+        # parts with no merged blob; the flag tells the flasher to hide the
+        # factory-reset mass erase, which would wipe the factory bootloader.
+        if m.get("appOnly"):
+            t["appOnly"] = True
         versions = [v for v in t.get("versions", []) if v.get("version") != m["version"]]
-        entry = {"version": m["version"], "path": m["path"], "sha256": m["sha256"]}
+        entry = {"version": m["version"]}
+        if m.get("path"):
+            entry["path"] = m["path"]
+            entry["sha256"] = m["sha256"]
         if m.get("parts"):
             entry["parts"] = m["parts"]
+        if "path" not in entry and "parts" not in entry:
+            print(f"{env}: meta has neither a factory blob nor parts", file=sys.stderr)
+            return 1
         versions.insert(0, entry)
         t["versions"] = versions[:MAX_VERSIONS]
 
-        local_bin = os.path.join(art_dir, f'{env}-{m["version"]}.factory.bin')
-        uploads.append((local_bin, m["path"]))
+        if m.get("path"):
+            local_bin = os.path.join(art_dir, f'{env}-{m["version"]}.factory.bin')
+            uploads.append((local_bin, m["path"]))
         for part in m.get("parts", []):
             local_part = os.path.join(
                 art_dir, f'{env}-{m["version"]}.part-{part["name"]}.bin')
