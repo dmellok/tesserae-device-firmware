@@ -77,6 +77,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Fixed downloaded pictures silently never reaching the screen on displays
+  without extra memory when an SD card is fitted (seen on the Xteink X4). The
+  picture was downloaded and checked, then a second copy of it was made, and on
+  a full memory that copy quietly failed; the display logged nothing and kept
+  its old image. The copy is no longer made at all.
 - Fixed the beep never sounding on button-only displays (reTerminal E1001 and
   E1002). The beep setting was only written to flash on displays that also
   have a touch screen, so a button-only display re-learned it from the server
