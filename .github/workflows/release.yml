@@ -168,7 +168,11 @@ jobs:
       # descriptor. The catalog builder only globs *.meta.json, so staging this
       # here does not affect the flasher publish.
       - name: Stage app image (OTA signing input)
-        run: cp ".pio/build/${{ matrix.env }}/firmware.bin" "dist/${{ matrix.kind }}.app.bin"
+        # mkdir: on app_only boards the merge step above is skipped, so dist/
+        # does not exist yet when this runs.
+        run: |
+          mkdir -p dist
+          cp ".pio/build/${{ matrix.env }}/firmware.bin" "dist/${{ matrix.kind }}.app.bin"
 
       - uses: actions/upload-artifact@v4
         with:
