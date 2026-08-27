@@ -31,7 +31,8 @@
 
 #include "app_config.h"
 #include "nvs_flash.h"      /* factory-reset erase (20 s refresh-button hold) */
-#include "buttons.h"       /* front-button wake/report (header-only; no-op if none) */
+#include "buttons.h"          /* front-button wake/report (header-only; no-op if none) */
+#include "power_latch.h"      /* battery self-latch (header-only; no-op if none) */
 #include "buzzer.h"        /* piezo feedback on an input (no-op without a buzzer) */
 #include "deck_run.h"       /* SD deck cache: local nav + sync (no-op w/o card) */
 #include "collection_run.h" /* offline Album: SD playback + collection sync */
@@ -584,6 +585,7 @@ static void sleep_forever_or_until_timer(void)
     buttons_arm_ext1();
 #endif
     esp_sleep_enable_timer_wakeup((uint64_t)interval * 1000000ULL);
+    power_latch_hold_through_sleep();   /* or the timer wakes nothing */
     esp_deep_sleep_start();
     /* not reached */
 }
@@ -644,6 +646,9 @@ static void run_provisioning_then_reboot(const char *note)
      * EN line) causes a fresh boot which re-enters the portal. */
     ESP_LOGW(TAG, "captive portal expired idle; deep sleep until RESET button");
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    /* No wake source at all, so on a latched board drop the rail: a real
+     * power-off, not an indefinite trickle. No-op elsewhere. */
+    power_latch_release();
     esp_deep_sleep_start();
     /* not reached */
 }
@@ -956,6 +961,7 @@ static void battery_goodbye_check(bool settings_mode)
     }
     buttons_arm_ext1();
     esp_sleep_enable_timer_wakeup((uint64_t)BATTERY_GOODBYE_RECHECK_S * 1000000ULL);
+    power_latch_hold_through_sleep();   /* the recheck timer must survive */
     esp_deep_sleep_start();
     /* not reached */
 }
@@ -1108,6 +1114,12 @@ static bool relay_poll_and_paint(void)
 
 void app_main(void)
 {
+    /* Hold our own power on before anything else: on a latched board (Xteink
+     * X4) a unit that does not self-latch stays up only while the button is
+     * held, so every line below would be racing the user's thumb. No-op
+     * elsewhere. See power_latch.h. */
+    power_latch_hold();
+
     /* Park the SD card's chip-select before ANY code touches the shared SPI
      * bus (selftests included) -- a floating CS with a card fitted disturbs
      * panel refreshes. No-op on boards without a slot. See sdcard.h. */

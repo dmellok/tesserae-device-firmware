@@ -34,11 +34,17 @@ typedef enum {
     BTN_RIGHT,
 } button_id_t;
 
+/* The names are conventions the server maps to actions, so a one-key board may
+ * report whichever name has the default binding it wants (see xteink_x4.h). */
+#ifndef BOARD_BTN_REFRESH_WIRE_NAME
+#define BOARD_BTN_REFRESH_WIRE_NAME  "refresh"
+#endif
+
 /* Wire name the server expects, or NULL for BTN_NONE. */
 static inline const char *button_name(button_id_t b)
 {
     switch (b) {
-        case BTN_REFRESH: return "refresh";
+        case BTN_REFRESH: return BOARD_BTN_REFRESH_WIRE_NAME;
         case BTN_LEFT:    return "left";
         case BTN_RIGHT:   return "right";
         default:          return NULL;
@@ -48,10 +54,23 @@ static inline const char *button_name(button_id_t b)
 #ifdef BOARD_HAS_BUTTONS
 
 #include "driver/gpio.h"
-#include "driver/rtc_io.h"
 #include "esp_sleep.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "soc/soc_caps.h"
+
+/* Same "wake on any low", two backends. The RISC-V parts (C3) have no ext1 and
+ * no RTC IO -- esp_sleep_enable_ext1_wakeup() is not even declared there -- and
+ * take a plain GPIO mask limited to GPIO0-5, configuring the pads themselves
+ * inside esp_deep_sleep_start(). */
+#if SOC_PM_SUPPORT_EXT1_WAKEUP
+#  include "driver/rtc_io.h"
+#  define BTN_IDLE_HIGH(g)  do { rtc_gpio_pullup_en(g); rtc_gpio_pulldown_dis(g); } while (0)
+#  define BTN_ENABLE_WAKE(m) esp_sleep_enable_ext1_wakeup((m), ESP_EXT1_WAKEUP_ANY_LOW)
+#else
+#  define BTN_IDLE_HIGH(g)  ((void)(g))
+#  define BTN_ENABLE_WAKE(m) esp_deep_sleep_enable_gpio_wakeup((m), ESP_GPIO_WAKEUP_GPIO_LOW)
+#endif
 
 #ifdef BOARD_BTN_REFRESH_PIN
 #  define BUTTONS__REFRESH_BIT (1ULL << BOARD_BTN_REFRESH_PIN)
@@ -91,18 +110,15 @@ static inline const char *button_name(button_id_t b)
 static inline void buttons_arm_ext1(void)
 {
 #ifdef BOARD_BTN_REFRESH_PIN
-    rtc_gpio_pullup_en((gpio_num_t)BOARD_BTN_REFRESH_PIN);
-    rtc_gpio_pulldown_dis((gpio_num_t)BOARD_BTN_REFRESH_PIN);
+    BTN_IDLE_HIGH((gpio_num_t)BOARD_BTN_REFRESH_PIN);
 #endif
 #ifdef BOARD_BTN_LEFT_PIN
-    rtc_gpio_pullup_en((gpio_num_t)BOARD_BTN_LEFT_PIN);
-    rtc_gpio_pulldown_dis((gpio_num_t)BOARD_BTN_LEFT_PIN);
+    BTN_IDLE_HIGH((gpio_num_t)BOARD_BTN_LEFT_PIN);
 #endif
 #ifdef BOARD_BTN_RIGHT_PIN
-    rtc_gpio_pullup_en((gpio_num_t)BOARD_BTN_RIGHT_PIN);
-    rtc_gpio_pulldown_dis((gpio_num_t)BOARD_BTN_RIGHT_PIN);
+    BTN_IDLE_HIGH((gpio_num_t)BOARD_BTN_RIGHT_PIN);
 #endif
-    esp_sleep_enable_ext1_wakeup(BUTTON_WAKE_MASK, ESP_EXT1_WAKEUP_ANY_LOW);
+    BTN_ENABLE_WAKE(BUTTON_WAKE_MASK);
 }
 
 /* As buttons_arm_ext1(), but also folds extra active-low RTC-GPIO pins into the
@@ -112,25 +128,18 @@ static inline void buttons_arm_ext1(void)
 static inline void buttons_arm_ext1_with(uint64_t extra_low_mask)
 {
 #ifdef BOARD_BTN_REFRESH_PIN
-    rtc_gpio_pullup_en((gpio_num_t)BOARD_BTN_REFRESH_PIN);
-    rtc_gpio_pulldown_dis((gpio_num_t)BOARD_BTN_REFRESH_PIN);
+    BTN_IDLE_HIGH((gpio_num_t)BOARD_BTN_REFRESH_PIN);
 #endif
 #ifdef BOARD_BTN_LEFT_PIN
-    rtc_gpio_pullup_en((gpio_num_t)BOARD_BTN_LEFT_PIN);
-    rtc_gpio_pulldown_dis((gpio_num_t)BOARD_BTN_LEFT_PIN);
+    BTN_IDLE_HIGH((gpio_num_t)BOARD_BTN_LEFT_PIN);
 #endif
 #ifdef BOARD_BTN_RIGHT_PIN
-    rtc_gpio_pullup_en((gpio_num_t)BOARD_BTN_RIGHT_PIN);
-    rtc_gpio_pulldown_dis((gpio_num_t)BOARD_BTN_RIGHT_PIN);
+    BTN_IDLE_HIGH((gpio_num_t)BOARD_BTN_RIGHT_PIN);
 #endif
     for (int g = 0; g < 22; g++) {   /* RTC GPIOs 0..21 on the ESP32-S3 */
-        if (extra_low_mask & (1ULL << g)) {
-            rtc_gpio_pullup_en((gpio_num_t)g);
-            rtc_gpio_pulldown_dis((gpio_num_t)g);
-        }
+        if (extra_low_mask & (1ULL << g)) BTN_IDLE_HIGH((gpio_num_t)g);
     }
-    esp_sleep_enable_ext1_wakeup(BUTTON_WAKE_MASK | extra_low_mask,
-                                 ESP_EXT1_WAKEUP_ANY_LOW);
+    BTN_ENABLE_WAKE(BUTTON_WAKE_MASK | extra_low_mask);
 }
 
 /* Configure every defined button as a plain digital input with a pull-up, for
@@ -233,9 +242,13 @@ static inline bool buttons_refresh_held_for_maintenance(void)
  * sharing the mask -- so the caller distinguishes touch from button itself. */
 static inline button_id_t buttons_which_woke(void)
 {
-    if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT1)
-        return BTN_NONE;
+#if SOC_PM_SUPPORT_EXT1_WAKEUP
+    if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT1) return BTN_NONE;
     uint64_t st = esp_sleep_get_ext1_wakeup_status();
+#else
+    if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_GPIO) return BTN_NONE;
+    uint64_t st = esp_sleep_get_gpio_wakeup_status();
+#endif
     if (st & BUTTONS__REFRESH_BIT) return BTN_REFRESH;
     if (st & BUTTONS__LEFT_BIT)    return BTN_LEFT;
     if (st & BUTTONS__RIGHT_BIT)   return BTN_RIGHT;

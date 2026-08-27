@@ -33,13 +33,18 @@ one board (and thus one driver) per PlatformIO environment.
 | [Waveshare **ESP32-S3-ePaper-13.3E6**](https://www.waveshare.com/esp32-s3-epaper-13.3e6.htm) | Spectra-6, dual-controller | UC81xx ×2 | 1200×1600, 4bpp | `spectra6_spi_dual` | `waveshare-133e6` |
 | [Waveshare **PhotoPainter 7.3"**](https://www.waveshare.com/esp32-s3-photopainter.htm) | Spectra-6, single | ED2208-GCA | 800×480, 4bpp | `spectra6_spi_single` | `waveshare-photopainter-73` |
 | [**M5Stack PaperS3**](https://docs.m5stack.com/en/core/PaperS3) | Grayscale (4.7") | none (raw parallel glass) | 960×540, 4bpp gray | `parallel_epd_gray` | `m5stack-papers3` |
+| **Xteink X4** | Mono B/W (4.26") | SSD1677 | 800×480, 1bpp | `ssd1677_gray` (`EPD_MONO`) | `xteink-x4` |
 
 The four reTerminals, the PhotoPainter, the EE02, and the TRMNL 7.5" kit have been
 verified end-to-end on real hardware; the Waveshare 13.3E6 is the seed target and
 builds green. The EE04 pair builds green but is **not yet hardware-verified**
 (pin map taken from Seeed_GFX; the EE04 takes one panel on either its 24-pin or
 50-pin FPC — flash the env matching the attached panel and set the jumper caps
-accordingly). Each board also has a `…-selftest` env that paints a driver-only
+accordingly). The **Xteink X4** is verified on hardware; note that later X4
+production runs ship a UC8179 or UC8279 in place of the SSD1677 on the same
+board and glass, and `xteink-x4` is the SSD1677 build.
+
+Each board also has a `…-selftest` env that paints a driver-only
 test pattern (colour bars / gray ramp / mono stripes) with no networking — flash
 that first when bringing up a new unit.
 
@@ -54,6 +59,11 @@ board header:
   driver (same T133A01 panel), with only a different pin map.
 - The **TRMNL 7.5" OG DIY Kit** shares the E1001's `mono_spi` driver (same
   800×480 mono panel), with its own pin map.
+- The **Xteink X4** shares the Sticky's `ssd1677_gray` driver — same controller,
+  800×480, active-HIGH BUSY. It is not mounted rotated (the driver derives that
+  from the geometry), runs the driver's 1bpp `EPD_MONO` path, and needs
+  `EPD_MIRROR_Y`. It is also the only board here **flashed app-only, keeping its
+  factory bootloader** — see "Flashing the Xteink X4" below.
 
 The exception is the **M5Stack PaperS3**, which needed a driver family of its
 own because it is the first panel here with no controller chip. `parallel_epd_gray`
@@ -189,7 +199,7 @@ format the firmware expects for that kind:
 | --- | --- | --- |
 | `waveshare_133e6`, `seeed_reterminal_e1004`, `seeed_ee02` | 4bpp packed Spectra-6 | 960000 B |
 | `seeed_reterminal_e1002`, `waveshare_photopainter_73`, `seeed_ee04_73e6` | 4bpp packed Spectra-6 | 192000 B |
-| `seeed_reterminal_e1001`, `xiao_epaper_75`, `seeed_ee04_75` | 1bpp packed mono (bit 1 = white) | 48000 B |
+| `seeed_reterminal_e1001`, `xiao_epaper_75`, `seeed_ee04_75`, `xteink_x4` | 1bpp packed mono (bit 1 = white) | 48000 B |
 | `seeed_reterminal_e1001_gray` | 2bpp packed 4-gray (4 px/byte, MSB-first, 0b00=black..0b11=white) | 96000 B |
 | `xiao_epaper_75_bwr` | 2bpp packed BWR (4 px/byte, MSB-first, 0=black 1=white 2=red, 3 reserved) | 96000 B |
 | `seeed_reterminal_e1003` | 4bpp packed grayscale (0=black…0xF=white) | 1314144 B |
@@ -463,6 +473,36 @@ esptool --chip esp32s3 --port <PORT> --baud 460800 write-flash --flash-size dete
 - **E1003 only:** its 32 MB flash trips esptool's stub loader (`attach_flash`
   fails); flash with `--no-stub` (the env pins this via `upload_flags`).
 - App logs (and panic backtraces) come out the CH340/UART0 at 115200.
+
+### Flashing the Xteink X4
+
+The X4 keeps its **factory bootloader** and takes the app alone, at `0x10000`:
+
+```sh
+pio run -e xteink-x4 -t upload          # plug USB-C, tap power, run this
+```
+
+`tools/upload_app_only.py` drops the bootloader and partition-table images so
+the short command is the safe one. This is a sealed reader with **no exposed
+BOOT strap**, so a unit that will not enumerate needs the case opened; leaving
+the factory bootloader in place keeps a bad app recoverable, keeps the vendor
+SD-card update path (the only route into a USB-locked unit), and lets the
+original firmware go back.
+
+**Tap the power button first.** In deep sleep the C3 powers down its
+USB-Serial-JTAG, so the port does not exist and esptool has nothing to reset.
+One tap boots it; the firmware then sees a USB data host and loops instead of
+sleeping, so the port stays put. The same cable carries the log (`-t monitor`).
+
+Because the bootloader is inherited, so is the partition table:
+`partitions_xteink_x4.csv` transcribes the stock layout. On a unit of unknown
+provenance, check it first:
+
+```sh
+esptool --chip esp32c3 --port <PORT> read-flash 0x8000 0xc00 stock.bin
+```
+
+Use `-e xteink-x4-full` to deliberately write a bootloader and table.
 
 ## Provisioning
 

@@ -106,6 +106,7 @@ jobs:
           - seeed-ee04-73e6
           - seeed-ee05
           - m5stack-papers3
+          - xteink-x4
     steps:
       - uses: actions/checkout@v4
 

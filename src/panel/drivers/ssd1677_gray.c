@@ -38,6 +38,7 @@ static const char *TAG = "epd_ssd1677";
 #define SSD_RAM_Y_ADDR  0x4f
 #define SSD_DTM1        0x24   /* first plane  */
 #define SSD_DTM2        0x26   /* second plane */
+#define SSD_CTRL1       0x21   /* plane bypass */
 #define SSD_UPD_CTRL    0x22
 #define SSD_TRIGGER     0x20
 #define SSD_SLEEP       0x10
@@ -57,6 +58,28 @@ static const char *TAG = "epd_ssd1677";
 /* See ssd1677_init() for why this defaults off. */
 #ifndef SSD1677_CONDITION_CLEAR
 #define SSD1677_CONDITION_CLEAR 0
+#endif
+
+/* Transpose when the glass is mounted at 90 degrees, i.e. when the frame and
+ * the controller's scan disagree. Derived rather than asserted: the Sticky is
+ * 480x800 frame over an 800x480 scan, the X4 is 800x480 both ways. */
+#ifndef EPD_SSD1677_TRANSPOSE
+#  if (EPD_WIDTH == EPD_PANEL_SCAN_W) && (EPD_HEIGHT == EPD_PANEL_SCAN_H)
+#    define EPD_SSD1677_TRANSPOSE 0
+#  else
+#    define EPD_SSD1677_TRANSPOSE 1
+#  endif
+#endif
+#ifndef EPD_MIRROR_Y
+#define EPD_MIRROR_Y 0
+#endif
+
+#ifndef EPD_SSD1677_TRANSPOSE
+#  if (EPD_WIDTH == EPD_PANEL_SCAN_W) && (EPD_HEIGHT == EPD_PANEL_SCAN_H)
+#    define EPD_SSD1677_TRANSPOSE 0
+#  else
+#    define EPD_SSD1677_TRANSPOSE 1
+#  endif
 #endif
 
 static spi_device_handle_t s_spi;
@@ -155,6 +178,25 @@ static void hw_reset(void)
 #define GRAY_P1_BIT(g) ((((g) >> 1) & 1) ^ 1)   /* 0x24 */
 #define GRAY_P2_BIT(g) (((g) & 1) ^ 1)          /* 0x26 */
 
+#ifdef EPD_MONO
+/* ---------- 1bpp mono encoding ----------
+ *
+ * The frame is 8 px/byte MSB-first, bit 1 = WHITE (the mono_spi convention),
+ * and the mono waveform reads the BW RAM the same way -- so the plane is a
+ * straight copy. Note this does NOT match GRAY_P1_BIT above, which inverts:
+ * same 0x24 RAM, but the 4-gray LUT indexes it the other way round. Observed
+ * on an X4; inverting here paints white on black. */
+#ifndef EPD_MONO_INVERT
+#define EPD_MONO_INVERT 0
+#endif
+#if EPD_MONO_INVERT
+#  define MONO_PLANE_BYTE(b) ((uint8_t)~(uint8_t)(b))
+#else
+#  define MONO_PLANE_BYTE(b) ((uint8_t)(b))
+#endif
+#define MONO_SOLID(white) MONO_PLANE_BYTE((white) ? 0xFF : 0x00)
+#endif /* EPD_MONO */
+
 /* Hold the SPI bus for a whole frame.
  *
  * CS is driven by hand here, and a full plane is 48000 bytes sent as a dozen
@@ -170,6 +212,9 @@ static void hw_reset(void)
 static void bus_hold(void)    { spi_device_acquire_bus(s_spi, portMAX_DELAY); }
 static void bus_release(void) { spi_device_release_bus(s_spi); }
 
+/* Map a controller scan row to the frame row it reads from. */
+static inline int mirror_y(int cy) { return EPD_MIRROR_Y ? (EPD_PANEL_SCAN_H - 1 - cy) : cy; }
+
 /* One 2bpp pixel out of the frame, in FRAME coordinates. */
 static inline uint8_t frame_px(const uint8_t *image, int fx, int fy)
 {
@@ -177,21 +222,24 @@ static inline uint8_t frame_px(const uint8_t *image, int fx, int fy)
     return (uint8_t)((b >> ((3 - (fx & 3)) * 2)) & 0x3);
 }
 
-/* Stream one 1bpp plane, transposing the frame onto the controller's scan.
+/* Stream one 1bpp plane onto the controller's scan.
  *
  * The controller always scans landscape (SCAN_W x SCAN_H) whatever the glass is
- * mounted like. This panel is mounted at 90 degrees, so a controller row is a
- * frame COLUMN: while emitting controller row cy we walk cx and read frame pixel
+ * mounted like. On a panel mounted at 90 degrees a controller row is a frame
+ * COLUMN: while emitting controller row cy we walk cx and read frame pixel
  * (fx = cy, fy = cx).
  *
- * The direction was fixed on hardware rather than guessed. A pattern drawn as
- * horizontal bands in controller space appeared as vertical columns reading
- * black on the LEFT, which pins fx to cy without an inversion; had it been
- * mirrored the black band would have come out on the right.
+ * That direction was fixed on Sticky hardware rather than guessed. A pattern
+ * drawn as horizontal bands in controller space appeared as vertical columns
+ * reading black on the LEFT, which pins fx to cy without an inversion; had it
+ * been mirrored the black band would have come out on the right.
  *
- * This walks the frame with a 120-byte stride instead of sequentially. That is
- * the cost of doing the rotation here, and it is the right place for it: the
- * alternative is the server rendering sideways content for one panel. */
+ * Transposing walks the frame with a SCAN_H/4-byte stride instead of
+ * sequentially. That is the cost of doing the rotation here, and it is the
+ * right place for it: the alternative is the server rendering sideways content
+ * for one panel. A panel whose glass matches the scan (EPD_SSD1677_TRANSPOSE 0,
+ * e.g. the X4) reads the frame straight through, which is also the faster
+ * path. */
 static void gray_send_plane(uint8_t plane_cmd, const uint8_t *image, int plane)
 {
     uint8_t row[EPD_PANEL_SCAN_W / 8];
@@ -199,10 +247,16 @@ static void gray_send_plane(uint8_t plane_cmd, const uint8_t *image, int plane)
     gpio_set_level(EPD_PIN_CS, 0);
     send_cmd(plane_cmd);
     for (int cy = 0; cy < EPD_PANEL_SCAN_H; cy++) {
+        const int my = mirror_y(cy);
         for (int b = 0; b < EPD_PANEL_SCAN_W / 8; b++) {
             uint8_t o = 0;
             for (int k = 0; k < 8; k++) {
-                uint8_t g   = frame_px(image, cy, b * 8 + k);
+                const int cx = b * 8 + k;
+#if EPD_SSD1677_TRANSPOSE
+                uint8_t g   = frame_px(image, my, cx);
+#else
+                uint8_t g   = frame_px(image, cx, my);
+#endif
                 uint8_t bit = (plane == 1) ? GRAY_P1_BIT(g) : GRAY_P2_BIT(g);
                 o = (uint8_t)((o << 1) | (bit & 1));
             }
@@ -212,6 +266,61 @@ static void gray_send_plane(uint8_t plane_cmd, const uint8_t *image, int plane)
     }
     gpio_set_level(EPD_PIN_CS, 1);
 }
+
+#ifdef EPD_MONO
+/* Stream the 1bpp frame into the BW plane (0x24). Untransposed, a frame row is
+ * a controller row and the packing already matches, so it is a row copy rather
+ * than the gray path's per-pixel gather. */
+static void mono_send_plane(const uint8_t *image)
+{
+    uint8_t row[EPD_PANEL_SCAN_W / 8];
+
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(SSD_DTM1);
+    for (int cy = 0; cy < EPD_PANEL_SCAN_H; cy++) {
+        const int my = mirror_y(cy);
+#if EPD_SSD1677_TRANSPOSE
+        for (int b = 0; b < EPD_PANEL_SCAN_W / 8; b++) {
+            uint8_t o = 0;
+            for (int k = 0; k < 8; k++) {
+                /* Controller row cy is a frame COLUMN: fx = cy, fy = cx. */
+                int fx = my, fy = b * 8 + k;
+                uint8_t bit = (image[(size_t)fy * (EPD_WIDTH / 8) + (fx >> 3)]
+                               >> (7 - (fx & 7))) & 1;
+                o = (uint8_t)((o << 1) | bit);
+            }
+            row[b] = MONO_PLANE_BYTE(o);
+        }
+#else
+        const uint8_t *src = image + (size_t)my * (EPD_WIDTH / 8);
+        const int stride = EPD_PANEL_SCAN_W / 8;
+        for (int b = 0; b < stride; b++) row[b] = MONO_PLANE_BYTE(src[b]);
+#endif
+        send_data(row, sizeof row);
+    }
+    gpio_set_level(EPD_PIN_CS, 1);
+}
+
+/* Fill the BW plane with one level. */
+static void mono_send_solid(uint8_t fill)
+{
+    uint8_t row[EPD_PANEL_SCAN_W / 8];
+    memset(row, fill, sizeof row);
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(SSD_DTM1);
+    for (int cy = 0; cy < EPD_PANEL_SCAN_H; cy++) send_data(row, sizeof row);
+    gpio_set_level(EPD_PIN_CS, 1);
+}
+
+/* Ignore 0x26, the differential partner of 0x24: left in play, pixels matching
+ * the previous paint may not re-drive and the frame comes out patchy. A full
+ * refresh wants to depend on 0x24 alone. */
+static void mono_bypass_second_plane(void)
+{
+    static const uint8_t BYPASS[] = {0x40};
+    cmd_data(SSD_CTRL1, BYPASS, sizeof BYPASS);
+}
+#endif /* EPD_MONO */
 
 /* Emit `rows` solid plane rows (caller has sent the plane command, CS low). */
 static void gray_send_solid_rows(uint8_t fill, int rows)
@@ -424,15 +533,28 @@ static void panel_condition_white(void)
 static void ssd1677_display(const uint8_t *image)
 {
     bus_hold();
+#ifdef EPD_MONO
+    mono_bypass_second_plane();
+    mono_send_plane(image);
+    trigger_refresh_mode(SSD_UPD_MONO, "refresh");
+#else
     gray_send_plane(SSD_DTM1, image, 1);
     gray_send_plane(SSD_DTM2, image, 2);
     trigger_refresh();
+#endif
     bus_release();
 }
 
 static void ssd1677_clear(uint8_t color)
 {
     bus_hold();
+#ifdef EPD_MONO
+    mono_bypass_second_plane();
+    mono_send_solid(MONO_SOLID(color & 1));
+    trigger_refresh_mode(SSD_UPD_MONO, "clear");
+    bus_release();
+    return;
+#else
     uint8_t g  = (uint8_t)(color & 0x3);
     uint8_t p1 = GRAY_P1_BIT(g) ? 0xFF : 0x00;
     uint8_t p2 = GRAY_P2_BIT(g) ? 0xFF : 0x00;
@@ -449,7 +571,62 @@ static void ssd1677_clear(uint8_t color)
 
     trigger_refresh();
     bus_release();
+#endif /* EPD_MONO */
 }
+
+#ifdef EPD_MONO
+/* Bring-up, mono: four alternating bands starting BLACK, a white wedge in the
+ * frame's top-left, and a 1px stripe block. Bands prove geometry, the wedge
+ * proves orientation, the stripes prove packing. Starting white means
+ * EPD_MONO_INVERT is wrong for this glass. */
+static void ssd1677_show_color_bars(void)
+{
+    uint8_t *frame = malloc(EPD_BUF_BYTES);
+    if (!frame) return;
+    const int BAND_H = EPD_HEIGHT / 4;
+    const int stride = EPD_WIDTH / 8;      /* 1bpp: 8 px/byte */
+
+    for (int fy = 0; fy < EPD_HEIGHT; fy++) {
+        int band = fy / BAND_H;
+        if (band > 3) band = 3;
+        /* bit 1 = white, so an even band is black (0x00). */
+        memset(frame + (size_t)fy * stride, (band & 1) ? 0xff : 0x00, stride);
+    }
+
+    /* Bottom half: fine detail, which bands cannot test -- a uniform block hides
+     * a wrong stride or reversed bit order (the Sticky's bands passed while real
+     * content came out as snow). Left: vertical stripes, bit order within a
+     * byte. Right: horizontal stripes, row stride. */
+    for (int fy = EPD_HEIGHT / 2; fy < EPD_HEIGHT; fy++) {
+        for (int fx = 0; fx < EPD_WIDTH; fx++) {
+            int black = (fx < EPD_WIDTH / 2) ? (fx & 1) : (fy & 1);
+            size_t i = (size_t)fy * stride + (fx >> 3);
+            uint8_t m = (uint8_t)(1u << (7 - (fx & 7)));
+            if (black) frame[i] &= (uint8_t)~m;
+            else       frame[i] |= m;
+        }
+    }
+
+    /* Orientation wedge: WHITE, so it shows against black band 0. */
+    const int WEDGE = (EPD_WIDTH < EPD_HEIGHT ? EPD_WIDTH : EPD_HEIGHT) / 10;
+    for (int fy = 0; fy < WEDGE; fy++)
+        memset(frame + (size_t)fy * stride, 0xff, WEDGE / 8);
+
+    ssd1677_display(frame);
+    free(frame);
+}
+
+/* Transport check: alternating pixels across the whole frame. */
+static void ssd1677_show_palette_sweep(void)
+{
+    uint8_t *frame = malloc(EPD_BUF_BYTES);
+    if (!frame) return;
+    memset(frame, 0xAA, EPD_BUF_BYTES);   /* 1px vertical stripes */
+    ssd1677_display(frame);
+    free(frame);
+}
+
+#else /* !EPD_MONO */
 
 /* Bring-up: four bands in FRAME coordinates, black at the top through white at
  * the bottom, plus a black wedge in the top-left corner.
@@ -528,6 +705,8 @@ static void ssd1677_show_palette_sweep(void)
     free(frame);
 }
 
+#endif /* EPD_MONO */
+
 static void ssd1677_sleep(void)
 {
     static const uint8_t DEEP[] = {0x01};
@@ -542,9 +721,15 @@ static void ssd1677_sleep(void)
 
 const epd_driver_t ssd1677_gray_driver = {
     .info = {
+#ifdef EPD_MONO
+        .name      = "SSD1677 (mono 1bpp)",
+        .bpp       = 1,
+        .grayscale = false,
+#else
         .name      = "SSD1677 3.97\" (800x480, 4-gray 2bpp)",
         .bpp       = 2,
         .grayscale = true,
+#endif
         .width     = EPD_WIDTH,
         .height    = EPD_HEIGHT,
         .buf_bytes = EPD_BUF_BYTES,

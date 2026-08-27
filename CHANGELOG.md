@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Added support for the Xteink X4, the 4.26" e-ink reader, turning one into a
+  dedicated Tesserae panel. Pictures are black and white. Its one usable key is
+  the power button: it wakes the display and advances to the next dashboard in a
+  rotation. Needs a Tesserae hardware entry for `xteink_x4`; the display pairs
+  without one but never receives a picture it can show.
 - Added support for the Seeed XIAO ePaper Display Board EE05 with the 2.13"
   quadruple-colour panel (black, white, yellow and red; issue #29). This is the
   first four-colour panel here that takes a single interleaved colour buffer
