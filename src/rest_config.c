@@ -222,11 +222,16 @@ esp_err_t rest_config_save(void)
 #if BOARD_HAS_TOUCH
     if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_TOUCH_EN, s_cfg.touch_enabled ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_i32(h, NVS_KEY_TOUCH_LIN, s_cfg.touch_linger_s);
+#endif
+    /* A sibling of the touch block, not nested in it: a button-only board
+     * (E1001/E1002) has a buzzer and no digitizer, and nesting these left it
+     * re-learning the beep config every wake -- always after the wake-press
+     * beep had already read the unsaved default and stayed silent. The load
+     * side has always had the two blocks as siblings. */
 #ifdef BOARD_BUZZER_PIN
     if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_BEEP_EN, s_cfg.beep_enabled ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_BEEP_PAT, s_cfg.beep_pattern);
     if (err == ESP_OK) err = nvs_set_i32(h, NVS_KEY_BEEP_VOL, s_cfg.beep_volume);
-#endif
 #endif
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DECK_ID, s_cfg.deck_id);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DECK_PG, s_cfg.deck_page);

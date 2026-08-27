@@ -72,6 +72,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Fixed the beep never sounding on button-only displays (reTerminal E1001 and
+  E1002). The beep setting was only written to flash on displays that also
+  have a touch screen, so a button-only display re-learned it from the server
+  on every wake, always after the moment of the press it should have sounded
+  for. The setting now persists on any display with a buzzer, and the press
+  beeps from the second wake after it is turned on.
 - Fixed physical button presses not beeping on displays where the beep was
   turned on. Touches sounded correctly; presses did not. A press is handled
   almost at the top of boot, before the display or the network exist, and the
