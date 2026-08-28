@@ -76,6 +76,8 @@ typedef struct {
 
 typedef struct {
     int32_t  next_poll_s;       /* deep-sleep duration to use, -1 if absent */
+    uint32_t wake_at;           /* absolute unix wake target (wake alignment),
+                                 * the same instant as next_poll_s; 0 if absent */
     int32_t  sleep_interval_s;  /* from config object, -1 if absent */
     int32_t  button_wake_s;     /* config.button_wake_s: -1 if absent */
     uint32_t server_time;       /* unix seconds, 0 if absent */

@@ -37,6 +37,7 @@
 #include "deck_run.h"       /* SD deck cache: local nav + sync (no-op w/o card) */
 #include "collection_run.h" /* offline Album: SD playback + collection sync */
 #include "overlay_run.h"    /* local overlay render mode (no-op w/o partial panel) */
+#include "wake_align.h"     /* synchronized wake: absolute targets + drift trim */
 #include "proto2_run.h"     /* protocol v2: device-owned touch (no-op w/o touch) */
 #include "touch3_run.h"     /* touch v3: device-drawn primitives (no-op w/o touch) */
 #include "sse_client.h"     /* proto2 push transport (kiosk mode only) */
@@ -559,8 +560,14 @@ static void sleep_forever_or_until_timer(void)
     }
 
     int interval = (s_sleep_override_s > 0) ? s_sleep_override_s : effective_sleep_s();
-    if (s_sleep_override_s <= 0)
+    if (s_sleep_override_s <= 0) {
         interval = collection_next_sleep_s(interval);
+        /* Synchronized wake: when /status carried an absolute wake_at,
+         * convert it to a delta HERE, at sleep entry, so the fetch +
+         * paint time since the response doesn't push the wake late.
+         * No-op without a target; a collection-shortened interval wins. */
+        interval = wake_align_sleep_s(interval);
+    }
     ESP_LOGI(TAG, "on battery; deep sleep for %d s%s",
              interval,
              s_sleep_override_s > 0 ? " (retry backoff)"
@@ -584,7 +591,11 @@ static void sleep_forever_or_until_timer(void)
 #else
     buttons_arm_ext1();
 #endif
-    esp_sleep_enable_timer_wakeup((uint64_t)interval * 1000000ULL);
+    /* Drift-corrected program: the RTC slow clock's measured drift (learned
+     * from the per-wake Date-header disciplines) trims the timer so a long
+     * aligned sleep lands on the wall-clock instant, not ppm-late. Exactly
+     * interval * 1e6 until a drift estimate exists. */
+    esp_sleep_enable_timer_wakeup(wake_align_timer_us(interval));
     power_latch_hold_through_sleep();   /* or the timer wakes nothing */
     esp_deep_sleep_start();
     /* not reached */
@@ -2430,6 +2441,10 @@ void app_main(void)
                 cfg_dirty = true;
             }
             if (so.next_poll_s > 0) rest_config_set_sleep_s(so.next_poll_s);  /* drives this sleep */
+            /* wake_at is the same instant as next_poll_s, absolute. One-shot,
+             * RAM only; the sleep path converts it to a delta at sleep entry
+             * so the paint below doesn't push the wake late (wake_align.h). */
+            wake_align_set_target(so.wake_at);
             if (so.button_wake_s >= 0 &&
                 so.button_wake_s != rest_config_get()->button_wake_s) {
                 rest_config_set_button_wake_s(so.button_wake_s);

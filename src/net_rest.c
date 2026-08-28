@@ -15,6 +15,7 @@
 #include "ota_report.h"
 #include "overlay.h"      /* OVERLAY_MAX_TARGETS (advertised capability cap) */
 #include "touch3_run.h"   /* BOARD_TOUCH3 */
+#include "wake_align.h"   /* drift EWMA fed from every Date-header discipline */
 #include "wifi_manager.h"
 #if BOARD_TOUCH3
 #include "touch3.h"           /* T3_TOUCH_V, T3_MAX_PRIMS */
@@ -384,10 +385,18 @@ static rest_status_t do_request(esp_http_client_method_t method, const char *url
     s_rx[s_rx_len] = '\0';
     if (body_out) *body_out = s_rx;
 
-    /* Server Date header is the authoritative LAN clock (no SNTP on this path). */
+    /* Server Date header is the authoritative LAN clock (no SNTP on this path).
+     * The pre-set local reading feeds the drift EWMA: measured against the
+     * time since the previous discipline, the adjustment IS the RTC slow
+     * clock's drift ratio (wake_align.h). */
     if (s_server_date) {
+        struct timeval old_tv;
+        gettimeofday(&old_tv, NULL);
         struct timeval tv = { .tv_sec = (time_t)s_server_date, .tv_usec = 0 };
         settimeofday(&tv, NULL);
+        wake_align_note_discipline(
+            (int64_t)old_tv.tv_sec * 1000 + old_tv.tv_usec / 1000,
+            (int64_t)s_server_date * 1000);
     }
 
     ESP_LOGI(TAG, "<- %d (%u bytes)", http, (unsigned)s_rx_len);
@@ -1100,6 +1109,10 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     cJSON *r = cJSON_Parse(rbody);
     if (!r) return REST_OK;   /* 200 with an unparseable body: nothing to merge */
     out->next_poll_s = json_get_int(r, "next_poll_s", -1);
+    /* wake_at (wake alignment): the same instant as next_poll_s, as an
+     * absolute epoch, present only when the server has synchronized wake
+     * enabled for this device. One-shot, like next_poll_s. */
+    out->wake_at     = (uint32_t)json_get_int(r, "wake_at", 0);
     out->server_time = (uint32_t)json_get_int(r, "server_time", 0);
     cJSON *cfg = cJSON_GetObjectItemCaseSensitive(r, "config");
     if (cfg) {

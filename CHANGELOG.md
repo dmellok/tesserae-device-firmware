@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Synchronized wake support. When the server's `/status` response carries a
+  `wake_at` epoch (wake alignment enabled for the device), the sleep duration
+  is now derived from that absolute target at the moment of deep-sleep entry,
+  so the frame fetch and panel refresh that happen after the response no
+  longer push the wake late. The wall clock is already disciplined from the
+  server's `Date` header on every response; the adjustment applied by each
+  discipline, measured against the time since the previous one, now also
+  feeds a drift estimate (EWMA, kept in RTC RAM) that trims the deep-sleep
+  timer, so long aligned sleeps land on the wall-clock instant rather than
+  drifting with the internal RC oscillator. Servers that don't send `wake_at`
+  see no behaviour change.
 - The M5Stack PaperS3 selftest sheet now paints a candidate grey matrix on its
   bottom half, derived from the epdiy project's waveform for this exact glass
   (ED047TC1, from-white mode, LGPL-3.0). Where the shipped matrix mixes darken

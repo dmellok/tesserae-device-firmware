@@ -42,6 +42,7 @@ idf_component_register(
         "button_report.c"
         "buzzer.c"
         "net_rest.c"
+        "wake_align.c"
         "relay.c"
         "relay_crypto.c"
         "relay_wire.c"
