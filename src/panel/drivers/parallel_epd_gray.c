@@ -109,11 +109,20 @@ static const uint8_t s_matrix[] = EPD_PAR_GRAY_MATRIX;
 /* Optional candidate matrix under evaluation. When the board defines it, the
  * selftest paints the two matrices side by side, one per half of the scan
  * axis, so a single flash judges a retune. Normal display keeps using
- * EPD_PAR_GRAY_MATRIX until the candidate is promoted. */
+ * EPD_PAR_GRAY_MATRIX until the candidate is promoted.
+ *
+ * The candidate may have a different pass count: the sheet runs the longer
+ * of the two, and the shorter matrix's missing passes are filled with skip
+ * codes, which float those pixels while the other half is still driven. */
 #ifdef EPD_PAR_GRAY_MATRIX_B
 static const uint8_t s_matrix_b[] = EPD_PAR_GRAY_MATRIX_B;
-_Static_assert(sizeof(s_matrix_b) == sizeof(s_matrix),
-               "candidate grey matrix must match the shipped matrix's size");
+#define GRAY_PASSES_B  ((int)(sizeof(s_matrix_b) / 16))
+#define SHEET_PASSES   (GRAY_PASSES > GRAY_PASSES_B ? GRAY_PASSES \
+                                                    : GRAY_PASSES_B)
+_Static_assert(sizeof(s_matrix_b) % 16 == 0,
+               "candidate grey matrix must be 16 rows x N passes");
+#else
+#define SHEET_PASSES   GRAY_PASSES
 #endif
 
 _Static_assert(EPD_WIDTH % 8 == 0, "parallel EPD needs a width divisible by 8");
@@ -139,8 +148,9 @@ static uint8_t *s_line[2];
 
 /* pass-major 256-entry tables: source byte (two 4bpp pixels) -> the pair of
  * 2-bit drive codes for that pass, positioned in the high or low nibble of an
- * output byte. Built once from s_matrix. */
-static uint8_t *s_code_hi;   /* GRAY_PASSES * 256 */
+ * output byte. Built once from s_matrix. Sized SHEET_PASSES so the selftest
+ * can index past a shorter matrix's own passes (those entries are skip). */
+static uint8_t *s_code_hi;   /* SHEET_PASSES * 256 */
 static uint8_t *s_code_lo;
 #ifdef EPD_PAR_GRAY_MATRIX_B
 static uint8_t *s_code_hi_b;
@@ -265,12 +275,19 @@ static void power(bool on)
 /* Passes                                                             */
 /* ------------------------------------------------------------------ */
 
-static void build_code_tables(const uint8_t *matrix, uint8_t *hi, uint8_t *lo)
+/* `npasses` is the matrix's own pass count; passes beyond it (up to
+ * SHEET_PASSES) are filled with skip codes so the sheet can drive the other
+ * half's longer waveform without disturbing this half's finished pixels. */
+static void build_code_tables(const uint8_t *matrix, int npasses,
+                              uint8_t *hi, uint8_t *lo)
 {
-    for (int pass = 0; pass < GRAY_PASSES; pass++) {
+    for (int pass = 0; pass < SHEET_PASSES; pass++) {
         for (int i = 0; i < 256; i++) {
-            uint8_t left  = matrix[(i >> 4) * GRAY_PASSES + pass];
-            uint8_t right = matrix[(i & 0x0F) * GRAY_PASSES + pass];
+            uint8_t left = 0x3, right = 0x3;   /* skip: leave floating */
+            if (pass < npasses) {
+                left  = matrix[(i >> 4) * npasses + pass];
+                right = matrix[(i & 0x0F) * npasses + pass];
+            }
             uint8_t pair  = (uint8_t)((left << 2) | right);
             lo[pass * 256 + i] = pair;
             hi[pass * 256 + i] = (uint8_t)(pair << 4);
@@ -398,7 +415,7 @@ static void gray_passes_sheet(const uint8_t *bars_src, const uint8_t *strip_src,
     const int dv1 = ts1 + SHEET_DIV_H;          /* divider end / bottom bars */
     const int bs0 = EPD_HEIGHT - SHEET_STRIP_H; /* bottom strip start        */
 
-    for (int pass = 0; pass < GRAY_PASSES; pass++) {
+    for (int pass = 0; pass < SHEET_PASSES; pass++) {
         const uint8_t *hi_a = s_code_hi + pass * 256;
         const uint8_t *lo_a = s_code_lo + pass * 256;
         const uint8_t *hi_b = hi_a, *lo_b = lo_a;
@@ -455,8 +472,8 @@ static esp_err_t par_port_init(void)
 
     s_line[0] = heap_caps_aligned_alloc(64, TX_BYTES, MALLOC_CAP_DMA);
     s_line[1] = heap_caps_aligned_alloc(64, TX_BYTES, MALLOC_CAP_DMA);
-    s_code_hi = malloc((size_t)GRAY_PASSES * 256);
-    s_code_lo = malloc((size_t)GRAY_PASSES * 256);
+    s_code_hi = malloc((size_t)SHEET_PASSES * 256);
+    s_code_lo = malloc((size_t)SHEET_PASSES * 256);
     if (!s_line[0] || !s_line[1] || !s_code_hi || !s_code_lo) {
         ESP_LOGE(TAG, "OOM (line buffers / code tables)");
         free(s_line[0]); free(s_line[1]); free(s_code_hi); free(s_code_lo);
@@ -469,16 +486,16 @@ static esp_err_t par_port_init(void)
     /* source byte i = pixels (i >> 4, i & 0xF), left pixel first. In an output
      * byte the MSB pair is the leftmost pixel, so the left source pixel's code
      * sits two bits above the right one. */
-    build_code_tables(s_matrix, s_code_hi, s_code_lo);
+    build_code_tables(s_matrix, GRAY_PASSES, s_code_hi, s_code_lo);
 #ifdef EPD_PAR_GRAY_MATRIX_B
-    s_code_hi_b = malloc((size_t)GRAY_PASSES * 256);
-    s_code_lo_b = malloc((size_t)GRAY_PASSES * 256);
+    s_code_hi_b = malloc((size_t)SHEET_PASSES * 256);
+    s_code_lo_b = malloc((size_t)SHEET_PASSES * 256);
     if (!s_code_hi_b || !s_code_lo_b) {
         ESP_LOGE(TAG, "OOM (candidate-matrix code tables)");
         free(s_code_hi_b); free(s_code_lo_b);
         s_code_hi_b = s_code_lo_b = NULL;   /* selftest falls back to A only */
     } else {
-        build_code_tables(s_matrix_b, s_code_hi_b, s_code_lo_b);
+        build_code_tables(s_matrix_b, GRAY_PASSES_B, s_code_hi_b, s_code_lo_b);
     }
 #endif
 

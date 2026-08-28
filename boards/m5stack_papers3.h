@@ -96,6 +96,40 @@
     /* 14 */ 2, 1, 1, 2, 2, 1, 2, 2, \
     /* 15 */ 2, 2, 2, 2, 2, 2, 2, 2 }
 
+/* Candidate matrix under evaluation (selftest paints it on the bottom half
+ * of the sheet; normal display ignores it until promoted).
+ *
+ * Derived from the epdiy project's hand-built ED047TC1 waveform -- the same
+ * glass -- mode MODE_EPDIY_WHITE_TO_GL16 (uniform white to 16-level target,
+ * exactly this driver's starts-from-white contract), 20-30 C band:
+ * https://github.com/vroland/epdiy src/waveforms/epdiy_ED047TC1.h (LGPL-3.0).
+ * Extraction: for target level L, the 2-bit code at [phase][to=L][from=15]
+ * across the 15 phases.
+ *
+ * The shape is a pulse-width ramp: level L darkens for 15-L passes from
+ * white, then rests. Unlike a mixed darken/lighten pattern this is monotone
+ * by construction -- more darken passes is strictly darker -- so the failure
+ * mode to look for on glass is uneven SPACING (crushed darks or lights),
+ * never a level inversion. 15 passes vs the shipped 8 costs ~25 ms per
+ * refresh if promoted. */
+#define EPD_PAR_GRAY_MATRIX_B { \
+    /*  0 */ 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, \
+    /*  1 */ 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, \
+    /*  2 */ 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, \
+    /*  3 */ 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, \
+    /*  4 */ 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, \
+    /*  5 */ 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, \
+    /*  6 */ 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, \
+    /*  7 */ 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, \
+    /*  8 */ 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, \
+    /*  9 */ 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, \
+    /* 10 */ 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, \
+    /* 11 */ 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, \
+    /* 12 */ 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, \
+    /* 13 */ 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, \
+    /* 14 */ 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, \
+    /* 15 */ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+
 /* VCOM is fixed in this board's supply (-1.6 V per FastEPD's panel def); there
  * is no digital PMIC to program, so this is documentation, not a setting. */
 #define EPD_VCOM_MV         1600

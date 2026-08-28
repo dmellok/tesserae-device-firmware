@@ -221,3 +221,35 @@ honest answer to "ready for anyone to use": a matrix tuned to one unit's
 photos was never going to generalise across units. No further testing to
 be requested from the reporter; he flashes the vendor-table release when
 it lands, or not.
+
+## Addendum: epdiy ED047TC1 candidate (2026-08-28)
+
+The reporter's post-close comment (5445424289) pointed at epdiy's
+`src/waveforms/epdiy_ED047TC1.h`, which the ported-tables survey above
+missed: it looked at ED047TC2's GC16 mode (38-57 phases, needs the full
+from x to matrix). ED047TC1.h is epdiy's own hand-built waveform for this
+glass and carries mode 16, `MODE_EPDIY_WHITE_TO_GL16`: from uniform white
+to a 16-level target, 15 phases, 20-30 C. That is exactly this driver's
+contract (clear cycle ends white, one code per level per pass), so it
+drops straight into the matrix format with no compression.
+
+Extraction (`scripts are throwaway; layout verified empirically`): data is
+`[phase][to][from]`, 2-bit codes MSB-first, 0=no-op 1=darken 2=lighten.
+Orientation proof: in mode 16 all 120 nonzero codes sit in the from=15
+column (mode 17, from-black, mirrors this at from=0). The from-white
+column per target level yields a pulse-width ramp: level L darkens for
+15-L phases, then rests. Monotone by construction, so the failure mode
+photographed-tuning kept hitting (context-dependent inversions) cannot
+occur; the open question on glass is only tone spacing, and whether our
+pass timing (FastEPD's row clocking, not epdiy's) lands the intended
+tones.
+
+Shipped as `EPD_PAR_GRAY_MATRIX_B` in the board header; the driver now
+allows a candidate pass count different from the shipped matrix's 8 (the
+sheet runs the longer waveform, the shorter half floats through the extra
+passes). Licence: epdiy is LGPL-3.0, compatible with this repo's
+AGPL-3.0, attribution in the board header. Per the decision above, no
+photo round is being requested; if a report arrives anyway and the bottom
+half reads monotone, promote by renaming B to A (and retiring the 8-pass
+matrix), which also supersedes the M5GFX lut_quality port as the escalation
+path.

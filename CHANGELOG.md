@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The M5Stack PaperS3 selftest sheet now paints a candidate grey matrix on its
+  bottom half, derived from the epdiy project's waveform for this exact glass
+  (ED047TC1, from-white mode, LGPL-3.0). Where the shipped matrix mixes darken
+  and lighten codes per level, the candidate is a pulse-width ramp: each level
+  darkens for a number of passes proportional to its distance from white, so
+  the ramp cannot invert, only space unevenly. Normal display keeps the shipped
+  matrix until the candidate is judged on glass and promoted. The grey driver
+  now accepts a candidate with a different pass count from the shipped matrix;
+  the sheet runs the longer waveform and floats the shorter half's pixels for
+  the extra passes.
 - Added support for the Xteink X4, the 4.26" e-ink reader, turning one into a
   dedicated Tesserae panel. Pictures are black and white. Its one usable key is
   the power button: it wakes the display and advances to the next dashboard in a
