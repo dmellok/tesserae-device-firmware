@@ -651,10 +651,24 @@ static void run_provisioning_then_reboot(const char *note)
         break;
     }
 
-    /* Portal expired with no client ever joining (or no submission). Don't
-     * spin the radio retrying every N minutes -- power down completely and
-     * require a manual RESET to come back. The board's RESET button (chip
-     * EN line) causes a fresh boot which re-enters the portal. */
+    /* Portal expired with no client ever joining (or no submission). An
+     * onboarded device most likely got here through an outage (network
+     * switched off overnight, router down for hours), not bad credentials:
+     * sleep on a timer and retry the stored network, and on another miss the
+     * portal reopens, so a user standing at the panel still gets the setup
+     * screen within one cycle (dmellok/tesserae#270). Only a
+     * never-onboarded device powers
+     * down completely and requires a manual RESET, since there the stored
+     * configuration itself is the likely problem. The board's RESET button
+     * (chip EN line) causes a fresh boot which re-enters the portal. */
+    if (wifi_creds_present() &&
+        (rest_config_get()->device_token[0] != '\0' || relay_ready())) {
+        ESP_LOGW(TAG, "captive portal expired idle; retrying stored Wi-Fi in %d min",
+                 WIFI_PORTAL_RETRY_SLEEP_S / 60);
+        s_sleep_override_s = WIFI_PORTAL_RETRY_SLEEP_S;
+        sleep_forever_or_until_timer();
+        /* not reached */
+    }
     ESP_LOGW(TAG, "captive portal expired idle; deep sleep until RESET button");
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     /* No wake source at all, so on a latched board drop the rail: a real
@@ -2074,15 +2088,21 @@ void app_main(void)
         if (touch_st.valid)
             touch_queue_push(&touch_st, touch_ev, rest_config_get()->last_frame_etag);
 #endif
-        /* A device that has already onboarded (holds a token) almost always
-         * fails here because of a transient outage -- a router reboot or being
-         * briefly out of range -- not bad credentials. Don't drop a working
-         * device into AP mode on the first miss (that strands it off-network and
-         * burns the battery on an always-on radio). Retry over a few short-sleep
-         * wakes; only after WIFI_FAIL_AP_THRESHOLD consecutive misses reopen the
-         * portal. A never-onboarded device goes straight to the portal, since
-         * there the creds themselves are the likely problem. */
-        bool onboarded = rest_config_get()->device_token[0] != '\0';
+        /* A device that has already onboarded (holds a home-server token, or
+         * is relay-paired) almost always fails here because of a transient
+         * outage -- a router reboot or being briefly out of range -- not bad
+         * credentials. Don't drop a working device into AP mode on the first
+         * miss (that strands it off-network and burns the battery on an
+         * always-on radio). Retry over a few short-sleep wakes; only after
+         * WIFI_FAIL_AP_THRESHOLD consecutive misses reopen the portal. The
+         * count clears ONLY on a successful connect, never here: once past
+         * the threshold, each portal-retry-sleep wake (see
+         * run_provisioning_then_reboot) makes one attempt and drops straight
+         * back to the portal rather than re-running the whole ladder. A
+         * never-onboarded device goes straight to the portal, since there
+         * the creds themselves are the likely problem. */
+        bool onboarded = rest_config_get()->device_token[0] != '\0' ||
+                         relay_ready();
         if (onboarded && ++s_wifi_fail_count < WIFI_FAIL_AP_THRESHOLD) {
             ESP_LOGW(TAG, "STA connect failed (%s); onboarded, retry %lu/%d in %ds "
                      "(not opening AP)", esp_err_to_name(err),
@@ -2096,7 +2116,6 @@ void app_main(void)
         ESP_LOGE(TAG, "STA connect failed (%s)%s; opening portal",
                  esp_err_to_name(err),
                  onboarded ? " after repeated retries" : " (not onboarded)");
-        s_wifi_fail_count = 0;
         run_provisioning_then_reboot("Wi-Fi didn't connect");
         return;
     }

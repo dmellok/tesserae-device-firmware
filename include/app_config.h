@@ -147,9 +147,22 @@
 /* Max idle window the captive portal stays up with no client associated
  * to the SoftAP. The timer resets each time a STA joins the AP, so a user
  * actively filling in the form never times out. After this many seconds
- * with no client connected, the device deep-sleeps with no wakeup source
- * configured -- only a RESET / EXT button press boots it again. */
+ * with no client connected: an onboarded device sleeps for
+ * WIFI_PORTAL_RETRY_SLEEP_S and then retries the stored network (a
+ * scheduled outage -- network switched off overnight -- must not strand
+ * the panel; see dmellok/tesserae#270); a never-onboarded device
+ * deep-sleeps with no
+ * wakeup source configured -- only a RESET / EXT button press boots it
+ * again, since there the stored configuration itself is the likely
+ * problem. */
 #define PROVISION_PORTAL_TIMEOUT_S  (15 * 60)
+
+/* How long an onboarded device sleeps after an idle portal expiry before
+ * waking to retry the stored network. Another miss reopens the portal, so
+ * someone standing at the panel still gets the setup screen within one
+ * cycle, while a panel nobody touches rejoins on its own once the network
+ * is back. */
+#define WIFI_PORTAL_RETRY_SLEEP_S   (30 * 60)
 
 /* SoftAP credentials shown to the user during provisioning. */
 #define PROVISION_AP_SSID    "Tesserae-Setup"

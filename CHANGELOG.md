@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- An onboarded panel no longer needs a manual RESET after a long Wi-Fi
+  outage (dmellok/tesserae#270). Previously, once the short retry ladder was exhausted and
+  the captive portal expired idle, the device deep-slept with no wake
+  source, so a network that is switched off overnight left the panel on the
+  pairing screen until someone pressed RESET. Now a device that has already
+  onboarded (home-server token or relay pairing) sleeps for 30 minutes
+  after an idle portal expiry, wakes, retries the stored network, and on
+  another miss reopens the portal; the cycle repeats until the network is
+  back, so the panel rejoins on its own within one cycle of the outage
+  ending. A never-onboarded device keeps the old behaviour, since there the
+  stored configuration itself is the likely problem. Relay-paired panels
+  without a home-server token now also get the retry ladder instead of
+  dropping to the portal on the first missed connect.
+
 ### Added
 
 - Synchronized wake support. When the server's `/status` response carries a
