@@ -18,9 +18,9 @@
  *
  * Wire format in: 2bpp packed, 4 px/byte, MSB pair = leftmost pixel, using
  * the server's bwry_4 palette indices 0=black 1=white 2=yellow 3=red.
- * The JD79676 wants its own 2-bit codes (from Seeed_GFX COLOR_GET):
- * 0=white 1=black 2=yellow 3=red -- black and white swapped, inks in
- * place. display() translates per byte through a 256-entry LUT.
+ * The panel takes the same codes (confirmed on hardware, issue #29: an
+ * earlier 0/1 swap inferred from Seeed_GFX COLOR_GET rendered black and
+ * white inverted), so the buffer is streamed verbatim, no translation.
  */
 #include "app_config.h"          /* board.h -> PANEL_DRIVER_* selection */
 
@@ -53,16 +53,6 @@ static const char *TAG = "epd_jd79676";
 
 static spi_device_handle_t s_spi;
 static bool s_port_inited = false;
-
-/* Server bwry_4 index -> JD79676 wire code, per 2-bit field.
- * 0 (black) -> 1, 1 (white) -> 0, 2 (yellow) -> 2, 3 (red) -> 3. */
-static inline uint8_t wire_code(uint8_t idx)
-{
-    return (idx < 2) ? (uint8_t)(idx ^ 1) : idx;
-}
-
-/* Whole-byte translation (four 2-bit fields at once), built in port_init. */
-static uint8_t s_byte_lut[256];
 
 /* ---------- low-level SPI/GPIO (mono_spi transport, single CS) ---------- */
 
@@ -158,15 +148,6 @@ static void hw_reset(void)
 static esp_err_t jd_port_init(void)
 {
     if (s_port_inited) return ESP_OK;
-
-    for (int b = 0; b < 256; b++) {
-        uint8_t o = 0;
-        for (int p = 0; p < 4; p++) {
-            uint8_t idx = (uint8_t)((b >> (6 - 2 * p)) & 0x3);
-            o = (uint8_t)((o << 2) | wire_code(idx));
-        }
-        s_byte_lut[b] = o;
-    }
 
     gpio_config_t out = {
         .intr_type = GPIO_INTR_DISABLE,
@@ -290,15 +271,9 @@ static void trigger_refresh(void)
 
 static void jd_display(const uint8_t *image)
 {
-    uint8_t row[EPD_WIDTH / 4];
-
     gpio_set_level(EPD_PIN_CS, 0);
     send_cmd(DTM1);
-    for (int y = 0; y < EPD_HEIGHT; y++) {
-        const uint8_t *in = image + y * (EPD_WIDTH / 4);
-        for (int b = 0; b < EPD_WIDTH / 4; b++) row[b] = s_byte_lut[in[b]];
-        send_data(row, sizeof row);
-    }
+    send_data(image, EPD_BUF_BYTES);
     gpio_set_level(EPD_PIN_CS, 1);
     trigger_refresh();
 }
@@ -306,7 +281,7 @@ static void jd_display(const uint8_t *image)
 /* Emit `rows` rows of a single palette index (caller sent DTM1, CS low). */
 static void send_solid_rows(uint8_t idx, int rows)
 {
-    uint8_t code = wire_code((uint8_t)(idx & 0x3));
+    uint8_t code = (uint8_t)(idx & 0x3);
     uint8_t fill = (uint8_t)(code << 6 | code << 4 | code << 2 | code);
     uint8_t row[EPD_WIDTH / 4];
     memset(row, fill, sizeof row);
@@ -355,10 +330,9 @@ static void jd_show_color_bars(void)
             else if (x >= 122) idx = 0;          /* black: hidden zone B   */
             else if (x >= 118) idx = 3;          /* red: right marker      */
             else               idx = band;
-            uint8_t code = wire_code(idx);
             int shift = 6 - 2 * (x & 3);
             if ((x & 3) == 0) row[x >> 2] = 0;
-            row[x >> 2] |= (uint8_t)(code << shift);
+            row[x >> 2] |= (uint8_t)(idx << shift);
         }
         send_data(row, sizeof row);
     }
@@ -366,9 +340,9 @@ static void jd_show_color_bars(void)
     trigger_refresh();
 }
 
-/* Diagnostic: the four RAW wire codes (0..3, no translation) as bands.
- * If jd_show_color_bars renders unexpected inks, this reads the panel's
- * true code->ink map so the wire_code table can be corrected. */
+/* Diagnostic: the four raw 2-bit codes (0..3) as bands, reading the
+ * panel's true code->ink map. Now that indices stream untranslated this
+ * matches jd_show_color_bars' band order; kept as the reference check. */
 static void jd_show_palette_sweep(void)
 {
     const int BAND_H = EPD_HEIGHT / 4;
