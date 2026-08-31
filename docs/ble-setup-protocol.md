@@ -57,6 +57,7 @@ Hardware code registry:
 | `8` | `seeed_xiao_75` | Reserved; BLE not enabled |
 | `9` | `waveshare_133e6` | Reserved; BLE not enabled |
 | `10` | `waveshare_photopainter_73` | Reserved; BLE not enabled |
+| `11` | `seeed_ee03` | Enabled |
 
 The advertisement does not expose SSID, server URL, room name, password, full
 MAC address, or device token.

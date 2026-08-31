@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- New target: Seeed XIAO ePaper Display Board EE03 driving the 10.3"
+  monochrome panel (ED103TC2, 1872x1404, 16-level grayscale via an onboard
+  IT8951E/DX). Reuses the it8951_gray driver unchanged; the board header
+  carries the EE03 pin map (single PWR_EN rail gate on GPIO43, battery sense
+  on GPIO1 gated by GPIO6, buttons on GPIO2/3/5, SHT40 on GPIO42/41).
+  Envs `seeed-ee03` and `seeed-ee03-selftest`, hardware-catalog kind
+  `seeed_ee03`, BLE hardware code 11. Builds green; awaiting hardware
+  verification.
+
 ### Changed
 
 - An onboarded panel no longer needs a manual RESET after a long Wi-Fi

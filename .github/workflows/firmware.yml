@@ -105,6 +105,7 @@ jobs:
           - seeed-ee04-75
           - seeed-ee04-73e6
           - seeed-ee05
+          - seeed-ee03
           - m5stack-papers3
           - xteink-x4
     steps:

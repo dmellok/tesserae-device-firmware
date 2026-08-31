@@ -26,6 +26,7 @@ one board (and thus one driver) per PlatformIO environment.
 | [Seeed reTerminal **E1003**](https://www.seeedstudio.com/reTerminal-E1003-p-6731.html) | Grayscale (10.3") | IT8951 | 1872×1404, 4bpp gray | `it8951_gray` | `seeed-reterminal-e1003` |
 | [Seeed reTerminal **E1004**](https://www.seeedstudio.com/reTerminal-E1004-p-6692.html) | Spectra-6, dual-chip | T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `seeed-reterminal-e1004` |
 | [Seeed **XIAO ePaper Kit — EE02**](https://www.seeedstudio.com/XIAO-ePaper-DIY-Kit-EE02-for-13-3-Spectratm-6-E-Ink.html) | Spectra-6, dual-chip | T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `seeed-ee02` |
+| [Seeed **XIAO ePaper Display Board — EE03**](https://www.seeedstudio.com/XIAO-ePaper-Display-Board-ESP32-S3-EE03-p-6638.html) + 10.3" mono | Grayscale (10.3") | IT8951 | 1872×1404, 4bpp gray | `it8951_gray` | `seeed-ee03` |
 | [**TRMNL 7.5" OG DIY Kit**](https://www.seeedstudio.com/TRMNL-7-5-Inch-OG-DIY-Kit-p-6481.html) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `xiao-epaper-75` |
 | XIAO driver board + 7.5" **B/W/Red** panel (DKE DEPG0750RW / GDEW075Z08 class) | Tri-color BWR | UC8179 | 800×480, 2bpp | `mono_spi` (`EPD_BWR`) | `xiao-epaper-75-bwr` |
 | [Seeed **XIAO ePaper Display Board — EE04**](https://www.seeedstudio.com/XIAO-ePaper-Display-Board-EE04-p-6560.html) + 7.5" mono (24-pin) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `seeed-ee04-75` |
@@ -40,7 +41,10 @@ verified end-to-end on real hardware; the Waveshare 13.3E6 is the seed target an
 builds green. The EE04 pair builds green but is **not yet hardware-verified**
 (pin map taken from Seeed_GFX; the EE04 takes one panel on either its 24-pin or
 50-pin FPC — flash the env matching the attached panel and set the jumper caps
-accordingly). The **Xteink X4** is verified on hardware; note that later X4
+accordingly). The **EE03** (10.3" kit) builds green but is **not yet
+hardware-verified** either; it shares the E1003's `it8951_gray` driver (same
+ED103TC2 glass and IT8951 controller), with the pin map cross-checked between
+Seeed_GFX and the EE03 V1.0 schematic. The **Xteink X4** is verified on hardware; note that later X4
 production runs ship a UC8179 or UC8279 in place of the SSD1677 on the same
 board and glass, and `xteink-x4` is the SSD1677 build.
 
@@ -202,7 +206,7 @@ format the firmware expects for that kind:
 | `seeed_reterminal_e1001`, `xiao_epaper_75`, `seeed_ee04_75`, `xteink_x4` | 1bpp packed mono (bit 1 = white) | 48000 B |
 | `seeed_reterminal_e1001_gray` | 2bpp packed 4-gray (4 px/byte, MSB-first, 0b00=black..0b11=white) | 96000 B |
 | `xiao_epaper_75_bwr` | 2bpp packed BWR (4 px/byte, MSB-first, 0=black 1=white 2=red, 3 reserved) | 96000 B |
-| `seeed_reterminal_e1003` | 4bpp packed grayscale (0=black…0xF=white) | 1314144 B |
+| `seeed_reterminal_e1003`, `seeed_ee03` | 4bpp packed grayscale (0=black…0xF=white) | 1314144 B |
 | `m5stack_papers3` | 4bpp packed grayscale (0=black…0xF=white) | 259200 B |
 
 The PhotoPainter reuses the E1002's 800×480 4bpp format exactly (render normally

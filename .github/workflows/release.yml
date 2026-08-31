@@ -58,6 +58,7 @@ jobs:
           - { env: seeed-ee04-75,             kind: seeed_ee04_75, chip: esp32s3 }
           - { env: seeed-ee04-73e6,           kind: seeed_ee04_73e6, chip: esp32s3 }
           - { env: seeed-ee05,                kind: seeed_ee05_213_bwry, chip: esp32s3 }
+          - { env: seeed-ee03,                kind: seeed_ee03, chip: esp32s3 }
           - { env: m5stack-papers3,           kind: m5stack_papers3, chip: esp32s3 }
           # app_only: keeps its FACTORY bootloader and table, so no merged
           # factory image and the flasher entry carries ONLY otadata + app parts
