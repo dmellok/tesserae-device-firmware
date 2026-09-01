@@ -19,6 +19,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- A pushed patch whose rects cover 60% or more of the panel now paints with
+  a full flashing refresh instead of a GC16 window pass
+  (dmellok/tesserae#274). The window pass transitions pixels without an
+  inversion flash, so residue from a DU pass written just before it (the
+  tap echo's inverted rect) can survive at high contrast; at that coverage
+  the full refresh costs about the same and leaves clean glass. Smaller
+  patches keep the flash-free GC16 window pass.
 - Server-pushed frame patches now refresh with the full-quality GC16
   waveform instead of DU (dmellok/tesserae#274). A patch is a content
   change rather than a tap echo, so it is not latency-bound, but it was

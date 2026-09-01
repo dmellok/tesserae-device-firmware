@@ -451,6 +451,13 @@ void overlay_ingest_values(const char *json, size_t len)
 
 /* ---------- patch documents (schema 2: post-action frame patches) ---------- */
 
+/* Patch bbox coverage (percent of panel area) above which the apply uses a
+ * full flashing refresh instead of a GC16 window pass. A window pass never
+ * inverts, so residue from earlier DU passes inside the window (a tap echo's
+ * inverted rect) can survive it at high contrast; a full refresh at this size
+ * costs about the same and flashes it clean. */
+#define PATCH_FULL_REFRESH_PCT  60
+
 void overlay_ingest_patches(const char *json, size_t len)
 {
     if (!json || !len || !epd_supports_partial()) return;
@@ -599,7 +606,24 @@ void overlay_ingest_patches(const char *json, size_t len)
             if (r->x + r->w > bx1) bx1 = r->x + r->w;
             if (r->y + r->h > by1) by1 = r->y + r->h;
         }
-        hygiene_or_partial(bx0, by0, bx1 - bx0, by1 - by0, false /* GC16 */);
+        int bw = bx1 - bx0, bh = by1 - by0;
+        /* A bbox spanning most of the panel is a wholesale content change
+         * (dashboard swapped by a pushed update, #274). The GC16 window pass
+         * transitions pixels without an inversion flash, so it can leave
+         * residue where a DU pass wrote just before it -- exactly the tap
+         * echo that triggered the push. At this size the full refresh costs
+         * about the same and guarantees clean glass; it needs the full frame,
+         * which a sparse (cold-wake) buffer doesn't have. */
+        if (!s_sparse && s_work &&
+            (int64_t)bw * bh * 100 >=
+                (int64_t)EPD_WIDTH * EPD_HEIGHT * PATCH_FULL_REFRESH_PCT) {
+            ESP_LOGI(TAG, "patch bbox %dx%d covers >=%d%% of panel: full refresh",
+                     bw, bh, PATCH_FULL_REFRESH_PCT);
+            epd_display(s_work);
+            overlay_hygiene_reset(&s_hygiene);
+        } else {
+            hygiene_or_partial(bx0, by0, bw, bh, false /* GC16 */);
+        }
     }
     s_patch_seq = doc.seq;
 #if BOARD_HAS_TOUCH
