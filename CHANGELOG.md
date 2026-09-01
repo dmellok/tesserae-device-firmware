@@ -19,6 +19,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Server-pushed frame patches now refresh with the full-quality GC16
+  waveform instead of DU (dmellok/tesserae#274). A patch is a content
+  change rather than a tap echo, so it is not latency-bound, but it was
+  painted with the echo path's fast 2-level waveform, which leaves a
+  visible ghost on high-contrast areas that stays on glass until the next
+  timed full repaint. GC16 clears as it paints and costs about 20% more
+  than DU on the E1003 (1564 vs 1330 ms in the 2026-07-27 mode sweep).
+  Touch echoes and slot value redraws keep their fast waveforms.
 - An onboarded panel no longer needs a manual RESET after a long Wi-Fi
   outage (dmellok/tesserae#270). Previously, once the short retry ladder was exhausted and
   the captive portal expired idle, the device deep-slept with no wake

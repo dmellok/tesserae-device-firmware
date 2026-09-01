@@ -479,7 +479,7 @@ void overlay_ingest_patches(const char *json, size_t len)
 
 #if BOARD_HAS_TOUCH
     /* Echo preemption: a finger on the glass outranks a background patch.
-     * The apply costs seconds (blob fetch + DU pass) and the doc is not
+     * The apply costs seconds (blob fetch + GC16 pass) and the doc is not
      * going anywhere -- the next 1 s poll re-delivers it. Without this,
      * echoes queue behind patch traffic (bench: 0.9 s idle vs 3-6 s busy). */
     if (touch_int_asserted()) return;
@@ -577,11 +577,19 @@ void overlay_ingest_patches(const char *json, size_t len)
     if (epd_port_init() == ESP_OK) {
         epd_init();
         redraw_changed_slots(slots_hit);   /* draws + refreshes slot rects */
-        /* One refresh over the union bounding box, not one per rect: at
-         * ~1 s of DU waveform per window, 8-10 rects serialized cost 10+ s
-         * and trip the hygiene limit mid-patch (bench 2026-07-25: 16-22 s
-         * per apply). The buffers already hold every rect, so a single
-         * bbox pass paints them all in one waveform and one hygiene tick. */
+        /* One refresh over the union bounding box, not one per rect: 8-10
+         * rects serialized at ~1 s of waveform each cost 10+ s and trip the
+         * hygiene limit mid-patch (bench 2026-07-25: 16-22 s per apply).
+         * The buffers already hold every rect, so a single bbox pass paints
+         * them all in one waveform and one hygiene tick.
+         *
+         * Full quality (GC16), not DU: a patch is a CONTENT change, not a
+         * tap echo, so it is not latency-bound -- the blob fetch already
+         * cost seconds -- and DU's 2-level pass leaves a visible ghost on
+         * high-contrast rects that sits on glass until the next timed full
+         * repaint (#274). On the E1003 GC16 is only ~20% slower than DU
+         * (1564 vs 1330 ms, mode sweep 2026-07-27) and matches the quality
+         * of the periodic full refresh. */
         int bx0 = doc.rects[0].x, by0 = doc.rects[0].y;
         int bx1 = bx0 + doc.rects[0].w, by1 = by0 + doc.rects[0].h;
         for (int i = 1; i < doc.n_rects; i++) {
@@ -591,7 +599,7 @@ void overlay_ingest_patches(const char *json, size_t len)
             if (r->x + r->w > bx1) bx1 = r->x + r->w;
             if (r->y + r->h > by1) by1 = r->y + r->h;
         }
-        hygiene_or_partial(bx0, by0, bx1 - bx0, by1 - by0, true /* DU */);
+        hygiene_or_partial(bx0, by0, bx1 - bx0, by1 - by0, false /* GC16 */);
     }
     s_patch_seq = doc.seq;
 #if BOARD_HAS_TOUCH
