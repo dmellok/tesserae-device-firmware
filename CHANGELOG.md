@@ -13,7 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   driver, because its reference adapter requires chip-select to pulse for every
   byte. Frames use the native 2bpp `bwry_4` wire format (163200 bytes) and are
   split into two 170-byte halves per row. Envs `waveshare-1085g` and
-  `waveshare-1085g-selftest`, hardware-catalog kind `waveshare_10in85g`.
+  `waveshare-1085g-selftest`, hardware-catalog kind `waveshare_1085g`.
   Verified on physical hardware.
 
 - New target: Seeed XIAO ePaper Display Board EE03 driving the 10.3"

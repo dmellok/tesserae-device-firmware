@@ -21,9 +21,6 @@
 #define EPD_PIN_BUSY    6
 #define EPD_PIN_PWR     5
 
-#define EPD_SPI_HOST   SPI2_HOST
-#define EPD_SPI_HZ     (500 * 1000)
-
 /* Panel geometry. Native orientation is landscape. */
 #define EPD_WIDTH      1360
 #define EPD_HEIGHT     480
@@ -35,11 +32,11 @@
 #define EPD_COL_YELLOW  0x2
 #define EPD_COL_RED     0x3
 
-/* Board model -> default device id "Waveshare_10in85G_<mac-suffix>". */
-#define TESSERAE_DEVICE_MODEL  "Waveshare_10in85G"
+/* Board model -> default device id "Waveshare_1085G_<mac-suffix>". */
+#define TESSERAE_DEVICE_MODEL  "Waveshare_1085G"
 
 /* Tesserae hardware-catalog kind: native 2bpp B/W/Y/R (163200-byte) frame. */
-#define TESSERAE_DEVICE_KIND   "waveshare_10in85g"
+#define TESSERAE_DEVICE_KIND   "waveshare_1085g"
 #define TESSERAE_RELAY_MODEL   "esp32_client"
 #define TESSERAE_RELAY_GAMUT   "bwry_4"
 
@@ -47,4 +44,4 @@
 #define MCU_TIER_S3_QUAD_PSRAM 1
 
 /* Selected panel driver: dual-controller 10.85-inch G. */
-#define PANEL_DRIVER_WAVESHARE_10IN85G_DUAL 1
+#define PANEL_DRIVER_WAVESHARE_1085G_DUAL 1

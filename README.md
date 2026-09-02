@@ -32,7 +32,7 @@ one board (and thus one driver) per PlatformIO environment.
 | [Seeed **XIAO ePaper Display Board — EE04**](https://www.seeedstudio.com/XIAO-ePaper-Display-Board-EE04-p-6560.html) + 7.5" mono (24-pin) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `seeed-ee04-75` |
 | [Seeed **XIAO ePaper Display Board — EE04**](https://www.seeedstudio.com/XIAO-ePaper-Display-Board-EE04-p-6560.html) + 7.3" Spectra-6 (50-pin) | Spectra-6, single | UC81xx | 800×480, 4bpp | `spectra6_spi_single` | `seeed-ee04-73e6` |
 | [Waveshare **ESP32-S3-ePaper-13.3E6**](https://www.waveshare.com/esp32-s3-epaper-13.3e6.htm) | Spectra-6, dual-controller | UC81xx ×2 | 1200×1600, 4bpp | `spectra6_spi_dual` | `waveshare-133e6` |
-| [Waveshare **10.85-inch e-Paper HAT+ (G)**](https://www.waveshare.com/product/displays/e-paper/epaper-1/10.85inch-e-paper-hat-plus-g.htm) + ESP32-S3 Zero | B/W/Y/R, dual-controller | Waveshare 10.85G controller ×2 | 1360×480, 2bpp | `waveshare_10in85g_dual` | `waveshare-1085g` |
+| [Waveshare **10.85-inch e-Paper HAT+ (G)**](https://www.waveshare.com/product/displays/e-paper/epaper-1/10.85inch-e-paper-hat-plus-g.htm) + ESP32-S3 Zero | B/W/Y/R, dual-controller | Waveshare 10.85G controller ×2 | 1360×480, 2bpp | `waveshare_1085g_dual` | `waveshare-1085g` |
 | [Waveshare **PhotoPainter 7.3"**](https://www.waveshare.com/esp32-s3-photopainter.htm) | Spectra-6, single | ED2208-GCA | 800×480, 4bpp | `spectra6_spi_single` | `waveshare-photopainter-73` |
 | [**M5Stack PaperS3**](https://docs.m5stack.com/en/core/PaperS3) | Grayscale (4.7") | none (raw parallel glass) | 960×540, 4bpp gray | `parallel_epd_gray` | `m5stack-papers3` |
 | **Xteink X4** | Mono B/W (4.26") | SSD1677 | 800×480, 1bpp | `ssd1677_gray` (`EPD_MONO`) | `xteink-x4` |
@@ -215,7 +215,7 @@ format the firmware expects for that kind:
 | `seeed_reterminal_e1001`, `xiao_epaper_75`, `seeed_ee04_75`, `xteink_x4` | 1bpp packed mono (bit 1 = white) | 48000 B |
 | `seeed_reterminal_e1001_gray` | 2bpp packed 4-gray (4 px/byte, MSB-first, 0b00=black..0b11=white) | 96000 B |
 | `xiao_epaper_75_bwr` | 2bpp packed BWR (4 px/byte, MSB-first, 0=black 1=white 2=red, 3 reserved) | 96000 B |
-| `waveshare_10in85g` | 2bpp packed B/W/Y/R (4 px/byte, MSB-first, 0=black 1=white 2=yellow 3=red) | 163200 B |
+| `waveshare_1085g` | 2bpp packed B/W/Y/R (4 px/byte, MSB-first, 0=black 1=white 2=yellow 3=red) | 163200 B |
 | `seeed_reterminal_e1003`, `seeed_ee03` | 4bpp packed grayscale (0=black…0xF=white) | 1314144 B |
 | `m5stack_papers3` | 4bpp packed grayscale (0=black…0xF=white) | 259200 B |
 
