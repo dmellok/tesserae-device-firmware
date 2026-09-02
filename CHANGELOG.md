@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New target: Waveshare 10.85-inch e-Paper HAT+ (G) driven by an ESP32-S3
+  Zero. The 1360x480 dual-controller B/W/Y/R panel has a dedicated software-SPI
+  driver, because its reference adapter requires chip-select to pulse for every
+  byte. Frames use the native 2bpp `bwry_4` wire format (163200 bytes) and are
+  split into two 170-byte halves per row. Envs `waveshare-1085g` and
+  `waveshare-1085g-selftest`, hardware-catalog kind `waveshare_1085g`.
+  Verified on physical hardware.
+
 - New target: Seeed XIAO ePaper Display Board EE03 driving the 10.3"
   monochrome panel (ED103TC2, 1872x1404, 16-level grayscale via an onboard
   IT8951E/DX). Reuses the it8951_gray driver unchanged; the board header

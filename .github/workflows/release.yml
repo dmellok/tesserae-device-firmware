@@ -40,6 +40,7 @@ jobs:
         # the OTA signer stamps into each signed descriptor.
         include:
           - { env: waveshare-133e6,           kind: waveshare_133e6, chip: esp32s3 }
+          - { env: waveshare-1085g,           kind: waveshare_1085g, chip: esp32s3 }
           - { env: waveshare-photopainter-73, kind: waveshare_photopainter_73, chip: esp32s3 }
           - { env: seeed-reterminal-e1001,    kind: seeed_reterminal_e1001, chip: esp32s3 }
           - { env: seeed-reterminal-e1001-gray, kind: seeed_reterminal_e1001_gray, chip: esp32s3 }

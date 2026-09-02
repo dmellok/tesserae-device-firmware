@@ -32,6 +32,9 @@ const epd_driver_t *epd_active_driver(void) { return &ssd1677_gray_driver; }
 #elif defined(PANEL_DRIVER_PARALLEL_EPD_GRAY)
 #  include "drivers/parallel_epd_gray.h"
 const epd_driver_t *epd_active_driver(void) { return &parallel_epd_gray_driver; }
+#elif defined(PANEL_DRIVER_WAVESHARE_1085G_DUAL)
+#  include "drivers/waveshare_1085g_dual.h"
+const epd_driver_t *epd_active_driver(void) { return &waveshare_1085g_dual_driver; }
 #else
 #  error "No PANEL_DRIVER_* selected by the board header."
 #endif
