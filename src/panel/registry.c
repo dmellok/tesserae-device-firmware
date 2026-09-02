@@ -8,7 +8,10 @@
 #include "panel/epd_panel.h"
 #include "app_config.h"   /* -> boards/board.h -> PANEL_DRIVER_* */
 
-#if defined(PANEL_DRIVER_SPECTRA6_SPI_DUAL)
+#if defined(PANEL_DRIVER_WAVESHARE_10IN85G_DUAL)
+#  include "drivers/waveshare_10in85g_dual.h"
+const epd_driver_t *epd_active_driver(void) { return &waveshare_10in85g_dual_driver; }
+#elif defined(PANEL_DRIVER_SPECTRA6_SPI_DUAL)
 #  include "drivers/spectra6_spi_dual.h"
 const epd_driver_t *epd_active_driver(void) { return &spectra6_spi_dual_driver; }
 #elif defined(PANEL_DRIVER_SPECTRA6_T133A01_DUAL)

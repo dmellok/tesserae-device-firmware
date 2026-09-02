@@ -32,12 +32,13 @@ one board (and thus one driver) per PlatformIO environment.
 | [Seeed **XIAO ePaper Display Board — EE04**](https://www.seeedstudio.com/XIAO-ePaper-Display-Board-EE04-p-6560.html) + 7.5" mono (24-pin) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `seeed-ee04-75` |
 | [Seeed **XIAO ePaper Display Board — EE04**](https://www.seeedstudio.com/XIAO-ePaper-Display-Board-EE04-p-6560.html) + 7.3" Spectra-6 (50-pin) | Spectra-6, single | UC81xx | 800×480, 4bpp | `spectra6_spi_single` | `seeed-ee04-73e6` |
 | [Waveshare **ESP32-S3-ePaper-13.3E6**](https://www.waveshare.com/esp32-s3-epaper-13.3e6.htm) | Spectra-6, dual-controller | UC81xx ×2 | 1200×1600, 4bpp | `spectra6_spi_dual` | `waveshare-133e6` |
+| [Waveshare **10.85-inch e-Paper HAT+ (G)**](https://www.waveshare.com/product/displays/e-paper/epaper-1/10.85inch-e-paper-hat-plus-g.htm) + ESP32-S3 Zero | B/W/Y/R, dual-controller | Waveshare 10.85G controller ×2 | 1360×480, 2bpp | `waveshare_10in85g_dual` | `waveshare-1085g` |
 | [Waveshare **PhotoPainter 7.3"**](https://www.waveshare.com/esp32-s3-photopainter.htm) | Spectra-6, single | ED2208-GCA | 800×480, 4bpp | `spectra6_spi_single` | `waveshare-photopainter-73` |
 | [**M5Stack PaperS3**](https://docs.m5stack.com/en/core/PaperS3) | Grayscale (4.7") | none (raw parallel glass) | 960×540, 4bpp gray | `parallel_epd_gray` | `m5stack-papers3` |
 | **Xteink X4** | Mono B/W (4.26") | SSD1677 | 800×480, 1bpp | `ssd1677_gray` (`EPD_MONO`) | `xteink-x4` |
 
-The four reTerminals, the PhotoPainter, the EE02, and the TRMNL 7.5" kit have been
-verified end-to-end on real hardware; the Waveshare 13.3E6 is the seed target and
+The four reTerminals, the PhotoPainter, the EE02, the TRMNL 7.5" kit, and the
+Waveshare 10.85-inch G have been verified end-to-end on real hardware; the Waveshare 13.3E6 is the seed target and
 builds green. The EE04 pair builds green but is **not yet hardware-verified**
 (pin map taken from Seeed_GFX; the EE04 takes one panel on either its 24-pin or
 50-pin FPC — flash the env matching the attached panel and set the jumper caps
@@ -51,6 +52,14 @@ board and glass, and `xteink-x4` is the SSD1677 build.
 Each board also has a `…-selftest` env that paints a driver-only
 test pattern (colour bars / gray ramp / mono stripes) with no networking — flash
 that first when bringing up a new unit.
+
+The `waveshare-1085g` env is a verified **ESP32-S3 Zero wiring profile** for
+Waveshare's 10.85-inch e-Paper HAT+ (G), not a generic pin-compatible image for
+other ESP32 adapters. This mapping uses the S3 Zero's accessible no-solder
+GPIOs and deliberately differs from Waveshare's separate ESP32-S3 reference
+board. Wire the panel as defined in `boards/waveshare_1085g.h`: SCLK=GPIO12,
+MOSI=GPIO11, CS_M=GPIO10, CS_S=GPIO9, DC=GPIO8, RST=GPIO7, BUSY=GPIO6, and
+PWR=GPIO5.
 
 Reuse is the norm — most boards share an existing driver and differ only in the
 board header:
@@ -206,6 +215,7 @@ format the firmware expects for that kind:
 | `seeed_reterminal_e1001`, `xiao_epaper_75`, `seeed_ee04_75`, `xteink_x4` | 1bpp packed mono (bit 1 = white) | 48000 B |
 | `seeed_reterminal_e1001_gray` | 2bpp packed 4-gray (4 px/byte, MSB-first, 0b00=black..0b11=white) | 96000 B |
 | `xiao_epaper_75_bwr` | 2bpp packed BWR (4 px/byte, MSB-first, 0=black 1=white 2=red, 3 reserved) | 96000 B |
+| `waveshare_10in85g` | 2bpp packed B/W/Y/R (4 px/byte, MSB-first, 0=black 1=white 2=yellow 3=red) | 163200 B |
 | `seeed_reterminal_e1003`, `seeed_ee03` | 4bpp packed grayscale (0=black…0xF=white) | 1314144 B |
 | `m5stack_papers3` | 4bpp packed grayscale (0=black…0xF=white) | 259200 B |
 

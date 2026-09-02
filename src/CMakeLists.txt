@@ -17,6 +17,7 @@ idf_component_register(
         "main.c"
         "epd_driver.c"
         "panel/registry.c"
+        "panel/drivers/waveshare_10in85g_dual.c"
         "panel/drivers/spectra6_spi_dual.c"
         "panel/drivers/spectra6_t133a01_dual.c"
         "panel/drivers/spectra6_spi_single.c"
