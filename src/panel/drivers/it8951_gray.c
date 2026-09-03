@@ -59,11 +59,32 @@ static const char *TAG = "epd_it8951";
 #define PIXFMT_4BPP   2
 #define ENDIAN_L      0
 #define ENDIAN_B      1
+#define MODE_INIT     0        /* drive every pixel to white, reference-free */
 #define MODE_DU       1        /* fast 2-level "direct update" waveform */
 #define MODE_GC16     2        /* 16-level grayscale waveform */
 
+/* INIT waveform index. Mode 0 is INIT in every IT8951 waveform table we know
+ * of; overridable per build in case a panel batch maps it elsewhere. */
+#ifndef EPD_IT8951_INIT_MODE
+#define EPD_IT8951_INIT_MODE MODE_INIT
+#endif
+
 static spi_device_handle_t s_spi;
 static bool     s_port_inited = false;
+
+/* A partial (area) pass ran since the last full-panel pass in this power
+ * session. The controller derives every GC16 transition from the previous
+ * image it holds, and after a wake that hard-reset it and loaded only an
+ * echo rect, that reference no longer matches the glass outside the rect:
+ * a plain GC16 full paint then under-drives every pixel the old frame had
+ * dark and the old content shows through (dmellok/tesserae#274, seen on a
+ * pushed frame painted in the touch-linger window after a DU tap echo).
+ * A full paint that follows a partial first runs an INIT pass, which
+ * drives the whole panel to white regardless of the reference, so the GC16
+ * that follows starts from a reference that is true. */
+static bool     s_partial_since_full;
+
+static void fill_and_refresh(uint8_t color, int wave);
 static uint32_t s_img_buf_addr;
 /* Wedge-recovery deep-sleep budget (see it8951_init); cleared on success. */
 static RTC_DATA_ATTR uint8_t s_recovery_sleeps;
@@ -398,11 +419,16 @@ static void write_and_refresh(const uint8_t *fb)
 
     write_cmd(STANDBY);           /* rest the panel power between updates */
     free(scratch);
+    s_partial_since_full = false;
     ESP_LOGI(TAG, "refresh done");
 }
 
 static void it8951_display(const uint8_t *image)
 {
+    if (s_partial_since_full) {
+        ESP_LOGI(TAG, "full paint after a partial pass: INIT clear first");
+        fill_and_refresh(0x0F, EPD_IT8951_INIT_MODE);
+    }
     write_and_refresh(image);
 }
 
@@ -467,6 +493,7 @@ static void it8951_partial_wave(const uint8_t *fb, int x, int y, int w,
     wait_display_done();
     write_cmd(STANDBY);
     free(scratch);
+    s_partial_since_full = true;
     ESP_LOGI(TAG, "partial mode %d (%d,%d %dx%d)", wave, x0, y, aw, h);
 }
 
@@ -532,8 +559,8 @@ int it8951_bench_wave(const uint8_t *fb, int x, int y, int w, int h, int wave)
     return (int)((esp_timer_get_time() - t0) / 1000);
 }
 
-/* Fill the whole panel with one gray level (nibble). */
-static void it8951_clear(uint8_t color)
+/* Fill the whole panel with one gray level (nibble) using `wave`. */
+static void fill_and_refresh(uint8_t color, int wave)
 {
     const int iPitch = EPD_WIDTH / 2;
     uint8_t *row = heap_caps_malloc(iPitch, MALLOC_CAP_DMA);
@@ -552,12 +579,18 @@ static void it8951_clear(uint8_t color)
     for (int y = 0; y < EPD_HEIGHT; y++) spi_device_polling_transmit(s_spi, &t);
     cs(1);
     write_cmd(LD_IMG_END);
-    uint16_t dargs[5] = { 0, 0, EPD_WIDTH, EPD_HEIGHT, MODE_GC16 };
+    uint16_t dargs[5] = { 0, 0, EPD_WIDTH, EPD_HEIGHT, (uint16_t)wave };
     send_cmd_args(DPY_AREA, dargs, 5);
     wait_display_done();
     write_cmd(STANDBY);
     free(row);
-    ESP_LOGI(TAG, "clear done");
+    s_partial_since_full = false;
+    ESP_LOGI(TAG, "fill mode %d done", wave);
+}
+
+static void it8951_clear(uint8_t color)
+{
+    fill_and_refresh(color, MODE_GC16);
 }
 
 /* Diagnostic: 16 horizontal bands, black -> white gray ramp. A healthy panel
@@ -590,6 +623,7 @@ static void it8951_show_color_bars(void)
     wait_display_done();
     write_cmd(STANDBY);
     free(row);
+    s_partial_since_full = false;
     ESP_LOGI(TAG, "gray ramp done");
 }
 

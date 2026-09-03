@@ -25,6 +25,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `seeed_ee03`, BLE hardware code 11. Builds green; awaiting hardware
   verification.
 
+### Fixed
+
+- IT8951 panels (reTerminal E1003, XIAO EE03): a full paint that follows a
+  partial pass in the same wake now runs an INIT clear first
+  (dmellok/tesserae#274). The controller derives GC16 transitions from the
+  previous image it holds, and after a touch wake that hard-reset it and
+  loaded only the tap echo's rect, that reference no longer matched the
+  glass; the pushed frame painted in the linger window then left the old
+  frame's dark content showing through, while timed paints stayed clean.
+  INIT drives every pixel to white regardless of the reference, so the GC16
+  that follows starts true. Costs one extra flash and about 1.5 s, only on
+  full paints that follow a tap.
+
 ### Changed
 
 - A pushed patch whose rects cover 60% or more of the panel now paints with
