@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- reTerminal Sticky: a partial refresh no longer dims the rest of the page.
+  The controller's partial waveform runs over the whole panel and drives
+  every pixel whose two RAM planes differ; after a 4-gray paint the planes
+  differ for every grey pixel, so a windowed patch shifted every grey on
+  the page. Both planes are now seeded from the driver's mono shadow before
+  the window is written, so everything outside it is a no-change pixel.
+  Costs about 200 ms per patch (roughly 875 ms all in).
+
+### Fixed
+
 - The protocol v2 push stream (SSE) now stays connected. The pump's short
   read timeout, which an idle stream hits between 25-second keepalives, comes
   back from the HTTP client as a negative "try again" code rather than zero

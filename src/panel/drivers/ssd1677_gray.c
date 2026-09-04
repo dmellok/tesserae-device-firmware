@@ -879,9 +879,31 @@ static void ssd1677_partial_two_tone(const uint8_t *image, int x, int y, int w, 
     int64_t t0 = esp_timer_get_time();
     bus_hold();
 
-    /* New bits into 0x24, row by row (the row buffer lives on the stack, in
-     * internal RAM, which is what the SPI path wants). The shadow is updated
-     * only after the old bits have gone out from it below. */
+    /* Seed BOTH planes, panel-wide, from the shadow first. The partial
+     * waveform runs over the whole panel, not just the window we write:
+     * every pixel whose 0x24 and 0x26 bits differ gets driven. After a gray
+     * paint the RAM holds the two gray planes, which differ for every grey
+     * pixel, so a window update dimmed the rest of the page (seen on the
+     * bench). With both planes equal to the mono shadow everywhere, every
+     * pixel outside the window is "no change" and keeps whatever grey the
+     * glass shows. Two plane writes cost about 200 ms on this bus, paid on
+     * every partial because the panel is power-cycled between them. */
+    set_ram_window(0, EPD_PANEL_SCAN_W - 1, 0, EPD_PANEL_SCAN_H - 1);
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(SSD_DTM1);
+    for (int cy = 0; cy < EPD_PANEL_SCAN_H; cy++)
+        send_data(s_shadow + (size_t)cy * SHADOW_STRIDE, SHADOW_STRIDE);
+    gpio_set_level(EPD_PIN_CS, 1);
+    set_ram_window(0, EPD_PANEL_SCAN_W - 1, 0, EPD_PANEL_SCAN_H - 1);
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(SSD_DTM2);
+    for (int cy = 0; cy < EPD_PANEL_SCAN_H; cy++)
+        send_data(s_shadow + (size_t)cy * SHADOW_STRIDE, SHADOW_STRIDE);
+    gpio_set_level(EPD_PIN_CS, 1);
+
+    /* New bits into 0x24 for the window only, row by row (the row buffer
+     * lives on the stack, in internal RAM, which is what the SPI path wants).
+     * 0x26 already holds the old bits from the seed above. */
     set_ram_window(cx0, cx1 - 1, cy0, cy1 - 1);
     gpio_set_level(EPD_PIN_CS, 0);
     send_cmd(SSD_DTM1);
@@ -895,14 +917,6 @@ static void ssd1677_partial_two_tone(const uint8_t *image, int x, int y, int w, 
         }
         send_data(row, (size_t)nb);
     }
-    gpio_set_level(EPD_PIN_CS, 1);
-
-    /* Old bits into 0x26 from the shadow. */
-    set_ram_window(cx0, cx1 - 1, cy0, cy1 - 1);
-    gpio_set_level(EPD_PIN_CS, 0);
-    send_cmd(SSD_DTM2);
-    for (int cy = cy0; cy < cy1; cy++)
-        send_data(s_shadow + (size_t)cy * SHADOW_STRIDE + cx0 / 8, (size_t)nb);
     gpio_set_level(EPD_PIN_CS, 1);
 
     /* Now the shadow may take the new bits. */
