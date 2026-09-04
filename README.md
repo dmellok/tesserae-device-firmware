@@ -95,15 +95,21 @@ The three XIAO ESP32-S3 boards (PhotoPainter, EE02, TRMNL 7.5") are **native-USB
 that route those pins to the panel. The **PaperS3** takes the same base for the
 same reason: it is native-USB too, though it is not a XIAO board.
 
-**Touch (reTerminal E1003 only).** The E1003's onboard **GT911** capacitive
-digitiser can be enabled per-device from the server (Tesserae >= 0.140.0). It is
-a deep-sleep wake source: a tap or swipe wakes the device, which reports the raw
-stroke on the frame GET; the server classifies the gesture and repaints in the
-same response (no on-device gesture logic). Battery cost: keeping touch armed
-holds the GT911 scanning through deep sleep, drawing a few mA continuously, which
-materially shortens battery life, so it is best used docked or on USB. Off by
-default; a touch-less E1003 is unchanged, and the other seven boards build
-byte-identical (all touch code is behind `#if BOARD_HAS_TOUCH`).
+**Touch (reTerminal E1003 and reTerminal Sticky).** The onboard **GT911**
+capacitive digitiser on these boards can be enabled per-device from the server
+(Tesserae >= 0.140.0). It is a deep-sleep wake source: a tap or swipe wakes the
+device, which reports the raw stroke on the frame GET; the server classifies the
+gesture and repaints in the same response (no on-device gesture logic). Battery
+cost: keeping touch armed holds the GT911 scanning through deep sleep, drawing a
+few mA continuously, which materially shortens battery life, so it is best used
+docked or on USB. Off by default; a board with touch left off is unchanged, and
+every other board builds byte-identical (all touch code is behind
+`#if BOARD_HAS_TOUCH`). The Sticky's digitiser sits on its own I2C bus behind
+a gated power rail that the firmware holds up through deep sleep while touch
+is enabled; `seeed-reterminal-sticky-selftest` streams raw and frame
+coordinates for checking a unit. The E1003 additionally runs
+on-device touch widgets (touch v3) because its IT8951 has partial refresh; the
+Sticky's SSD1677 path has none, so it stops at server-classified strokes.
 
 ## Architecture
 

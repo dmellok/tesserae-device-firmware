@@ -2,7 +2,7 @@
  * Board: Seeed reTerminal Sticky
  *   - MCU:   ESP32-S3, 8 MB PSRAM, 32 MB QSPI flash
  *   - Panel: 3.97" 800x480, 4-level grayscale, SSD1677 over SPI
- *   - Touch: capacitive, I2C
+ *   - Touch: Goodix GT911 capacitive, on its own I2C bus (see below)
  *
  * Family E. Uses the ssd1677_gray driver.
  *
@@ -112,6 +112,52 @@
 #define BOARD_SHT4X_I2C_SCL        0
 #define BOARD_SHT4X_I2C_HZ         100000
 #define BOARD_SHT4X_I2C_ADDR       0x44
+
+/* Onboard Goodix GT911 capacitive touch controller.
+ *
+ * Wiring is from Seeed's Sticky hardware overview and matches CrossPoint's
+ * board profile: the GT911 has its OWN I2C bus (SDA GPIO3 / SCL GPIO2), not
+ * the sensor bus the gauge and SHT40 share, so it takes the second I2C
+ * controller (port 1). TP_INT on GPIO21 is RTC-capable, so it folds into the
+ * buttons' ext1 ANY_LOW wake mask exactly as on the E1003. TP_RST is GPIO41.
+ *
+ * The digitiser is POWER-GATED behind TOUCH_EN on GPIO42 (active high, a load
+ * switch). touch_init() drives it high before the reset/probe, and
+ * touch_prepare_sleep() latches it high through deep sleep so the controller
+ * stays alive to raise INT. GPIO41/42 are digital pads (not RTC), so those
+ * holds go through gpio_deep_sleep_hold_en(); if a touch never wakes the
+ * board, BOARD_TOUCH_HOLD_RST is the first knob to flip (the E1003 wakes only
+ * with its TP_RST unheld, but that board has an external pull-up on the line).
+ *
+ * Address 0x5d is selected explicitly during reset as on the E1003, and the
+ * point-1 block at 0x8150 (coords at byte 0, no track id) matches what
+ * CrossPoint found on this same GT911.
+ *
+ * ORIENTATION VERIFIED ON HARDWARE (selftest corner taps). The digitiser
+ * reports portrait coordinates, raw X across the 480 axis and raw Y along the
+ * 800 axis, and reads 0..479 x 0..799 against the frame with only Y reversed:
+ * a top-left tap logged raw (16,765), top-right (475,787), bottom-left
+ * (30,4). So no swap, X straight through, Y inverted. (The derivation from
+ * CrossPoint's swap-and-flip transform had also predicted an X inversion; the
+ * glass says otherwise, and the glass wins.) Enabled at runtime by the server
+ * (touch_enabled config); disabled by default. */
+#define BOARD_HAS_TOUCH            1
+#define BOARD_TOUCH_I2C_PORT       1
+#define BOARD_TOUCH_I2C_SDA        3
+#define BOARD_TOUCH_I2C_SCL        2
+#define BOARD_TOUCH_I2C_HZ         400000
+#define BOARD_TOUCH_INT_PIN        21
+#define BOARD_TOUCH_RST_PIN        41
+#define BOARD_TOUCH_EN_PIN         42
+#define BOARD_TOUCH_HOLD_RST       1
+#define BOARD_TOUCH_I2C_ADDR       0x5d
+#define BOARD_TOUCH_SWAP_XY        0
+#define BOARD_TOUCH_INVERT_X       0
+#define BOARD_TOUCH_INVERT_Y       1
+/* Deep-sleep wake stub: bit-bang the GT911 from RTC memory ~1 ms after wake so
+ * a quick tap is captured before the boot lets the finger lift. SDA/SCL 3/2
+ * are in the low GPIO bank the stub needs. Undefine to disable. */
+#define BOARD_TOUCH_WAKE_STUB      1
 
 /* Front buttons. The AI/power key doubles as the wake button. */
 /* Passive buzzer, driven by LEDC PWM: frequency sets the pitch, duty sets the

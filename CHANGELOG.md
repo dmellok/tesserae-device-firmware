@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Touch on the Seeed reTerminal Sticky: the board header now declares its
+  GT911 (own I2C bus on SDA3/SCL2, INT GPIO21, RST GPIO41, power-gated by
+  TOUCH_EN on GPIO42), so touch wake, stroke capture and the RTC wake-stub
+  quick-tap path build for the `seeed-reterminal-sticky` env, switched on by
+  the server's `touch_enabled` config like the E1003. To get there the GT911
+  driver and the wake stub take a dedicated `BOARD_TOUCH_I2C_*` bus (falling
+  back to the SHT4x bus), a gated `BOARD_TOUCH_EN_PIN` held high across deep
+  sleep, and an opt-in `BOARD_TOUCH_HOLD_RST`; the shared I2C accessor caches
+  one bus per hardware port instead of one overall. Orientation verified on
+  hardware with the `-selftest` env's corner-tap readout (no swap, Y
+  inverted).
+
 - New target: Waveshare 10.85-inch e-Paper HAT+ (G) driven by an ESP32-S3
   Zero. The 1360x480 dual-controller B/W/Y/R panel has a dedicated software-SPI
   driver, because its reference adapter requires chip-select to pulse for every

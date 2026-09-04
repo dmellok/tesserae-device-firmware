@@ -24,9 +24,16 @@ bool touch_wakestub_take(int *rx, int *ry)
 #include "soc/io_mux_reg.h"   /* IO_MUX_GPIOn_REG, PIN_FUNC_GPIO, PIN_* helpers */
 #include "soc/usb_serial_jtag_reg.h"   /* USB_SERIAL_JTAG_CONF0: USB pad enable */
 
-/* --- bus wiring (shared with the SHT4x/GT911 I2C bus, port 0) --- */
-#define TWS_SDA   BOARD_SHT4X_I2C_SDA
-#define TWS_SCL   BOARD_SHT4X_I2C_SCL
+/* --- bus wiring: the GT911's bus, same fallback rule as touch_gt911.c (a
+ * board without a dedicated BOARD_TOUCH_I2C_* bus shares the SHT4x's). --- */
+#ifndef BOARD_TOUCH_I2C_SDA
+#define BOARD_TOUCH_I2C_SDA  BOARD_SHT4X_I2C_SDA
+#endif
+#ifndef BOARD_TOUCH_I2C_SCL
+#define BOARD_TOUCH_I2C_SCL  BOARD_SHT4X_I2C_SCL
+#endif
+#define TWS_SDA   BOARD_TOUCH_I2C_SDA
+#define TWS_SCL   BOARD_TOUCH_I2C_SCL
 #define TWS_ADDR  BOARD_TOUCH_I2C_ADDR   /* 7-bit, 0x5d */
 
 /* GT911 registers (16-bit, big-endian address on the wire). Kept in sync with
@@ -40,15 +47,19 @@ bool touch_wakestub_take(int *rx, int *ry)
 #define TWS_STRETCH_MAX  200
 
 /* Only pins 0..31 are reachable through the single-word GPIO_* registers used
- * here; both GPIO19 (SDA) and GPIO20 (SCL) qualify on the reTerminal E1003. */
+ * here; GPIO19/20 (E1003) and GPIO3/2 (Sticky) all qualify. */
 _Static_assert(TWS_SDA < 32 && TWS_SCL < 32,
                "wake-stub bit-bang needs SDA/SCL in the low GPIO bank (0..31)");
 
-/* Map a GPIO number to its IO_MUX register at compile time. Only the pins this
- * stub actually drives need an entry. */
+/* Map a GPIO number to its IO_MUX register at compile time. The indirection
+ * lets the board macro expand to its number before the token paste, so
+ * TWS_IOMUX_REG(TWS_SDA) becomes IO_MUX_GPIO3_REG on the Sticky and
+ * IO_MUX_GPIO19_REG on the E1003. Only the pins this stub drives get an entry. */
+#define TWS_IOMUX_REG_(n)  IO_MUX_GPIO##n##_REG
+#define TWS_IOMUX_REG(n)   TWS_IOMUX_REG_(n)
 static inline uint32_t RTC_IRAM_ATTR tws_iomux_reg(int pin)
 {
-    return (pin == TWS_SDA) ? IO_MUX_GPIO19_REG : IO_MUX_GPIO20_REG;
+    return (pin == TWS_SDA) ? TWS_IOMUX_REG(TWS_SDA) : TWS_IOMUX_REG(TWS_SCL);
 }
 
 /* Open-drain line control: "release" floats the pin (external pull-up drives it
@@ -173,11 +184,14 @@ void RTC_IRAM_ATTR esp_wake_deep_sleep(void)
     g_touch_wake_capture.runs++;
     g_touch_wake_capture.stage = TWS_STAGE_PINS;
 
+#if TWS_SDA == 19 || TWS_SDA == 20 || TWS_SCL == 19 || TWS_SCL == 20
     /* GPIO19/20 double as the S3's USB D-/D+ pads, and the deep-sleep wake reset
      * re-enables the USB pad function, which DISCONNECTS them from the GPIO
      * matrix (the normal gpio driver clears this bit for us at full boot; here we
-     * must do it ourselves or every bit-bang goes nowhere). */
+     * must do it ourselves or every bit-bang goes nowhere). Only the E1003 bus
+     * sits on those pads; a board with its digitiser elsewhere leaves USB alone. */
     CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_USB_PAD_ENABLE);
+#endif
 
     tws_pin_init(TWS_SCL);
     tws_pin_init(TWS_SDA);

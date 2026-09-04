@@ -7,8 +7,16 @@
  * which does the tap/swipe/slide interpretation.
  *
  * All hardware entry points are compiled only when the active board defines
- * BOARD_HAS_TOUCH (currently just the reTerminal E1003); the other boards build
- * byte-identical. The pure coordinate math lives in touch_coords.[ch].
+ * BOARD_HAS_TOUCH (the reTerminal E1003 and the reTerminal Sticky); the other
+ * boards build byte-identical. The pure coordinate math lives in
+ * touch_coords.[ch].
+ *
+ * Board knobs (see boards/seeed_reterminal_e1003.h and _sticky.h):
+ *   BOARD_TOUCH_INT_PIN / _RST_PIN / _I2C_ADDR / _SWAP_XY / _INVERT_X / _INVERT_Y
+ *   BOARD_TOUCH_I2C_PORT / _SDA / _SCL / _HZ   dedicated bus; default = SHT4x bus
+ *   BOARD_TOUCH_EN_PIN                          gated digitiser rail (active high)
+ *   BOARD_TOUCH_HOLD_RST                        latch TP_RST high across sleep
+ *   BOARD_TOUCH_WAKE_STUB                       RTC wake-stub quick-tap capture
  */
 #pragma once
 

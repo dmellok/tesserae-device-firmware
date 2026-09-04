@@ -20,8 +20,29 @@
 static const char *TAG = "touch";
 
 /* --- board wiring (with safe defaults so the file always compiles) --- */
+/* The touch bus. Boards whose GT911 shares the sensor bus (E1003) leave these
+ * undefined and inherit the SHT4x wiring; a board with a dedicated digitiser
+ * bus (reTerminal Sticky: SDA3/SCL2 on port 1) names its own. */
+#ifndef BOARD_TOUCH_I2C_PORT
+#define BOARD_TOUCH_I2C_PORT   BOARD_SHT4X_I2C_PORT
+#endif
+#ifndef BOARD_TOUCH_I2C_SDA
+#define BOARD_TOUCH_I2C_SDA    BOARD_SHT4X_I2C_SDA
+#endif
+#ifndef BOARD_TOUCH_I2C_SCL
+#define BOARD_TOUCH_I2C_SCL    BOARD_SHT4X_I2C_SCL
+#endif
+#ifndef BOARD_TOUCH_I2C_HZ
+#define BOARD_TOUCH_I2C_HZ     BOARD_SHT4X_I2C_HZ
+#endif
 #ifndef BOARD_TOUCH_I2C_ADDR
 #define BOARD_TOUCH_I2C_ADDR   0x5d
+#endif
+/* BOARD_TOUCH_HOLD_RST: latch TP_RST high through deep sleep. Off by default
+ * (the E1003 wakes only with it unheld; its line has an external pull-up).
+ * A board with no pull-up on TP_RST, such as the Sticky, sets it. */
+#ifndef BOARD_TOUCH_HOLD_RST
+#define BOARD_TOUCH_HOLD_RST   0
 #endif
 #ifndef BOARD_TOUCH_SWAP_XY
 #define BOARD_TOUCH_SWAP_XY    0
@@ -65,6 +86,28 @@ static esp_err_t gt_write_u8(uint16_t reg, uint8_t val)
     return i2c_master_transmit(s_dev, b, 3, GT_TIMEOUT_MS);
 }
 
+/* Digitiser power rail. Some boards gate the GT911 behind a load switch
+ * (Sticky: TOUCH_EN on GPIO42, active high). Drive it on before any bus
+ * traffic, release a hold left from the last sleep first (a held pad ignores
+ * the write), and give the rail a moment to settle. Compiles to nothing when
+ * the board leaves BOARD_TOUCH_EN_PIN undefined. */
+static void touch_power_on(void)
+{
+#ifdef BOARD_TOUCH_EN_PIN
+    static bool s_powered = false;
+    if (s_powered) return;
+    /* Configure the drive BEFORE releasing a hold left from the last sleep:
+     * the registers take the write while the pad is still latched, so when
+     * the hold drops the pad is already driven high and the rail never dips
+     * on a touch wake (a dip would reset the GT911 and lose the point). */
+    gpio_set_level((gpio_num_t)BOARD_TOUCH_EN_PIN, 1);
+    gpio_set_direction((gpio_num_t)BOARD_TOUCH_EN_PIN, GPIO_MODE_OUTPUT);
+    gpio_hold_dis((gpio_num_t)BOARD_TOUCH_EN_PIN);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    s_powered = true;
+#endif
+}
+
 /* Reset + I2C-address-select. The GT911 latches its 7-bit address from the INT
  * level at the RST rising edge: INT low -> 0x5d, INT high -> 0x14. We drive the
  * 0x5d sequence explicitly rather than trust board pulls. Leaves TP_RST high and
@@ -75,6 +118,7 @@ static void gt_reset_select_5d(void)
     const int intp = BOARD_TOUCH_INT_PIN;
 
     gpio_hold_dis(rst);   /* release any latch left from the last deep sleep */
+    touch_power_on();     /* no-op unless the digitiser rail is gated */
 
     gpio_set_direction(rst,  GPIO_MODE_OUTPUT);
     gpio_set_direction(intp, GPIO_MODE_OUTPUT);
@@ -98,15 +142,17 @@ esp_err_t touch_init(void)
 {
     if (s_ready) return ESP_OK;
 
-    esp_err_t err = i2c_bus_get(BOARD_SHT4X_I2C_PORT, BOARD_SHT4X_I2C_SDA,
-                                BOARD_SHT4X_I2C_SCL, &s_bus);
+    touch_power_on();
+
+    esp_err_t err = i2c_bus_get(BOARD_TOUCH_I2C_PORT, BOARD_TOUCH_I2C_SDA,
+                                BOARD_TOUCH_I2C_SCL, &s_bus);
     if (err != ESP_OK) { ESP_LOGW(TAG, "i2c bus: %s", esp_err_to_name(err)); return err; }
 
     if (s_dev == NULL) {
         i2c_device_config_t dev_cfg = {
             .dev_addr_length = I2C_ADDR_BIT_LEN_7,
             .device_address  = BOARD_TOUCH_I2C_ADDR,
-            .scl_speed_hz    = BOARD_SHT4X_I2C_HZ,
+            .scl_speed_hz    = BOARD_TOUCH_I2C_HZ,
         };
         err = i2c_master_bus_add_device(s_bus, &dev_cfg, &s_dev);
         if (err != ESP_OK) { ESP_LOGW(TAG, "add dev: %s", esp_err_to_name(err)); return err; }
@@ -265,11 +311,28 @@ void touch_prepare_sleep(void)
      * raises INT on a touch. Clear the buffer so a fresh touch triggers. */
     gt_write_u8(GT_REG_STATUS, 0);
 
-    /* Do NOT latch TP_RST with gpio_deep_sleep_hold_en(): verified on E1003
-     * hardware that enabling it breaks the ext1 touch wake (the controller stops
-     * asserting INT / the SoC never wakes). TP_RST has an external pull-up on the
-     * reTerminal, so it stays high through deep sleep on its own and the GT911
-     * keeps scanning -- confirmed by a touch waking the device via ext1. */
+    /* TP_RST: by default do NOT latch it with gpio_deep_sleep_hold_en().
+     * Verified on E1003 hardware that enabling it breaks the ext1 touch wake
+     * (the controller stops asserting INT / the SoC never wakes). TP_RST has an
+     * external pull-up on the reTerminal, so it stays high through deep sleep
+     * on its own and the GT911 keeps scanning -- confirmed by a touch waking
+     * the device via ext1. A board without that pull-up opts in with
+     * BOARD_TOUCH_HOLD_RST so the line cannot float low and reset the
+     * controller mid-sleep. */
+#if BOARD_TOUCH_HOLD_RST
+    gpio_set_level((gpio_num_t)BOARD_TOUCH_RST_PIN, 1);
+    gpio_hold_en((gpio_num_t)BOARD_TOUCH_RST_PIN);
+    gpio_deep_sleep_hold_en();
+#endif
+
+    /* Gated digitiser rail: hold TOUCH_EN high or the GT911 loses power the
+     * moment the pads isolate, and nothing is left to raise INT. This is the
+     * standing cost the touch_enabled help text warns about. */
+#ifdef BOARD_TOUCH_EN_PIN
+    gpio_set_level((gpio_num_t)BOARD_TOUCH_EN_PIN, 1);
+    gpio_hold_en((gpio_num_t)BOARD_TOUCH_EN_PIN);
+    gpio_deep_sleep_hold_en();
+#endif
 
     /* TP_INT is ACTIVE-LOW (verified on E1003 hardware: idles high, the GT911
      * pulls it low on a touch -- the "active high" board note was wrong). The
