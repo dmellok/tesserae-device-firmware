@@ -236,14 +236,24 @@ static int32_t awake_poll_s(int32_t server_next_poll_s)
     return v;
 }
 
+static void enter_ble_maintenance_from_awake_window(void);   /* defined below */
+
 static void always_on_loop(void)
 {
     ESP_LOGI(TAG, "always-on: staying awake (config always_on, poll %d s)",
              (int)rest_config_get()->awake_poll_s);
     if (wifi_sta_connect_stored() != ESP_OK)
         return;   /* no network: sleep normally, retry next wake */
-#if defined(BOARD_HAS_TOUCH) && defined(BOARD_OVERLAY_PARTIAL)
+#if BOARD_HAS_TOUCH
+    /* Every touch board, not only the overlay ones: a panel that never sleeps
+     * has no ext1 wake to catch a tap, so the loop below must poll the
+     * digitiser itself or touch simply does nothing while always-on. */
     if (touch_init() != ESP_OK) ESP_LOGW(TAG, "always-on: GT911 init failed");
+#endif
+#ifdef BOARD_HAS_BUTTONS
+    /* Likewise the front buttons: asleep they are ext1 wake sources, awake
+     * they need polling, and without it a press (and its beep) goes nowhere. */
+    buttons_poll_init();
 #endif
 
     const int64_t US = 1000000;
@@ -307,7 +317,34 @@ static void always_on_loop(void)
             continue;
         }
 
-#if defined(BOARD_HAS_TOUCH) && defined(BOARD_OVERLAY_PARTIAL)
+#ifdef BOARD_HAS_BUTTONS
+        {
+            button_id_t b = buttons_poll_pressed();
+            if (b != BTN_NONE) {
+                if (buttons_is_maintenance_button(b) &&
+                    buttons_maintenance_held_for_activation()) {
+                    enter_ble_maintenance_from_awake_window();
+                    return;   /* not reached */
+                }
+                uint64_t ev = ++s_button_event_seq;
+                ESP_LOGI(TAG, "always-on press '%s' (event %llu)", button_name(b),
+                         (unsigned long long)ev);
+                rest_set_button(button_name(b), ev);
+                buzzer_feedback();
+                /* A manual press forces a repaint (200, not 304), as on a wake. */
+                rest_config_set_frame_etag("");
+                if (fetch_and_paint_current(c->server_url)) {
+                    rest_config_save();
+                    last_paint_us = esp_timer_get_time();
+                    if (pending.frame) frame_discard(&pending);
+                }
+                rest_set_button(NULL, 0);
+                continue;
+            }
+        }
+#endif
+
+#if BOARD_HAS_TOUCH
         if (touch_int_asserted()) {
             touch_stroke_t st;
             /* The sample callback tracks a v3 slider live while the finger is
@@ -334,6 +371,9 @@ static void always_on_loop(void)
                 } else {
                     overlay_try_echo(st.x1, st.y1);
                     uint64_t ev = ++s_button_event_seq;
+                    ESP_LOGI(TAG, "always-on touch (%d,%d)->(%d,%d) %ums (event %llu)",
+                             st.x0, st.y0, st.x1, st.y1, (unsigned)st.ms,
+                             (unsigned long long)ev);
                     rest_set_touch(st.x0, st.y0, st.x1, st.y1, st.ms,
                                    c->last_frame_etag, ev);
                     painted = fetch_and_paint_current(c->server_url);
@@ -348,7 +388,9 @@ static void always_on_loop(void)
             }
             continue;
         }
+#endif /* BOARD_HAS_TOUCH */
 
+#if defined(BOARD_HAS_TOUCH) && defined(BOARD_OVERLAY_PARTIAL)
         sse_pump(150);
         if (!sse_connected()) overlay_linger_poll();   /* polling fallback */
         proto2_flush_reports();

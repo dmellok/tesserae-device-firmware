@@ -185,10 +185,28 @@ esp_err_t touch_init(void)
     }
 
     gt_write_u8(GT_REG_STATUS, 0);   /* clear any stale buffer flag */
+
+    /* TP_INT must be a plain GPIO input whichever way we got here. The reset
+     * path above leaves it that way, but the warm path (controller already
+     * answering at 0x5d, no reset) never touched the pad, and after a deep
+     * sleep or a cold boot it can sit unconfigured with its input buffer off,
+     * so touch_int_asserted() reads a constant instead of the line. Pull-up:
+     * the GT911 drives INT low to report, so idle reads high with or without
+     * an external pull. */
+    {
+        gpio_config_t io = {
+            .pin_bit_mask = 1ULL << BOARD_TOUCH_INT_PIN,
+            .mode         = GPIO_MODE_INPUT,
+            .pull_up_en   = GPIO_PULLUP_ENABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type    = GPIO_INTR_DISABLE,
+        };
+        gpio_config(&io);
+    }
     s_ready = true;
-    ESP_LOGI(TAG, "GT911 up: id='%c%c%c' max=%dx%d",
+    ESP_LOGI(TAG, "GT911 up: id='%c%c%c' max=%dx%d int=%d",
              id[0] ? id[0] : '?', id[1] ? id[1] : '?', id[2] ? id[2] : '?',
-             s_rmax_x, s_rmax_y);
+             s_rmax_x, s_rmax_y, gpio_get_level(BOARD_TOUCH_INT_PIN));
     return ESP_OK;
 }
 

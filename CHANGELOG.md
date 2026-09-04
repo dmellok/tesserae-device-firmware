@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Always-on panels now answer taps and front-button presses. The stay-awake
+  loop only serviced the digitiser on boards with partial refresh, and never
+  polled the buttons at all, so a reTerminal Sticky set to stay awake ignored
+  every tap and press (and their beeps). Every touch board now polls the
+  GT911 while awake, presses are dispatched like a button wake, and the
+  touch driver configures TP_INT as an input on the warm init path too, where
+  it had been left unconfigured.
+
 ## [1.29.0] - 2026-09-04
 
 ### Added
