@@ -239,7 +239,7 @@ int main(void)
         memset(&t, 0, sizeof t);
         t.x = 2; t.y = 2; t.w = 12; t.h = 4; t.align = 0; t.max_chars = 8;
 
-        p2_draw_text(fb, FW, FH, &t, &a, "AB");
+        p2_draw_text(fb, FW, FH, 4, &t, &a, "AB");
         /* row 2, px 2-5 = A (black), px 6-7 = B (white), px 8-13 cleared
          * white, px 0-1 and 14-15 untouched (0x7). */
         CHECK((fb[2 * 8 + 1] & 0x0F) == 0x0);      /* px 3 black */
@@ -256,7 +256,7 @@ int main(void)
          * set rect x=3 (odd, per-pixel clear path) width 11. */
         memset(fb, 0x77, sizeof fb);
         t.x = 3; t.w = 11; t.align = 0;
-        p2_draw_text(fb, FW, FH, &t, &a, "AB");
+        p2_draw_text(fb, FW, FH, 4, &t, &a, "AB");
         CHECK((fb[2 * 8 + 1] & 0x0F) == 0x0);      /* px 3 = A black */
         CHECK((fb[2 * 8 + 3] & 0x0F) == 0xF);      /* px 7 = B white */
         CHECK((fb[2 * 8 + 1] >> 4) == 0x7);        /* px 2 untouched */
@@ -264,7 +264,7 @@ int main(void)
         /* no bits attached -> no-op */
         memset(fb, 0x77, sizeof fb);
         a.bits = NULL;
-        p2_draw_text(fb, FW, FH, &t, &a, "AB");
+        p2_draw_text(fb, FW, FH, 4, &t, &a, "AB");
         CHECK(fb[2 * 8 + 1] == 0x77);
     }
 

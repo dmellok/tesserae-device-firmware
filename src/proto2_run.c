@@ -337,7 +337,8 @@ static void draw_text_region(p2_text_t *t, const char *str)
     const p2_atlas_t *a = &s_man.atlases[t->atlas_idx];
     if (!a->bits) return;
     snprintf(t->value, sizeof t->value, "%s", str);
-    p2_draw_text(work, EPD_WIDTH, EPD_HEIGHT, t, a, str);
+    p2_draw_text(work, EPD_WIDTH, EPD_HEIGHT, epd_active_driver()->info.bpp,
+                 t, a, str);
     overlay_partial_refresh(t->x, t->y, t->w, t->h, true /* DU */);
 }
 

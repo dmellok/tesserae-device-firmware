@@ -270,12 +270,18 @@ uint32_t overlay_values_apply(overlay_spec_t *s, const char *json, size_t len,
 /* ---------- framebuffer operations ---------- */
 
 /* Pixel accessors for packed 4bpp (high nibble = even column, as the whole
- * codebase uses) and 1bpp (MSB = leftmost, 1 = white). */
+ * codebase uses), 2bpp (4 px/byte, MSB pair = leftmost, 0 = black .. 3 =
+ * white, the esp32_gray2_bin wire format) and 1bpp (MSB = leftmost, 1 =
+ * white). */
 static inline uint8_t px_get(const uint8_t *fb, int fb_w, int bpp, int x, int y)
 {
     if (bpp == 4) {
         uint8_t b = fb[(size_t)y * (fb_w / 2) + x / 2];
         return (x & 1) ? (b & 0x0F) : (b >> 4);
+    }
+    if (bpp == 2) {
+        uint8_t b = fb[(size_t)y * (fb_w / 4) + x / 4];
+        return (uint8_t)((b >> ((3 - (x & 3)) * 2)) & 0x3);
     }
     uint8_t b = fb[(size_t)y * (fb_w / 8) + x / 8];
     return (uint8_t)((b >> (7 - (x & 7))) & 1);
@@ -289,9 +295,30 @@ static inline void px_set(uint8_t *fb, int fb_w, int bpp, int x, int y, uint8_t 
         else       *b = (uint8_t)((*b & 0x0F) | (uint8_t)(v << 4));
         return;
     }
+    if (bpp == 2) {
+        uint8_t *b = &fb[(size_t)y * (fb_w / 4) + x / 4];
+        int sh = (3 - (x & 3)) * 2;
+        *b = (uint8_t)((*b & ~(0x3 << sh)) | ((v & 0x3) << sh));
+        return;
+    }
     uint8_t *b = &fb[(size_t)y * (fb_w / 8) + x / 8];
     uint8_t bit = (uint8_t)(0x80 >> (x & 7));
     if (v) *b |= bit; else *b &= (uint8_t)~bit;
+}
+
+/* Full-white value at a depth: the top of each scale. */
+static inline uint8_t px_max(int bpp) { return (bpp == 4) ? 0xF : (bpp == 2) ? 0x3 : 1; }
+
+/* Rescale a level from one depth to another (atlases arrive 4bpp from the
+ * server whatever the panel is; a 1bpp atlas is a legacy shape). */
+static inline uint8_t px_rescale(uint8_t v, int from_bpp, int to_bpp)
+{
+    if (from_bpp == to_bpp) return v;
+    if (from_bpp == 1) return v ? px_max(to_bpp) : 0;
+    if (to_bpp == 1)   return (v >= (px_max(from_bpp) + 1) / 2) ? 1 : 0;
+    if (from_bpp == 4 && to_bpp == 2) return (uint8_t)(v >> 2);
+    if (from_bpp == 2 && to_bpp == 4) return (uint8_t)(v * 5);
+    return v;
 }
 
 void overlay_invert_rect(uint8_t *fb, int fb_w, int fb_h, int bpp,
@@ -299,7 +326,7 @@ void overlay_invert_rect(uint8_t *fb, int fb_w, int fb_h, int bpp,
 {
     if (!fb || w <= 0 || h <= 0) return;
     if (x < 0 || y < 0 || x + w > fb_w || y + h > fb_h) return;
-    uint8_t maxv = (bpp == 4) ? 0xF : 1;
+    uint8_t maxv = px_max(bpp);
     for (int yy = y; yy < y + h; yy++)
         for (int xx = x; xx < x + w; xx++)
             px_set(fb, fb_w, bpp, xx, yy,
@@ -343,10 +370,11 @@ void overlay_draw_slot(uint8_t *fb, const uint8_t *base, int fb_w, int fb_h,
                     if (dx >= slot->x + slot->w) break;   /* clip right */
                     uint8_t v = px_get(atlas->bits, atlas->strip_w, atlas->bpp,
                                        g->x + gx, gy);
-                    /* Atlas bpp matches the panel's on real specs; scale the
-                     * 1bpp case onto 4bpp panels just in case (0 -> 0x0,
-                     * 1 -> 0xF) so a mismatch degrades instead of breaking. */
-                    if (atlas->bpp == 1 && bpp == 4) v = v ? 0xF : 0x0;
+                    /* The server packs atlases 4bpp whatever the panel is
+                     * (a 1bpp atlas is a legacy shape); land the level on
+                     * the panel's own scale so a mismatch degrades instead
+                     * of breaking. */
+                    v = px_rescale(v, atlas->bpp, bpp);
                     px_set(fb, fb_w, bpp, dx, slot->y + gy, v);
                 }
             }

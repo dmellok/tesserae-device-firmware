@@ -186,5 +186,13 @@
 /* MCU tier: ESP32-S3 + 8 MB PSRAM. */
 #define MCU_TIER_S3_OCTAL_PSRAM 1
 
+/* Local overlay render mode (overlay.h): the SSD1677's windowed partial
+ * waveform (two-tone, differential against a driver-kept shadow plane; see
+ * ssd1677_gray.c) gives this board tap echo, touch-v3 primitives, live value
+ * slots and frame patches. Hygiene repaints and quality requests fall back
+ * to a full 4-gray paint, since the glass has no grayscale partial. With
+ * BOARD_HAS_TOUCH above this also enables touch v3. */
+#define BOARD_OVERLAY_PARTIAL 1
+
 /* Selected panel driver: Family E, SSD1677 grayscale over SPI. */
 #define PANEL_DRIVER_SSD1677_GRAY 1

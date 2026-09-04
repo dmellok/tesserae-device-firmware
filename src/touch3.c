@@ -573,12 +573,30 @@ static inline void px_set1(uint8_t *fb, int stride, int x, int y, bool white)
  * 1bpp panel gets a solid bold weight from the server instead. */
 static inline bool mono_white(uint8_t ink) { return ink == T3_INK_PAPER; }
 
+/* 2bpp: 4 px/byte, MSB pair = leftmost, 0 = black .. 3 = white (the
+ * esp32_gray2_bin wire format the reTerminal Sticky paints). */
+static inline void px_set2(uint8_t *fb, int stride, int x, int y, uint8_t v)
+{
+    uint8_t *b = &fb[(size_t)y * stride + (x >> 2)];
+    int sh = (3 - (x & 3)) * 2;
+    *b = (uint8_t)((*b & ~(0x3 << sh)) | ((v & 0x3) << sh));
+}
+
+/* The four-level ink scale folded onto a 4-grey panel: paper 3, soft 2, mid 1,
+ * ink 0. A plain nibble shift would put soft (3) on paper and lose every
+ * separator, so the map is by level, not by arithmetic. */
+static inline uint8_t gray2_of_ink(uint8_t ink)
+{
+    return (uint8_t)(3 - (ink * 3 + 7) / 15);
+}
+
 /* Write one pixel with an INK level, translating to the panel's scale. */
 static inline void put_ink(uint8_t *fb, int fb_w, int bpp, int x, int y,
                           uint8_t ink)
 {
-    if (bpp == 1) px_set1(fb, (fb_w + 7) / 8, x, y, mono_white(ink));
-    else          px_set4(fb, fb_w / 2, x, y, T3_FB(ink));
+    if (bpp == 1)      px_set1(fb, (fb_w + 7) / 8, x, y, mono_white(ink));
+    else if (bpp == 2) px_set2(fb, (fb_w + 3) / 4, x, y, gray2_of_ink(ink));
+    else               px_set4(fb, fb_w / 2, x, y, T3_FB(ink));
 }
 
 /* Clip (x,y,w,h) to the framebuffer. False when nothing is left. */
@@ -603,6 +621,14 @@ void t3_fill_rect(uint8_t *fb, int fb_w, int fb_h, int bpp,
         int stride = fb_w / 2;
         for (int r = 0; r < h; r++)
             memset(fb + (size_t)(y + r) * stride + x / 2, byte, (size_t)w / 2);
+        return;
+    }
+    if (bpp == 2 && (x & 3) == 0 && (w & 3) == 0) {
+        uint8_t g = gray2_of_ink(ink);
+        uint8_t byte = (uint8_t)(g * 0x55);
+        int stride = (fb_w + 3) / 4;
+        for (int r = 0; r < h; r++)
+            memset(fb + (size_t)(y + r) * stride + x / 4, byte, (size_t)w / 4);
         return;
     }
     for (int r = 0; r < h; r++)
@@ -1064,7 +1090,7 @@ void t3_draw_primitive(uint8_t *fb, int fb_w, int fb_h, int bpp,
                        const t3_spec_t *s, const t3_prim_t *p)
 {
     if (!fb || !s || !p) return;
-    if (bpp != 4 && bpp != 1) return;
+    if (bpp != 4 && bpp != 2 && bpp != 1) return;
     switch (p->type) {
     case T3_BUTTON:  draw_button(fb, fb_w, fb_h, bpp, s, p);  break;
     case T3_SWITCH:  draw_switch(fb, fb_w, fb_h, bpp, s, p);  break;

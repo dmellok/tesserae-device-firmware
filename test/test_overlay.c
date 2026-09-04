@@ -181,6 +181,44 @@ int main(void)
         CHECK(memcmp(fb, base, sizeof fb) == 0);
     }
 
+    /* ---- the same on a 2bpp (4-gray) buffer, atlas still 4bpp ---- */
+    {
+        enum { W = 16, H = 4 };
+        uint8_t base[W / 4 * H], fb[W / 4 * H];
+        memset(base, 0x55, sizeof base);   /* level 1 everywhere */
+        memcpy(fb, base, sizeof fb);
+
+        overlay_invert_rect(fb, W, H, 2, 4, 1, 4, 2);
+        /* inside: 3 - 1 = 2 -> byte 1 of row 1 (px 4..7) becomes 0xAA */
+        CHECK(fb[1 * (W / 4) + 1] == 0xAA);
+        CHECK(fb[1 * (W / 4) + 0] == 0x55);
+        CHECK(fb[0] == 0x55);
+        overlay_invert_rect(fb, W, H, 2, 4, 1, 4, 2);
+        CHECK(memcmp(fb, base, sizeof fb) == 0);
+
+        /* slot blit with a 4bpp atlas: '1' = 0xA,0xB / 0xE,0xF rescale to
+         * 2,2 / 3,3 (nibble >> 2) on the 2bpp panel. */
+        static const uint8_t strip[] = {
+            0x01, 0x23, 0xAB, 0xCD,
+            0x45, 0x67, 0xEF, 0x89,
+        };
+        overlay_atlas_t at = sp.atlases[0];
+        at.bits = strip;
+        overlay_slot_t sl = sp.slots[0];
+        sl.x = 4; sl.y = 1; sl.w = 8; sl.h = 3;
+        sl.align = OVERLAY_ALIGN_LEFT;
+        strcpy(sl.value, "1");
+        overlay_draw_slot(fb, base, W, H, 2, &sl, &at);
+        /* row 1 byte 1 = px 4,5,6,7 = 2,2,1,1 -> 10 10 01 01 = 0xA5 */
+        CHECK(fb[1 * (W / 4) + 1] == 0xA5);
+        /* row 2 byte 1 = px 4,5 = 3,3 then base 1,1 -> 11 11 01 01 = 0xF5 */
+        CHECK(fb[2 * (W / 4) + 1] == 0xF5);
+        CHECK(fb[1 * (W / 4) + 2] == 0x55);   /* rest of slot restored */
+        at.bits = NULL;
+        overlay_draw_slot(fb, base, W, H, 2, &sl, &at);
+        CHECK(memcmp(fb, base, sizeof fb) == 0);
+    }
+
     /* ---- target cap: 32 parse, 40 overflow (first 32 win, doc valid) ---- */
     {
         CHECK(OVERLAY_MAX_TARGETS == 64);   /* the advertised max_targets */

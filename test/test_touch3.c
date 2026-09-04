@@ -374,6 +374,23 @@ static void test_draw_ops(void)
     t3_fill_rect(mono, FW, FH, 1, 8, 8, 8, 8, T3_INK_INK);
     CHECK(mono[(size_t)8 * (FW / 8) + 1] == 0x00);
     CHECK(mono[(size_t)8 * (FW / 8) + 0] == 0xFF);
+
+    /* 2bpp path (4-gray panels): paper 3, soft 2, mid 1, ink 0, so every
+     * level survives; the aligned span takes the byte path, an odd one the
+     * per-pixel path. */
+    uint8_t g2[(FW / 4) * FH];
+    memset(g2, 0xFF, sizeof g2);
+    t3_fill_rect(g2, FW, FH, 2, 8, 8, 8, 2, T3_INK_INK);     /* aligned */
+    CHECK(g2[(size_t)8 * (FW / 4) + 2] == 0x00);
+    CHECK(g2[(size_t)8 * (FW / 4) + 3] == 0x00);
+    CHECK(g2[(size_t)8 * (FW / 4) + 1] == 0xFF);
+    CHECK(g2[(size_t)10 * (FW / 4) + 2] == 0xFF);           /* exclusive bottom */
+    t3_fill_rect(g2, FW, FH, 2, 8, 8, 4, 1, T3_INK_SOFT);
+    CHECK(g2[(size_t)8 * (FW / 4) + 2] == 0xAA);            /* 2,2,2,2 */
+    t3_fill_rect(g2, FW, FH, 2, 8, 8, 4, 1, T3_INK_MID);
+    CHECK(g2[(size_t)8 * (FW / 4) + 2] == 0x55);            /* 1,1,1,1 */
+    t3_fill_rect(g2, FW, FH, 2, 9, 12, 2, 1, T3_INK_INK);   /* odd: px 9,10 */
+    CHECK(g2[(size_t)12 * (FW / 4) + 2] == 0xC3);           /* 11 00 00 11 */
 }
 
 /* An atlas whose strip is a solid ink ramp, so a blit is easy to assert. */

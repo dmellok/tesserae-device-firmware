@@ -167,7 +167,7 @@ int p2_text_width(const p2_atlas_t *a, const char *text);
  * clear the rect to white, blit glyph slices left-to-right honouring
  * align, vertical-center the atlas band. Handles the odd/even column
  * phase (nibble-shifting blit). No-op when the atlas has no bits. */
-void p2_draw_text(uint8_t *fb, int fb_w, int fb_h,
+void p2_draw_text(uint8_t *fb, int fb_w, int fb_h, int bpp,
                   const p2_text_t *t, const p2_atlas_t *a, const char *str);
 
 /* ---- gesture name strings (report bodies) ---- */

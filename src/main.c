@@ -48,6 +48,7 @@
 #include "sdmmc_cmd.h"      /* raw-sector benchmark in DECK_SD_SELFTEST */
 #include "esp_heap_caps.h"
 #include "touch_gt911.h"    /* GT911 touch wake (guarded by BOARD_HAS_TOUCH) */
+#include "panel/epd_panel.h" /* epd_active_driver()->info.bpp (selftests) */
 #include "touch_queue.h"    /* RTC replay queue for unsent touches (guarded) */
 #include "touch_wakestub.h" /* RTC wake-stub early touch capture (guarded) */
 #include "battery.h"
@@ -1276,19 +1277,25 @@ void app_main(void)
      * refreshes and per-op timings on serial. No networking. */
     ESP_LOGW(TAG, "OVERLAY_SELFTEST: partial-refresh cycle (no networking)");
     {
-        /* 32 small targets (cap-raise verification: an 8x4 grid of tiles)
-         * plus the digits slot. Built at runtime to keep the literal sane. */
+        /* Up to 32 small targets (cap-raise verification: a grid of tiles
+         * sized to the panel, 8x4 on the E1003, 2x4 on the Sticky) plus the
+         * digits slot. Built at runtime to keep the literal sane. */
+        const int bpp   = epd_active_driver()->info.bpp;
+        const int tcols = (EPD_WIDTH - 40) / 220 > 8 ? 8 : (EPD_WIDTH - 40) / 220;
+        const int trows = (EPD_HEIGHT - 140) / 140 > 4 ? 4 : (EPD_HEIGHT - 140) / 140;
+        const int ntargets = tcols * trows;
+        const int slot_y = EPD_HEIGHT - 60;
         char *spec_json = malloc(8192);
         int sj = snprintf(spec_json, 8192,
             "{\"schema\":1,\"frame_digest\":\"0000000000000000\",\"targets\":[");
-        for (int i = 0; i < 32; i++) {
+        for (int i = 0; i < ntargets; i++) {
             sj += snprintf(spec_json + sj, 8192 - (size_t)sj,
                 "%s{\"id\":\"t%d\",\"x\":%d,\"y\":%d,\"w\":180,\"h\":120,"
                 "\"echo\":\"invert\"}", i ? "," : "", i,
-                40 + (i % 8) * 220, 40 + (i / 8) * 140);
+                40 + (i % tcols) * 220, 40 + (i / tcols) * 140);
         }
         sj += snprintf(spec_json + sj, 8192 - (size_t)sj, "],"
-            "\"slots\":[{\"id\":\"s1\",\"x\":140,\"y\":800,\"w\":200,\"h\":32,"
+            "\"slots\":[{\"id\":\"s1\",\"x\":140,\"y\":%d,\"w\":200,\"h\":32,"
             "\"key\":\"v\",\"align\":\"right\",\"atlas\":\"a1\"}],"
             "\"atlases\":[{\"id\":\"a1\",\"digest\":\"0000000000000000\","
             "\"height\":32,\"url\":\"-\",\"format\":\"4bpp-gray\",\"glyphs\":{"
@@ -1296,7 +1303,7 @@ void app_main(void)
             "\"2\":{\"x\":40,\"w\":20},\"3\":{\"x\":60,\"w\":20},"
             "\"4\":{\"x\":80,\"w\":20},\"5\":{\"x\":100,\"w\":20},"
             "\"6\":{\"x\":120,\"w\":20},\"7\":{\"x\":140,\"w\":20},"
-            "\"8\":{\"x\":160,\"w\":20},\"9\":{\"x\":180,\"w\":20}}}]}");
+            "\"8\":{\"x\":160,\"w\":20},\"9\":{\"x\":180,\"w\":20}}}]}", slot_y);
         (void)sj;
         overlay_spec_t *sp = malloc(sizeof *sp);
         uint8_t *base = heap_caps_malloc(EPD_BUF_BYTES, TESSERAE_FB_CAPS);
@@ -1330,10 +1337,14 @@ void app_main(void)
             }
             sp->atlases[0].bits = atlas;
 
+            /* Gray ramp base, top to bottom, at the panel's own depth. */
             const int pitch = EPD_BUF_BYTES / EPD_HEIGHT;
             for (int yy = 0; yy < EPD_HEIGHT; yy++) {
-                uint8_t g = (uint8_t)((yy * 16) / EPD_HEIGHT);
-                memset(base + (size_t)yy * pitch, (uint8_t)((g << 4) | g), pitch);
+                uint8_t fill;
+                if (bpp == 4)      { uint8_t g = (uint8_t)((yy * 16) / EPD_HEIGHT); fill = (uint8_t)((g << 4) | g); }
+                else if (bpp == 2) { uint8_t g = (uint8_t)((yy * 4) / EPD_HEIGHT);  fill = (uint8_t)(g * 0x55); }
+                else               { fill = ((yy * 2) / EPD_HEIGHT) ? 0xFF : 0x00; }
+                memset(base + (size_t)yy * pitch, fill, pitch);
             }
             ESP_ERROR_CHECK(epd_port_init());
             epd_init();
@@ -1355,12 +1366,14 @@ void app_main(void)
 
             overlay_hygiene_t hy; overlay_hygiene_reset(&hy);
             /* Echo three scattered targets (first, middle, last). */
-            static const int taps[3][2] = { {50, 50}, {930, 330}, {1590, 470} };
+            const int tap_idx[3] = { 0, ntargets / 2, ntargets - 1 };
             for (int i = 0; i < 3; i++) {
-                const overlay_target_t *t = overlay_hit_target(sp, taps[i][0], taps[i][1]);
+                const int tx = 40 + (tap_idx[i] % tcols) * 220 + 10;
+                const int ty = 40 + (tap_idx[i] / tcols) * 140 + 10;
+                const overlay_target_t *t = overlay_hit_target(sp, tx, ty);
                 if (!t) { ESP_LOGE(TAG, "OVERLAY_SELFTEST: tap %d missed!", i); continue; }
                 t0 = esp_timer_get_time();
-                overlay_invert_rect(base, EPD_WIDTH, EPD_HEIGHT, 4, t->x, t->y, t->w, t->h);
+                overlay_invert_rect(base, EPD_WIDTH, EPD_HEIGHT, bpp, t->x, t->y, t->w, t->h);
                 epd_display_partial(base, t->x, t->y, t->w, t->h, true);
                 overlay_hygiene_tick(&hy);
                 ESP_LOGW(TAG, "OVERLAY_SELFTEST: echo '%s' in %lld ms",
@@ -1377,7 +1390,7 @@ void app_main(void)
                 if (!overlay_values_apply(sp, doc, strlen(doc), &seq)) continue;
                 overlay_slot_t *sl = &sp->slots[0];
                 t0 = esp_timer_get_time();
-                overlay_draw_slot(base, pristine, EPD_WIDTH, EPD_HEIGHT, 4, sl,
+                overlay_draw_slot(base, pristine, EPD_WIDTH, EPD_HEIGHT, bpp, sl,
                                   &sp->atlases[0]);
                 bool full = overlay_hygiene_tick(&hy);
                 if (full) { epd_display(base); overlay_hygiene_reset(&hy); }

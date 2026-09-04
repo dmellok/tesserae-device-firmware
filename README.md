@@ -107,9 +107,10 @@ every other board builds byte-identical (all touch code is behind
 `#if BOARD_HAS_TOUCH`). The Sticky's digitiser sits on its own I2C bus behind
 a gated power rail that the firmware holds up through deep sleep while touch
 is enabled; `seeed-reterminal-sticky-selftest` streams raw and frame
-coordinates for checking a unit. The E1003 additionally runs
-on-device touch widgets (touch v3) because its IT8951 has partial refresh; the
-Sticky's SSD1677 path has none, so it stops at server-classified strokes.
+coordinates for checking a unit. Both boards run the on-device touch
+widgets (touch v3), tap echo and frame patches: the E1003's IT8951 has hardware
+DU and GC16 partial modes, and the Sticky's SSD1677 driver paints two-tone
+windowed partials from a shadow of the 4-gray frame.
 
 ## Architecture
 

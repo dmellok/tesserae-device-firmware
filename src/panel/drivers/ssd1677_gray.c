@@ -21,6 +21,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_heap_caps.h"
 
 static const char *TAG = "epd_ssd1677";
 
@@ -54,6 +55,21 @@ static const char *TAG = "epd_ssd1677";
  * Used only for the conditioning clear below, which wants a proper clearing
  * waveform rather than the gray one. */
 #define SSD_UPD_MONO    0xf7
+
+/* Update-control byte for a PARTIAL (windowed, differential) refresh: the
+ * vendor's partial/DU sequence. Loads temperature, loads the "display mode 2"
+ * LUT, displays, and powers down. It is the sequence CrossPoint drives this
+ * same panel with for page turns; the incremental 0x1C assembly other SSD16xx
+ * drivers use does not select this glass's partial waveform (it runs the full
+ * one). Black-and-white only: the mode-2 LUT drives each pixel from the 0x24
+ * ("new") vs 0x26 ("old") bit pair, so a partial inside a 4-gray frame is a
+ * two-tone patch. */
+#define SSD_UPD_PARTIAL 0xff
+
+/* Border waveform while a partial runs. 0x80 holds the border at VCOM; left on
+ * the full-refresh value the border ring drives dark on every partial. */
+#define SSD_BORDER_PARTIAL 0x80
+#define SSD_BORDER_GRAY    0x00
 
 /* See ssd1677_init() for why this defaults off. */
 #ifndef SSD1677_CONDITION_CLEAR
@@ -389,6 +405,16 @@ static esp_err_t ssd1677_port_init(void)
     return ESP_OK;
 }
 
+#ifndef EPD_MONO
+/* Partial-refresh state (see the partial section below the paint path). */
+#define SHADOW_STRIDE  (EPD_PANEL_SCAN_W / 8)
+#define SHADOW_BYTES   ((size_t)SHADOW_STRIDE * EPD_PANEL_SCAN_H)
+static uint8_t *s_shadow;              /* 1bpp, controller rows, 1 = white */
+static bool     s_shadow_valid;        /* false until the next full paint   */
+static bool     s_partial_since_full;  /* a partial ran: temp + border dirty */
+static void shadow_rebuild(const uint8_t *image);
+#endif
+
 static void ssd1677_init(void)
 {
 #ifdef EPD_PIN_EN
@@ -472,6 +498,15 @@ static void ssd1677_init(void)
     cmd_data(SSD_RAM_Y_ADDR, ZERO2, sizeof ZERO2);
     wait_idle();
 
+#ifndef EPD_MONO
+    /* The shadow describes the GLASS, which keeps its image through a panel
+     * power cycle, so it stays valid across init: the overlay path sleeps the
+     * panel after every paint and re-inits it before each partial, and the
+     * window write below supplies both planes itself, so controller RAM
+     * needs no seeding. The MCU's own deep sleep loses the shadow, and the
+     * first partial after a boot then falls back to a full paint. */
+    s_partial_since_full = false;
+#endif
     ESP_LOGI(TAG, "init complete (SSD1677 4-gray, scan %dx%d, frame %dx%d)",
              EPD_PANEL_SCAN_W, EPD_PANEL_SCAN_H, EPD_WIDTH, EPD_HEIGHT);
 }
@@ -530,6 +565,7 @@ static void panel_condition_white(void)
 }
 #endif /* SSD1677_CONDITION_CLEAR */
 
+
 static void ssd1677_display(const uint8_t *image)
 {
     bus_hold();
@@ -540,7 +576,19 @@ static void ssd1677_display(const uint8_t *image)
 #else
     gray_send_plane(SSD_DTM1, image, 1);
     gray_send_plane(SSD_DTM2, image, 2);
+    /* A partial refresh (0xFF) reloads the measured temperature and parks the
+     * border at VCOM; both would make this gray pass pick the wrong waveform
+     * and drive the border oddly, so put the 4-gray selection back first.
+     * Cheap, and harmless when nothing changed. */
+    {
+        static const uint8_t TW[] = {0x67, 0x00};
+        static const uint8_t BG[] = {SSD_BORDER_GRAY};
+        cmd_data(SSD_BORDER, BG, sizeof BG);
+        cmd_data(SSD_TEMP_WRITE, TW, sizeof TW);
+    }
     trigger_refresh();
+    shadow_rebuild(image);
+    s_partial_since_full = false;
 #endif
     bus_release();
 }
@@ -717,6 +765,189 @@ static void ssd1677_sleep(void)
 #endif
 }
 
+#ifndef EPD_MONO
+/* ---------- partial refresh (overlay feature) ----------
+ *
+ * Windowed two-tone repaint inside the 4-gray frame, for tap echo, touch-v3
+ * primitives and frame patches. The controller's partial waveform is a
+ * DIFFERENTIAL one: it drives each pixel from the pair (old bit in 0x26, new
+ * bit in 0x24), so both planes of the window have to hold black-and-white
+ * content when it runs. After a gray paint they hold the two gray planes
+ * instead, which is why the driver keeps s_shadow: a 1bpp controller-layout
+ * copy of what the glass shows, thresholded from every full paint and updated
+ * by every partial, and writes the window's OLD bits from it.
+ *
+ * Coordinates arrive in FRAME space and go through the same transpose as the
+ * full path: a frame rect (x,y,w,h) is controller columns [y, y+h) on rows
+ * [x, x+w), widened so the column range is byte-aligned (RAM writes are byte
+ * wide along X). The rest of the panel is untouched.
+ *
+ * Polarity: the mono waveform reads 1 = white, so the threshold is the frame
+ * value's high bit (levels 2 and 3 -> white). SSD1677_PARTIAL_INVERT flips it
+ * for a glass that comes out negative in the -overlaytest env.
+ *
+ * Only in the 4-gray build: the mono build's frame is already the plane the
+ * waveform wants, and no mono board advertises overlay today. */
+#ifndef SSD1677_PARTIAL_INVERT
+#define SSD1677_PARTIAL_INVERT 0
+#endif
+
+static inline uint8_t mono_bit_of_gray(uint8_t g)
+{
+    uint8_t b = (uint8_t)((g >> 1) & 1);
+    return SSD1677_PARTIAL_INVERT ? (uint8_t)(b ^ 1) : b;
+}
+
+/* Frame pixel at CONTROLLER coordinates, through the same mapping as
+ * gray_send_plane(): controller row cy, column cx. */
+static inline uint8_t scan_px(const uint8_t *image, int cx, int cy)
+{
+    const int my = mirror_y(cy);
+#if EPD_SSD1677_TRANSPOSE
+    return frame_px(image, my, cx);
+#else
+    return frame_px(image, cx, my);
+#endif
+}
+
+/* Rebuild the shadow from a frame that has just been painted in full. */
+static void shadow_rebuild(const uint8_t *image)
+{
+    if (!s_shadow) {
+        s_shadow = heap_caps_malloc(SHADOW_BYTES, TESSERAE_FB_CAPS);
+        if (!s_shadow) { ESP_LOGW(TAG, "no memory for the partial shadow"); return; }
+    }
+    for (int cy = 0; cy < EPD_PANEL_SCAN_H; cy++) {
+        uint8_t *row = s_shadow + (size_t)cy * SHADOW_STRIDE;
+        for (int b = 0; b < SHADOW_STRIDE; b++) {
+            uint8_t o = 0;
+            for (int k = 0; k < 8; k++)
+                o = (uint8_t)((o << 1) | mono_bit_of_gray(scan_px(image, b * 8 + k, cy)));
+            row[b] = o;
+        }
+    }
+    s_shadow_valid = true;
+}
+
+/* RAM window + write counters, in controller pixels. cx0 must be a multiple
+ * of 8 and cx1 the last pixel of a whole byte (data entry 0x03: X then Y). */
+static void set_ram_window(int cx0, int cx1, int cy0, int cy1)
+{
+    const uint8_t xw[] = {(uint8_t)(cx0 & 0xff), (uint8_t)(cx0 >> 8),
+                          (uint8_t)(cx1 & 0xff), (uint8_t)(cx1 >> 8)};
+    const uint8_t yw[] = {(uint8_t)(cy0 & 0xff), (uint8_t)(cy0 >> 8),
+                          (uint8_t)(cy1 & 0xff), (uint8_t)(cy1 >> 8)};
+    const uint8_t xa[] = {(uint8_t)(cx0 & 0xff), (uint8_t)(cx0 >> 8)};
+    const uint8_t ya[] = {(uint8_t)(cy0 & 0xff), (uint8_t)(cy0 >> 8)};
+    cmd_data(SSD_RAM_X, xw, sizeof xw);
+    cmd_data(SSD_RAM_Y, yw, sizeof yw);
+    cmd_data(SSD_RAM_X_ADDR, xa, sizeof xa);
+    cmd_data(SSD_RAM_Y_ADDR, ya, sizeof ya);
+}
+
+static void ssd1677_partial_two_tone(const uint8_t *image, int x, int y, int w, int h)
+{
+    /* Clamp to the frame. */
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > EPD_WIDTH)  w = EPD_WIDTH - x;
+    if (y + h > EPD_HEIGHT) h = EPD_HEIGHT - y;
+    if (w <= 0 || h <= 0) return;
+
+    if (!s_shadow_valid) {
+        /* Nothing trustworthy to diff against (first paint after init went
+         * through some other path): repaint the whole frame instead. */
+        ESP_LOGW(TAG, "partial without a shadow; full repaint");
+        ssd1677_display(image);
+        return;
+    }
+
+    /* Frame rect -> controller rect, then byte-align the column range. */
+#if EPD_SSD1677_TRANSPOSE
+    int cx0 = y, cxw = h, cy0 = x, cyh = w;
+#else
+    int cx0 = x, cxw = w, cy0 = y, cyh = h;
+#endif
+    if (EPD_MIRROR_Y) cy0 = EPD_PANEL_SCAN_H - cy0 - cyh;
+    int cx1 = cx0 + cxw;                 /* exclusive */
+    cx0 &= ~7;
+    cx1 = (cx1 + 7) & ~7;
+    if (cx1 > EPD_PANEL_SCAN_W) cx1 = EPD_PANEL_SCAN_W;
+    const int nb = (cx1 - cx0) / 8;      /* bytes per window row */
+    const int cy1 = cy0 + cyh;           /* exclusive */
+
+    int64_t t0 = esp_timer_get_time();
+    bus_hold();
+
+    /* New bits into 0x24, row by row (the row buffer lives on the stack, in
+     * internal RAM, which is what the SPI path wants). The shadow is updated
+     * only after the old bits have gone out from it below. */
+    set_ram_window(cx0, cx1 - 1, cy0, cy1 - 1);
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(SSD_DTM1);
+    for (int cy = cy0; cy < cy1; cy++) {
+        uint8_t row[EPD_PANEL_SCAN_W / 8];
+        for (int b = 0; b < nb; b++) {
+            uint8_t o = 0;
+            for (int k = 0; k < 8; k++)
+                o = (uint8_t)((o << 1) | mono_bit_of_gray(scan_px(image, cx0 + b * 8 + k, cy)));
+            row[b] = o;
+        }
+        send_data(row, (size_t)nb);
+    }
+    gpio_set_level(EPD_PIN_CS, 1);
+
+    /* Old bits into 0x26 from the shadow. */
+    set_ram_window(cx0, cx1 - 1, cy0, cy1 - 1);
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(SSD_DTM2);
+    for (int cy = cy0; cy < cy1; cy++)
+        send_data(s_shadow + (size_t)cy * SHADOW_STRIDE + cx0 / 8, (size_t)nb);
+    gpio_set_level(EPD_PIN_CS, 1);
+
+    /* Now the shadow may take the new bits. */
+    for (int cy = cy0; cy < cy1; cy++) {
+        uint8_t *sh = s_shadow + (size_t)cy * SHADOW_STRIDE + cx0 / 8;
+        for (int b = 0; b < nb; b++) {
+            uint8_t o = 0;
+            for (int k = 0; k < 8; k++)
+                o = (uint8_t)((o << 1) | mono_bit_of_gray(scan_px(image, cx0 + b * 8 + k, cy)));
+            sh[b] = o;
+        }
+    }
+
+    static const uint8_t BORDER_P[] = {SSD_BORDER_PARTIAL};
+    cmd_data(SSD_BORDER, BORDER_P, sizeof BORDER_P);
+    trigger_refresh_mode(SSD_UPD_PARTIAL, "partial");
+
+    /* Leave the window at the full panel for whatever paints next. */
+    set_ram_window(0, EPD_PANEL_SCAN_W - 1, 0, EPD_PANEL_SCAN_H - 1);
+    bus_release();
+    s_partial_since_full = true;
+    ESP_LOGI(TAG, "partial (%d,%d %dx%d) -> scan cols %d..%d rows %d..%d in %lld ms",
+             x, y, w, h, cx0, cx1 - 1, cy0, cy1 - 1,
+             (long long)((esp_timer_get_time() - t0) / 1000));
+}
+
+static void ssd1677_display_partial(const uint8_t *image, int x, int y, int w,
+                                    int h, bool fast)
+{
+    /* No grayscale partial exists on this glass: a quality request is a
+     * full 4-gray repaint, which is what the overlay hygiene pass wants. */
+    if (fast) ssd1677_partial_two_tone(image, x, y, w, h);
+    else      ssd1677_display(image);
+}
+
+static void ssd1677_display_partial_mode(const uint8_t *image, int x, int y,
+                                         int w, int h, epd_refresh_t mode)
+{
+    if (mode == EPD_RF_A2 || mode == EPD_RF_DU)
+        ssd1677_partial_two_tone(image, x, y, w, h);
+    else
+        ssd1677_display(image);
+}
+#endif /* !EPD_MONO */
+
 /* ---------- exported vtable ---------- */
 
 const epd_driver_t ssd1677_gray_driver = {
@@ -741,6 +972,10 @@ const epd_driver_t ssd1677_gray_driver = {
     .show_color_bars    = ssd1677_show_color_bars,
     .show_palette_sweep = ssd1677_show_palette_sweep,
     .sleep              = ssd1677_sleep,
+#ifndef EPD_MONO
+    .display_partial      = ssd1677_display_partial,
+    .display_partial_mode = ssd1677_display_partial_mode,
+#endif
 };
 
 #endif /* PANEL_DRIVER_SSD1677_GRAY */

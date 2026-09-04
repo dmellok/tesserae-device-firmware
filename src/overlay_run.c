@@ -158,6 +158,7 @@ static bool atlas_digest_ok(const uint8_t *bits, size_t len, const char *digest)
 static size_t atlas_expected_len(const overlay_atlas_t *a)
 {
     size_t row = (a->bpp == 4) ? ((size_t)a->strip_w + 1) / 2
+               : (a->bpp == 2) ? ((size_t)a->strip_w + 3) / 4
                                : ((size_t)a->strip_w + 7) / 8;
     return row * (size_t)a->height;
 }

@@ -514,43 +514,60 @@ int p2_text_width(const p2_atlas_t *a, const char *text)
     return w;
 }
 
-/* 4bpp nibble accessors (2 px/byte, HIGH nibble = left pixel). */
+/* 4bpp nibble accessors (2 px/byte, HIGH nibble = left pixel): the atlas
+ * strips are always this shape on the wire. */
 static inline uint8_t px_get(const uint8_t *buf, int stride, int x, int y)
 {
     uint8_t b = buf[(size_t)y * stride + (x >> 1)];
     return (x & 1) ? (b & 0x0F) : (b >> 4);
 }
 
-static inline void px_set(uint8_t *buf, int stride, int x, int y, uint8_t v)
+/* Framebuffer write at the panel's depth: 4bpp nibbles, 2bpp pairs (MSB pair
+ * = leftmost, 0 black .. 3 white) or 1bpp (MSB = leftmost, 1 = white). The
+ * level arrives on the atlas's 4bpp scale and is folded to the panel's. */
+static inline void px_put(uint8_t *fb, int fb_w, int bpp, int x, int y, uint8_t v4)
 {
-    uint8_t *b = &buf[(size_t)y * stride + (x >> 1)];
-    if (x & 1) *b = (uint8_t)((*b & 0xF0) | (v & 0x0F));
-    else       *b = (uint8_t)((*b & 0x0F) | (v << 4));
+    if (bpp == 4) {
+        uint8_t *b = &fb[(size_t)y * (fb_w / 2) + (x >> 1)];
+        if (x & 1) *b = (uint8_t)((*b & 0xF0) | (v4 & 0x0F));
+        else       *b = (uint8_t)((*b & 0x0F) | (v4 << 4));
+    } else if (bpp == 2) {
+        uint8_t *b = &fb[(size_t)y * ((fb_w + 3) / 4) + (x >> 2)];
+        int sh = (3 - (x & 3)) * 2;
+        *b = (uint8_t)((*b & ~(0x3 << sh)) | (((v4 >> 2) & 0x3) << sh));
+    } else {
+        uint8_t *b = &fb[(size_t)y * ((fb_w + 7) / 8) + (x >> 3)];
+        uint8_t m = (uint8_t)(0x80 >> (x & 7));
+        if (v4 >= 8) *b |= m; else *b = (uint8_t)(*b & ~m);
+    }
 }
 
-void p2_draw_text(uint8_t *fb, int fb_w, int fb_h,
+void p2_draw_text(uint8_t *fb, int fb_w, int fb_h, int bpp,
                   const p2_text_t *t, const p2_atlas_t *a, const char *str)
 {
     if (!fb || !t || !a || !a->bits || !str) return;
+    if (bpp != 4 && bpp != 2 && bpp != 1) return;
     if (t->x < 0 || t->y < 0 || t->x + t->w > fb_w || t->y + t->h > fb_h)
         return;
 
     char clipped[P2_VALUE_CAP];
     snprintf(clipped, sizeof clipped, "%.*s", t->max_chars, str);
 
-    const int fb_stride = fb_w / 2;
     const int st_stride = (a->strip_w + 1) / 2;
 
-    /* Clear the region to white. Text rects follow the wire even-x/even-w
-     * rule, so whole-byte rows; fall back per-pixel if a server ever
-     * violates it. */
-    if (((t->x | t->w) & 1) == 0) {
+    /* Clear the region to white (every depth packs white as all-ones bytes).
+     * Text rects follow the wire even-x/even-w rule, so on a 4bpp panel the
+     * rows are whole bytes; deeper packings and a server that ever violates
+     * the rule fall back to per-pixel writes. */
+    const int ppb = 8 / bpp;
+    if ((t->x % ppb) == 0 && (t->w % ppb) == 0) {
+        const int fb_stride = fb_w / ppb;
         for (int r = 0; r < t->h; r++)
-            memset(fb + (size_t)(t->y + r) * fb_stride + t->x / 2, 0xFF, t->w / 2);
+            memset(fb + (size_t)(t->y + r) * fb_stride + t->x / ppb, 0xFF, t->w / ppb);
     } else {
         for (int r = 0; r < t->h; r++)
             for (int c = 0; c < t->w; c++)
-                px_set(fb, fb_stride, t->x + c, t->y + r, 0xF);
+                px_put(fb, fb_w, bpp, t->x + c, t->y + r, 0xF);
     }
 
     int total = p2_text_width(a, clipped);
@@ -569,7 +586,7 @@ void p2_draw_text(uint8_t *fb, int fb_w, int fb_h,
             int dx = pen + gx;
             if (dx >= t->x + t->w) break;         /* clip right edge */
             for (int gy = 0; gy < band; gy++)
-                px_set(fb, fb_stride, dx, ty0 + gy,
+                px_put(fb, fb_w, bpp, dx, ty0 + gy,
                        px_get(a->bits, st_stride, g->x + gx, gy));
         }
         pen += g->w;

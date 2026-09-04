@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Partial refresh on the Seeed reTerminal Sticky. The SSD1677 driver gains a
+  windowed two-tone partial path: the controller's differential partial
+  waveform driven from a driver-kept 1bpp shadow of what the glass shows,
+  with the frame rect transposed onto the controller's scan and the temp /
+  border selection restored before the next 4-gray paint. A patch takes about
+  620 ms against 1.2 s for a full paint and leaves the rest of the panel
+  alone (verified with the new `seeed-reterminal-sticky-overlaytest` env).
+  The board advertises overlay, so tap echo, touch-v3 primitives, live value
+  slots and frame patches all apply; the overlay, touch-v3 and proto2 drawing
+  code learned the 2bpp (4-gray) framebuffer format on the way, with host
+  tests for the new depth. Quality and hygiene requests fall back to a full
+  4-gray paint, since the glass has no grayscale partial. Icons come from the
+  bundled Phosphor font as on the E1003. Env `seeed-reterminal-sticky-touch3test`
+  exercises the primitives offline.
+
 ### Fixed
 
 - Always-on panels now answer taps and front-button presses. The stay-awake
