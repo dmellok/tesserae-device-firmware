@@ -125,6 +125,13 @@ static bool sse_open_stream(void)
     snprintf(auth, sizeof auth, "Bearer %s",
              rest_config_get()->device_token);
 
+    /* The 250 ms read timeout is what keeps the pump from blocking the loop;
+     * an idle stream (keepalives are 25 s apart) hits it on almost every
+     * read, and esp_http_client_read reports that as -ESP_ERR_HTTP_EAGAIN,
+     * NOT as 0 bytes. Treating it as a drop tore the stream down and
+     * re-opened it about once a second, so no push ever arrived by SSE and
+     * the linger poll quietly did all the work (seen on the Sticky, and the
+     * same code runs on the E1003). */
     esp_http_client_config_t cfg = {
         .url = url,
         .timeout_ms = 250,          /* short reads: the pump must not block */
@@ -189,6 +196,7 @@ bool sse_pump(int read_budget_ms)
     char chunk[256];
     while (esp_timer_get_time() < deadline) {
         int n = esp_http_client_read(s_cli, chunk, sizeof chunk);
+        if (n == -ESP_ERR_HTTP_EAGAIN) break;   /* read timed out: idle, not dropped */
         if (n < 0) {                 /* connection dropped */
             ESP_LOGI(TAG, "stream read error; reconnecting");
             sse_close();

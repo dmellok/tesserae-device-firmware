@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The protocol v2 push stream (SSE) now stays connected. The pump's short
+  read timeout, which an idle stream hits between 25-second keepalives, comes
+  back from the HTTP client as a negative "try again" code rather than zero
+  bytes, and the pump took it for a dropped connection: it closed and
+  reopened the stream about once a second, so no server push ever arrived
+  that way and the one-second linger poll was quietly doing all the work.
+  A timed-out read is now treated as idle. Affects every board with overlay
+  (reTerminal E1003, XIAO EE03, reTerminal Sticky).
+
 ### Added
 
 - Partial refresh on the Seeed reTerminal Sticky. The SSD1677 driver gains a
