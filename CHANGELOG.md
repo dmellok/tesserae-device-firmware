@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.31.0] - 2026-09-06
+
 ### Changed
 
 - Bluetooth setup and maintenance now exit after a brief Refresh press and
@@ -13,6 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   saved settings are retained, and expired maintenance QR codes are cleared.
   Leaving also cancels the saved-Wi-Fi connection wait; unfinished setup still
   returns to the captive portal.
+
+## [1.30.1] - 2026-09-04
 
 ### Fixed
 
@@ -24,16 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the window is written, so everything outside it is a no-change pixel.
   Costs about 200 ms per patch (roughly 875 ms all in).
 
-### Fixed
-
-- The protocol v2 push stream (SSE) now stays connected. The pump's short
-  read timeout, which an idle stream hits between 25-second keepalives, comes
-  back from the HTTP client as a negative "try again" code rather than zero
-  bytes, and the pump took it for a dropped connection: it closed and
-  reopened the stream about once a second, so no server push ever arrived
-  that way and the one-second linger poll was quietly doing all the work.
-  A timed-out read is now treated as idle. Affects every board with overlay
-  (reTerminal E1003, XIAO EE03, reTerminal Sticky).
+## [1.30.0] - 2026-09-04
 
 ### Added
 
@@ -51,6 +46,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   4-gray paint, since the glass has no grayscale partial. Icons come from the
   bundled Phosphor font as on the E1003. Env `seeed-reterminal-sticky-touch3test`
   exercises the primitives offline.
+
+### Fixed
+
+- The protocol v2 push stream (SSE) now stays connected. The pump's short
+  read timeout, which an idle stream hits between 25-second keepalives, comes
+  back from the HTTP client as a negative "try again" code rather than zero
+  bytes, and the pump took it for a dropped connection: it closed and
+  reopened the stream about once a second, so no server push ever arrived
+  that way and the one-second linger poll was quietly doing all the work.
+  A timed-out read is now treated as idle. Affects every board with overlay
+  (reTerminal E1003, XIAO EE03, reTerminal Sticky).
+
+## [1.29.1] - 2026-09-04
 
 ### Fixed
 
