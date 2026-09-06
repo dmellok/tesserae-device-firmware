@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Bluetooth setup and maintenance now exit after a brief Refresh press and
+  release instead of another 3-second hold. The screen shows the exit gesture,
+  saved settings are retained, and expired maintenance QR codes are cleared.
+  Leaving also cancels the saved-Wi-Fi connection wait; unfinished setup still
+  returns to the captive portal.
+
 ### Fixed
 
 - reTerminal Sticky: a partial refresh no longer dims the rest of the page.

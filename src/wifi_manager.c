@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "nvs.h"
@@ -362,8 +363,10 @@ static void clear_ap_hint(void)
 /* One STA connect attempt. If bssid != NULL, targets that BSSID/channel directly
  * (fast, no scan). max_retries bounds the disconnect-retry loop. */
 static esp_err_t connect_once(const char *ssid, const char *pass,
-                              const uint8_t *bssid, uint8_t chan, int max_retries)
+                              const uint8_t *bssid, uint8_t chan, int max_retries,
+                              wifi_cancel_fn cancelled)
 {
+    if (cancelled && cancelled()) return ESP_ERR_INVALID_STATE;
     if (s_events) vEventGroupDelete(s_events);
     s_events = xEventGroupCreate();
     if (!s_events) return ESP_ERR_NO_MEM;
@@ -388,23 +391,40 @@ static esp_err_t connect_once(const char *ssid, const char *pass,
     ESP_ERROR_CHECK(esp_wifi_start());
 
     ESP_LOGI(TAG, "connecting to '%s'%s", ssid, bssid ? " (fast)" : "");
-    EventBits_t bits = xEventGroupWaitBits(
-        s_events, BIT_CONNECTED | BIT_FAIL, pdTRUE, pdFALSE,
-        pdMS_TO_TICKS((uint32_t)WIFI_CONNECT_TIMEOUT_MS * (max_retries + 1)));
-
-    if (bits & BIT_CONNECTED) return ESP_OK;
-    if (bits & BIT_FAIL)      return ESP_FAIL;
+    int64_t deadline = esp_timer_get_time() +
+        (int64_t)WIFI_CONNECT_TIMEOUT_MS * (max_retries + 1) * 1000;
+    while (esp_timer_get_time() < deadline) {
+        if (cancelled && cancelled()) {
+            wifi_sta_stop();
+            return ESP_ERR_INVALID_STATE;
+        }
+        EventBits_t bits = xEventGroupWaitBits(
+            s_events, BIT_CONNECTED | BIT_FAIL, pdTRUE, pdFALSE, pdMS_TO_TICKS(100));
+        if (bits & BIT_CONNECTED) return ESP_OK;
+        if (bits & BIT_FAIL) return ESP_FAIL;
+    }
     return ESP_ERR_TIMEOUT;
 }
 
 esp_err_t wifi_sta_connect_credentials(const char *ssid, const char *pass)
 {
+    return wifi_sta_connect_credentials_cancellable(ssid, pass, NULL);
+}
+
+esp_err_t wifi_sta_connect_credentials_cancellable(const char *ssid, const char *pass,
+                                                   wifi_cancel_fn cancelled)
+{
     if (!ssid || !ssid[0] || !pass) return ESP_ERR_INVALID_ARG;
     wifi_sta_stop();
-    return connect_once(ssid, pass, NULL, 0, 1);
+    return connect_once(ssid, pass, NULL, 0, 1, cancelled);
 }
 
 esp_err_t wifi_sta_connect_stored(void)
+{
+    return wifi_sta_connect_stored_cancellable(NULL);
+}
+
+esp_err_t wifi_sta_connect_stored_cancellable(wifi_cancel_fn cancelled)
 {
     char ssid[33] = {0};
     char pass[65] = {0};
@@ -419,14 +439,16 @@ esp_err_t wifi_sta_connect_stored(void)
      * to a normal full-scan connect. */
     uint8_t bssid[6], chan;
     if (load_ap_hint(bssid, &chan)) {
-        err = connect_once(ssid, pass, bssid, chan, WIFI_FAST_CONNECT_RETRIES);
+        err = connect_once(ssid, pass, bssid, chan, WIFI_FAST_CONNECT_RETRIES, cancelled);
+        if (cancelled && cancelled()) { wifi_sta_stop(); return ESP_ERR_INVALID_STATE; }
         if (err == ESP_OK) { save_ap_hint(); return ESP_OK; }
         ESP_LOGW(TAG, "fast connect failed; clearing hint + full scan");
         clear_ap_hint();
         wifi_sta_stop();   /* tear down before the fallback attempt */
     }
 
-    err = connect_once(ssid, pass, NULL, 0, WIFI_CONNECT_RETRIES);
+    err = connect_once(ssid, pass, NULL, 0, WIFI_CONNECT_RETRIES, cancelled);
+    if (cancelled && cancelled()) { wifi_sta_stop(); return ESP_ERR_INVALID_STATE; }
     if (err == ESP_OK) save_ap_hint();
     return err;
 }

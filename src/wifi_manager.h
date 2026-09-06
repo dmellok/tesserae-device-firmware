@@ -73,5 +73,13 @@ esp_err_t wifi_sta_connect_credentials(const char *ssid, const char *pass);
  * Returns ESP_OK on success, ESP_ERR_TIMEOUT / ESP_FAIL otherwise. */
 esp_err_t wifi_sta_connect_stored(void);
 
+/* BLE owns a bounded, physically cancellable session. These variants check
+ * cancellation during association/DHCP and skip the fallback attempt on exit.
+ * A NULL callback keeps the ordinary wake-cycle behaviour. */
+typedef bool (*wifi_cancel_fn)(void);
+esp_err_t wifi_sta_connect_credentials_cancellable(const char *ssid, const char *pass,
+                                                   wifi_cancel_fn cancelled);
+esp_err_t wifi_sta_connect_stored_cancellable(wifi_cancel_fn cancelled);
+
 /* Stop the STA driver; safe to call before deep sleep. */
 void wifi_sta_stop(void);

@@ -1926,6 +1926,11 @@ void app_main(void)
     rest_config_load();
 
     if (maintenance_requested) {
+        /* The entry/exit gesture belongs to the local session, not a server
+         * button or cached-deck navigation action on the resumed wake cycle. */
+        rest_set_button(NULL, 0);
+        woke_by_button = false;
+        woke_btn = BTN_NONE;
         ble_setup_result_t result = ble_setup_run(
             BLE_SETUP_MODE_MAINTENANCE, BLE_SETUP_TIMEOUT_S);
         if (apply_ble_result(result)) return;
@@ -1944,7 +1949,7 @@ void app_main(void)
         ble_setup_result_t result = ble_setup_run(
             BLE_SETUP_MODE_MAINTENANCE, BLE_SETUP_TIMEOUT_S);
         if (apply_ble_result(result)) return;
-        ESP_LOGW(TAG, "BLE recovery timed out or failed; falling back to captive portal");
+        ESP_LOGW(TAG, "BLE recovery ended without configuration; falling back to captive portal");
     }
 #endif
 
