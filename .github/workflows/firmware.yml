@@ -43,6 +43,9 @@ jobs:
             test/test_button_report.c src/button_report.c -o /tmp/test-button-report
           /tmp/test-button-report
 
+      - name: Bluetooth maintenance exit gesture
+        run: sh tools/test_maintenance_button.sh
+
       - name: Signed OTA descriptor tests
         env:
           PIO_BIN: pio

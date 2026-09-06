@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+"$(dirname "$0")/test_maintenance_button.sh"
+
 PIO_CORE_DIR="${PLATFORMIO_CORE_DIR:-$HOME/.platformio}"
 MBEDTLS="$PIO_CORE_DIR/packages/framework-espidf/components/mbedtls/mbedtls"
 if [ ! -d "$MBEDTLS/library" ]; then

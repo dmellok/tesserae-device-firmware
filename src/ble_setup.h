@@ -23,7 +23,7 @@ typedef enum {
 
 typedef enum {
     BLE_SETUP_RESULT_TIMEOUT = 0,
-    /* Refresh held again on the device: leave without waiting out the window.
+    /* Refresh briefly pressed and released: leave without waiting out the window.
      * Handled like a timeout by the caller -- fall back to the captive portal. */
     BLE_SETUP_RESULT_CANCELLED,
     BLE_SETUP_RESULT_CONFIGURED,

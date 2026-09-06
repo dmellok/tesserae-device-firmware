@@ -24,7 +24,16 @@ and validated separately.
 - On an onboarded display, releasing Refresh after 3-19 seconds opens
   maintenance mode and holding for 20 seconds keeps the existing factory-reset
   behavior.
-- Advertising stops after timeout, successful setup, or reboot.
+- Once the QR screen is ready, briefly press and release Refresh to exit
+  without Companion. Release the entry hold first; only a fresh press shorter
+  than three seconds exits. Button bounce and long holds do not exit or reset
+  the display. Saved settings are retained and staged, unsaved values are
+  discarded. Maintenance resumes normal operation; unfinished setup/recovery
+  returns to the captive portal. This applies to BLE-enabled builds with
+  `BOARD_BTN_REFRESH_PIN`, including the reTerminal and XIAO EE families.
+  Builds without BLE retain their existing captive-portal flow.
+- Advertising stops after a physical exit, timeout, successful setup, or reboot.
+  The five-minute deadline is absolute and is not extended by button activity.
 - The QR setup secret and numeric passkey are generated for one boot and are
   never persisted.
 - Closing Companion does not consume the QR code. The same displayed code can
