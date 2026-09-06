@@ -97,8 +97,10 @@ jobs:
 
       - name: Install tools
         # Pin esptool to v4: its `merge_bin` subcommand + underscore flags
-        # (--flash_mode/_freq/_size) differ from v5's hyphenated forms.
-        run: pip install -U platformio && pip install "esptool<5"
+        # (--flash_mode/_freq/_size) differ from v5's hyphenated forms. PlatformIO
+        # below 6.2: 6.2.0 moves to tool-scons 4.11, which drops
+        # SCons.Tool.FortranCommon and breaks the espressif32 builder script.
+        run: pip install "platformio<6.2" && pip install "esptool<5"
 
       - name: Build ${{ matrix.env }}
         env:

@@ -32,7 +32,9 @@ jobs:
           python-version: '3.11'
 
       - name: Install PlatformIO
-        run: pip install -U platformio
+        # Pinned below 6.2: PlatformIO 6.2.0 moves to tool-scons 4.11, which drops
+        # SCons.Tool.FortranCommon and breaks the espressif32 builder script.
+        run: pip install "platformio<6.2"
 
       - name: Touch coordinate tests
         run: cc -I src test/test_touch_coords.c src/touch_coords.c -o /tmp/touch-coords && /tmp/touch-coords
@@ -136,7 +138,9 @@ jobs:
           restore-keys: pio-${{ runner.os }}-
 
       - name: Install PlatformIO
-        run: pip install -U platformio
+        # Pinned below 6.2: PlatformIO 6.2.0 moves to tool-scons 4.11, which drops
+        # SCons.Tool.FortranCommon and breaks the espressif32 builder script.
+        run: pip install "platformio<6.2"
 
       - name: Build ${{ matrix.env }}
         env:
