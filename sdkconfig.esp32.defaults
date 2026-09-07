@@ -1,0 +1,63 @@
+# ------------------------------------------------------------------
+# Shared ESP-IDF config for classic-ESP32 (Xtensa LX6, ESP32-WROOM-32) boards:
+# the Waveshare E-Paper ESP32 Driver Board. A FOURTH parallel base alongside
+# sdkconfig.defaults (S3, UART0 console, octal PSRAM), sdkconfig.usbjtag.defaults
+# (S3, native USB) and sdkconfig.c3.defaults (C3, 4 MB, no PSRAM): the classic
+# ESP32 has 4 MB of flash, NO PSRAM, no USB-Serial-JTAG, and a UART0 console
+# through the board's CP2102/CH343 bridge.
+#
+# SDKCONFIG_DEFAULTS is a full override rather than an append, so anything
+# non-console added to sdkconfig.defaults must be added here too or this board
+# silently loses it.
+# ------------------------------------------------------------------
+
+# --- Flash ---
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- CPU ---
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+
+# --- Main task stack ---
+# Same as sdkconfig.defaults: protocol v2 overflowed 8 KB live on 2026-07-27.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+
+# --- Networking ---
+CONFIG_LWIP_LOCAL_HOSTNAME="tesserae-esp32"
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
+
+# --- TLS / HTTPS via mbedTLS bundled root CAs ---
+CONFIG_ESP_TLS_USING_MBEDTLS=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# HKDF-SHA256 for the cloud relay's frame-key derivation (relay_crypto.c).
+CONFIG_MBEDTLS_HKDF_C=y
+
+# --- MQTT ---
+CONFIG_MQTT_PROTOCOL_311=y
+
+# --- HTTP server (SoftAP captive portal) ---
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+
+# --- Logging ---
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_COLORS=y
+
+# --- Console: UART0 through the onboard USB-UART bridge. The classic ESP32
+# has no USB-Serial-JTAG peripheral, so there is no secondary console. ---
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# --- Power ---
+CONFIG_PM_ENABLE=n
+
+# --- IPv6 (issue #2): reach servers that only listen on IPv6 ---
+CONFIG_LWIP_IPV6_AUTOCONFIG=y
+
+# --- FATFS: long filenames on heap (the SD deck cache stores frames as
+# <16-hex-digest>.bin, which exceeds 8.3; without LFN the rename fails) ---
+CONFIG_FATFS_LFN_HEAP=y

@@ -18,7 +18,10 @@
 #include <string.h>
 #include <time.h>
 
+#include "soc/soc_caps.h"
+#if SOC_USB_SERIAL_JTAG_SUPPORTED
 #include "driver/usb_serial_jtag.h"
+#endif
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_random.h"
@@ -589,11 +592,15 @@ static void sleep_forever_or_until_timer(void)
     reason = "DEV_DISABLE_SLEEP";
 #elif defined(DEV_FORCE_SLEEP)
     /* Skip the USB-host check entirely; behave as if on battery. */
-#else
+#elif SOC_USB_SERIAL_JTAG_SUPPORTED
     if (usb_serial_jtag_is_connected()) {
         loop = true;
         reason = "USB host detected";
     }
+#else
+    /* Classic ESP32: no USB-Serial-JTAG peripheral, so a connected laptop
+     * cannot be detected. Default to the battery (deep-sleep) path; use
+     * DEV_DISABLE_SLEEP to loop while iterating with the monitor open. */
 #endif
 
     if (loop) {

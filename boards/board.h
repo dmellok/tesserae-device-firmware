@@ -50,6 +50,8 @@
 #  include "m5stack_papers3.h"
 #elif defined(TESSERAE_BOARD_XTEINK_X4)
 #  include "xteink_x4.h"
+#elif defined(TESSERAE_BOARD_WAVESHARE_ESP32_DRIVER_75)
+#  include "waveshare_esp32_driver_75.h"
 #else
 #  error "No TESSERAE_BOARD_* selected. Set one in platformio.ini build_flags."
 #endif

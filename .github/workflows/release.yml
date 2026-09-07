@@ -56,6 +56,7 @@ jobs:
           - { env: xiao-epaper-75,            kind: xiao_epaper_75, chip: esp32s3 }
           - { env: xiao-epaper-75-bwr,        kind: xiao_epaper_75_bwr, chip: esp32s3 }
           - { env: xiao-epaper-75-c3,         kind: xiao_epaper_panel_75_c3, chip: esp32c3 }
+          - { env: waveshare-esp32-driver-75, kind: waveshare_esp32_driver_75, chip: esp32 }
           - { env: seeed-ee04-75,             kind: seeed_ee04_75, chip: esp32s3 }
           - { env: seeed-ee04-73e6,           kind: seeed_ee04_73e6, chip: esp32s3 }
           - { env: seeed-ee05,                kind: seeed_ee05_213_bwry, chip: esp32s3 }
@@ -148,6 +149,7 @@ jobs:
           case '${{ matrix.chip }}' in
             esp32s3) family='ESP32-S3' ;;
             esp32c3) family='ESP32-C3' ;;
+            esp32) family='ESP32' ;;
             *) echo "no chipFamily mapping for '${{ matrix.chip }}'" >&2; exit 1 ;;
           esac
           sha=$(shasum -a 256 "$bin" | awk '{print $1}')
@@ -183,6 +185,7 @@ jobs:
           case '${{ matrix.chip }}' in
             esp32s3) family='ESP32-S3' ;;
             esp32c3) family='ESP32-C3' ;;
+            esp32) family='ESP32' ;;
             *) echo "no chipFamily mapping for '${{ matrix.chip }}'" >&2; exit 1 ;;
           esac
           parts_json='['

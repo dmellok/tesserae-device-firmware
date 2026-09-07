@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Waveshare E-Paper ESP32 Driver Board with a 7.5" mono panel (V2, 800x480),
+  as the `waveshare-esp32-driver-75` build. This is the first classic-ESP32
+  target (ESP32-WROOM-32, 4 MB flash, no PSRAM, UART console), so it brings
+  its own `sdkconfig.esp32.defaults` base and reuses the 4 MB A/B partition
+  table. The panel is the same UC8179 glass as the reTerminal E1001 and the
+  XIAO 7.5" boards, so the mono driver and the 48000-byte frame carry over
+  unchanged. Built from the vendor pin map and not yet verified on hardware;
+  flash the `-selftest` build first.
+
+### Changed
+
+- The USB-host check at sleep entry is now compiled only on chips with a
+  USB-Serial-JTAG peripheral; the classic ESP32 goes straight to the battery
+  path, as the older 4.2" client did.
+
 ## [1.31.0] - 2026-09-06
 
 ### Changed
