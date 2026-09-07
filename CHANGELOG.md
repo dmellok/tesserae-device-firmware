@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.32.0] - 2026-09-07
+
 ### Added
 
 - Waveshare E-Paper ESP32 Driver Board with a 7.5" mono panel (V2, 800x480),
