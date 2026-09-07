@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.32.1] - 2026-09-07
+
+### Fixed
+
+- The Waveshare ESP32 Driver Board factory image and flasher parts now place
+  the bootloader at 0x1000, where the classic ESP32 ROM looks for it. v1.32.0
+  merged it at 0x0, the S3 and C3 location, so the board reported "invalid
+  header" on every boot after flashing. Other targets are unaffected.
+
 ## [1.32.0] - 2026-09-07
 
 ### Added

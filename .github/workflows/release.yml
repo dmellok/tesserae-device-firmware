@@ -126,21 +126,30 @@ jobs:
           b=".pio/build/$e"
           mkdir -p dist
           bin="dist/$e-$v.factory.bin"
+          # The second-stage bootloader sits at 0x0 on the S3 and C3 but at
+          # 0x1000 on the classic ESP32; its ROM reads 0x1000 and reports
+          # "invalid header" forever if the image was merged at 0x0 (v1.32.0
+          # shipped the first classic-ESP32 target that way). Match what the
+          # IDF build's flasher_args.json uses for the chip.
+          case '${{ matrix.chip }}' in
+            esp32) boot_off='0x1000' ;;
+            *)     boot_off='0x0' ;;
+          esac
           if [ -f "$b/ota_data_initial.bin" ]; then
             python -m esptool --chip "${{ matrix.chip }}" merge_bin -o "$bin" \
               --flash_mode keep --flash_freq keep --flash_size keep \
-              0x0 "$b/bootloader.bin" \
+              "$boot_off" "$b/bootloader.bin" \
               0x8000 "$b/partitions.bin" \
               0x10000 "$b/ota_data_initial.bin" \
               0x20000 "$b/firmware.bin"
-            parts='bootloader.bin:0x0 partitions.bin:0x8000 ota_data_initial.bin:0x10000 firmware.bin:0x20000'
+            parts="bootloader.bin:$boot_off partitions.bin:0x8000 ota_data_initial.bin:0x10000 firmware.bin:0x20000"
           else
             python -m esptool --chip "${{ matrix.chip }}" merge_bin -o "$bin" \
               --flash_mode keep --flash_freq keep --flash_size keep \
-              0x0 "$b/bootloader.bin" \
+              "$boot_off" "$b/bootloader.bin" \
               0x8000 "$b/partitions.bin" \
               0x10000 "$b/firmware.bin"
-            parts='bootloader.bin:0x0 partitions.bin:0x8000 firmware.bin:0x10000'
+            parts="bootloader.bin:$boot_off partitions.bin:0x8000 firmware.bin:0x10000"
           fi
           # ESP Web Tools refuses (or warns) when chipFamily does not match the
           # chip it finds on the wire. This was hardcoded to ESP32-S3, so the
