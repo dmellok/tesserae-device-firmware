@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.32.2] - 2026-09-08
+
 ### Fixed
 
 - IT8951 panels (reTerminal E1003, XIAO EE03): the INIT clear that v1.28.1
