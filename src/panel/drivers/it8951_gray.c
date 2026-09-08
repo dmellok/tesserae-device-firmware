@@ -72,17 +72,30 @@ static const char *TAG = "epd_it8951";
 static spi_device_handle_t s_spi;
 static bool     s_port_inited = false;
 
-/* A partial (area) pass ran since the last full-panel pass in this power
- * session. The controller derives every GC16 transition from the previous
- * image it holds, and after a wake that hard-reset it and loaded only an
- * echo rect, that reference no longer matches the glass outside the rect:
- * a plain GC16 full paint then under-drives every pixel the old frame had
- * dark and the old content shows through (dmellok/tesserae#274, seen on a
- * pushed frame painted in the touch-linger window after a DU tap echo).
- * A full paint that follows a partial first runs an INIT pass, which
+/* The controller's previous-image reference no longer earns a plain GC16.
+ * A GC16 pass derives every transition from the image the controller holds,
+ * and only a full paint that starts from a cleared reference comes out clean
+ * on this glass: the first paint after a hard reset (a timed wake) is fine,
+ * but a full paint that follows ANY earlier refresh in the same power
+ * session under-drives the pixels the old frame had dark and that content
+ * shows through (dmellok/tesserae#274). v1.28.1 gated the fix on a partial
+ * having run first; a second full paint in a touch-linger window with no
+ * partial in between ghosted just the same, so the gate is now "anything
+ * has been displayed since the reference was last known clean". A hard
+ * reset clears the flag unless a refresh ran within IT8951_REFERENCE_HOLD_US:
+ * the controller's DRAM can hold the old image across a short power-off,
+ * so a reset seconds after a paint is not trusted as blank. INIT (mode 0)
  * drives the whole panel to white regardless of the reference, so the GC16
- * that follows starts from a reference that is true. */
-static bool     s_partial_since_full;
+ * that follows starts true. */
+static bool     s_reference_stale;
+static int64_t  s_last_refresh_us;
+#define IT8951_REFERENCE_HOLD_US   (120LL * 1000 * 1000)
+
+static void note_refresh(void)
+{
+    s_reference_stale = true;
+    s_last_refresh_us = esp_timer_get_time();
+}
 
 static void fill_and_refresh(uint8_t color, int wave);
 static uint32_t s_img_buf_addr;
@@ -308,6 +321,10 @@ static void it8951_init(void)
             vTaskDelay(pdMS_TO_TICKS(1500));
         }
         hw_reset_and_power();
+        /* Trust the reset as a blank reference only when nothing was
+         * displayed recently enough for the DRAM to have kept it. */
+        s_reference_stale = s_last_refresh_us != 0 &&
+            (esp_timer_get_time() - s_last_refresh_us) < IT8951_REFERENCE_HOLD_US;
         write_cmd(SYS_RUN);
         memset(info, 0, sizeof info);
         write_cmd(GET_DEV_INFO);
@@ -419,14 +436,14 @@ static void write_and_refresh(const uint8_t *fb)
 
     write_cmd(STANDBY);           /* rest the panel power between updates */
     free(scratch);
-    s_partial_since_full = false;
+    note_refresh();
     ESP_LOGI(TAG, "refresh done");
 }
 
 static void it8951_display(const uint8_t *image)
 {
-    if (s_partial_since_full) {
-        ESP_LOGI(TAG, "full paint after a partial pass: INIT clear first");
+    if (s_reference_stale) {
+        ESP_LOGI(TAG, "full paint over a retained reference: INIT clear first");
         fill_and_refresh(0x0F, EPD_IT8951_INIT_MODE);
     }
     write_and_refresh(image);
@@ -493,7 +510,7 @@ static void it8951_partial_wave(const uint8_t *fb, int x, int y, int w,
     wait_display_done();
     write_cmd(STANDBY);
     free(scratch);
-    s_partial_since_full = true;
+    note_refresh();
     ESP_LOGI(TAG, "partial mode %d (%d,%d %dx%d)", wave, x0, y, aw, h);
 }
 
@@ -584,7 +601,9 @@ static void fill_and_refresh(uint8_t color, int wave)
     wait_display_done();
     write_cmd(STANDBY);
     free(row);
-    s_partial_since_full = false;
+    /* Uniform glass: nothing dark is left to show through the next paint. */
+    s_reference_stale = false;
+    s_last_refresh_us = esp_timer_get_time();
     ESP_LOGI(TAG, "fill mode %d done", wave);
 }
 
@@ -623,7 +642,7 @@ static void it8951_show_color_bars(void)
     wait_display_done();
     write_cmd(STANDBY);
     free(row);
-    s_partial_since_full = false;
+    note_refresh();
     ESP_LOGI(TAG, "gray ramp done");
 }
 

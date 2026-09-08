@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- IT8951 panels (reTerminal E1003, XIAO EE03): the INIT clear that v1.28.1
+  ran before a full paint following a tap echo now runs before any full paint
+  that follows an earlier refresh in the same power session
+  (dmellok/tesserae#274). A second full paint in a touch-linger window, with
+  no partial pass in between, ghosted the same way: the controller keeps the
+  previous image as its GC16 reference, and only a paint that starts from a
+  cleared reference comes out clean on this glass. A hard reset still counts
+  as clean unless a refresh ran within the previous two minutes, since the
+  controller's memory can hold the old image across a short power-off. The
+  first paint of a timed wake is unchanged; later paints in the same wake
+  cost one extra flash and about 1.5 s.
+
 ## [1.32.1] - 2026-09-07
 
 ### Fixed
