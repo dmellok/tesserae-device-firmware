@@ -90,13 +90,12 @@
 
 /* Battery sense: pack voltage through a 510k/510k divider (R39/R40) into
  * GPIO2 = ADC1 channel 2, behind a P-channel load switch (DMP2035U) whose gate
- * is GPIO3: LOW turns the switch ON. The resistor ratio is 2:1, but the
- * vendor's own calibration reads about 2.8:1 (their raw-count factor 2.28
- * against a 3.3 V full scale): with 510k of source impedance the ADC's
- * sample capacitor under-reads, so we start from the vendor's figure. Check
- * against a meter on the first bench pass and trim BOARD_BATTERY_DIVIDER_X100. */
+ * is GPIO3: LOW turns the switch ON. Plain 2:1. The first bench build scaled
+ * by the vendor firmware's raw-count factor instead (about 2.8:1) and
+ * reported 7751 mV for a pack on charge; 2:1 puts that at 5478 mV, which is
+ * four NiMH cells at 1.37 V. Not yet checked against a meter. */
 #define BOARD_BATTERY_ADC_CHANNEL     ADC_CHANNEL_2
-#define BOARD_BATTERY_DIVIDER_X100    283
+#define BOARD_BATTERY_DIVIDER         2
 #define BOARD_VBAT_SWITCH_PIN         3
 #define BOARD_VBAT_SWITCH_ACTIVE_LOW  1
 
