@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.33.1] - 2026-09-09
+
+### Fixed
+
+- Over-the-air updates on the paperlesspaper OpenPaper 7: the wake's frame is
+  released before the firmware download starts. The ESP32-C6 has no PSRAM, so
+  holding the 192000-byte frame left no room for the TLS session and the
+  download buffer, and both attempts on the bench failed (`download_error`,
+  then `flash_error`). An applied install reboots without painting the frame
+  anyway, and the ETag is stored at paint time, so a failed install simply
+  refetches on the next wake. Frames flashed with v1.33.0 need one USB flash
+  to pick this up; later updates go over the air.
+
 ## [1.33.0] - 2026-09-09
 
 ### Added
