@@ -27,9 +27,12 @@
  * staging area), a green LED on GPIO14, and a 7-pin expansion header carrying
  * the SPI bus plus GPIO12/13 (the vendor's SD card slot; no card in the frame).
  *
- * VERIFIED PINS (vendor firmware + schematic); UNVERIFIED on our firmware
- * until the first bench pass. The panel init sequence is the vendor's own (see
- * EPD_S6_INIT_GDEP073E01_V2), so the register block has run on this glass.
+ * CONFIRMED ON HARDWARE 2026-09-09: colour bars, setup splash, portal
+ * onboarding and a full frame cycle against a Tesserae server. The panel init
+ * sequence is the vendor's own (EPD_S6_INIT_GDEP073E01_V2). Flashing note:
+ * this chip revision (v0.2) rejects esptool's flasher stub, so every esptool
+ * call needs --no-stub at 115200, and there is no DTR/RTS auto-reset (hold
+ * Boot, tap Reset). Battery scaling is still the vendor's figure, unmetered.
  */
 #pragma once
 
@@ -59,6 +62,12 @@
 #define EPD_COL_RED     0x3
 #define EPD_COL_BLUE    0x5
 #define EPD_COL_GREEN   0x6
+
+/* The glass is mounted upside down in the frame (the vendor firmware draws
+ * pictures at GxEPD2 rotation 2). Bench 2026-09-09: the selftest bands came
+ * out in reverse order until this was set. Same mechanism as the PhotoPainter:
+ * the driver reverses the byte stream and swaps nibbles on the way out. */
+#define EPD_ROTATE_180 1
 
 /* Use the vendor's GDEP073E01 init block (Good Display's 2024 reference:
  * 6-byte PWR, IPC, VDCS, CCSET, TSSET) rather than the older E1002 block the

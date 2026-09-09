@@ -18,7 +18,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and OTA floor are per-board overrides now, since the Li-Po figures would
   have hibernated a healthy NiMH pack. On a PSRAM-less board the frame
   download buffer is sized to one frame up front instead of doubling, so the
-  192000-byte frame is allocated once and never copied.
+  192000-byte frame is allocated once and never copied. Confirmed on the bench
+  2026-09-09: selftest bands, setup splash and a full server cycle; the glass
+  is mounted upside down in the frame, so the board draws at 180 degrees.
 - paperlesspaper OpenPaper L (env `paperlesspaper-openpaper-l`), built without
   the hardware: the 13.3" EL133UF3 panel on the same ESP32-C6. Its two
   controllers have no DC line (`EPD_NO_DC`: every command is one CS-framed
