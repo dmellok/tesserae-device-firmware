@@ -98,8 +98,14 @@
  * under PRESENT_MIN mean no/unknown cell (mains boards report 0) and never
  * trigger. GOODBYE sits below the OTA floor above: a cell too flat to flash
  * is not necessarily too flat to keep painting frames for weeks. */
+/* Li-Po figures. A board on another chemistry (the paperlesspaper frames run
+ * 4 x NiMH) overrides GOODBYE / RESUME in its header; 0 disables the gate. */
+#ifndef BATTERY_GOODBYE_MV
 #define BATTERY_GOODBYE_MV        3300
+#endif
+#ifndef BATTERY_RESUME_MV
 #define BATTERY_RESUME_MV         3450
+#endif
 #define BATTERY_PRESENT_MIN_MV    2500
 #define BATTERY_GOODBYE_RECHECK_S 3600
 

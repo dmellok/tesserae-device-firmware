@@ -115,6 +115,8 @@ jobs:
           - seeed-ee03
           - m5stack-papers3
           - xteink-x4
+          - paperlesspaper-openpaper-7
+          - paperlesspaper-openpaper-l
     steps:
       - uses: actions/checkout@v4
 

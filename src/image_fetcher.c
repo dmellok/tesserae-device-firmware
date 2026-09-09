@@ -60,6 +60,14 @@ static esp_err_t on_http(esp_http_client_event_t *e)
         /* Grow geometrically; start at 64KB. */
         if (need > ctx->cap) {
             size_t new_cap = ctx->cap ? ctx->cap : 65536;
+#if !CONFIG_SPIRAM
+            /* No PSRAM: the frame is the biggest thing this heap will ever
+             * hold, and doubling 64K -> 128K -> 256K keeps the old block alive
+             * beside the new one during each realloc. Size the first block to
+             * exactly one frame instead: a raw frame then fits in one
+             * allocation with no copy, and anything larger still grows. */
+            if (!ctx->cap && (size_t)EPD_BUF_BYTES > new_cap) new_cap = EPD_BUF_BYTES;
+#endif
             while (new_cap < need) new_cap *= 2;
             if (new_cap > IMAGE_FETCH_MAX_BYTES) new_cap = IMAGE_FETCH_MAX_BYTES;
 
@@ -212,4 +220,75 @@ esp_err_t image_fetch_auth(const char *url, const char *bearer_token,
 esp_err_t image_fetch(const char *url, fetched_image_t *out)
 {
     return image_fetch_auth(url, NULL, out);
+}
+
+/* ---------- streamed download (no buffer) ---------- */
+
+typedef struct {
+    image_sink_fn sink;
+    void         *user;
+    size_t        received;
+    bool          failed;    /* sink refused; stop reading */
+} sink_ctx_t;
+
+static esp_err_t on_http_sink(esp_http_client_event_t *e)
+{
+    sink_ctx_t *ctx = e->user_data;
+    if (e->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
+    if (ctx->failed) return ESP_FAIL;
+    /* Only hand a 2xx body to the sink: an error page must not reach the
+     * panel. esp_http_client has parsed the status line by the first byte. */
+    int status = esp_http_client_get_status_code(e->client);
+    if (status < 200 || status >= 300) return ESP_OK;
+    int64_t content_length = esp_http_client_get_content_length(e->client);
+    if (ctx->sink(ctx->user, e->data, (size_t)e->data_len, content_length) != ESP_OK) {
+        ctx->failed = true;
+        return ESP_FAIL;
+    }
+    ctx->received += (size_t)e->data_len;
+    return ESP_OK;
+}
+
+esp_err_t image_fetch_to_sink(const char *url, const char *bearer_token,
+                              image_sink_fn sink, void *user, size_t *received)
+{
+    if (!url || !sink) return ESP_ERR_INVALID_ARG;
+    if (received) *received = 0;
+
+    sink_ctx_t ctx = { .sink = sink, .user = user };
+
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .event_handler = on_http_sink,
+        .user_data = &ctx,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 30000,
+        .buffer_size = 4096,
+        .buffer_size_tx = 1024,
+    };
+    esp_http_client_handle_t cli = esp_http_client_init(&cfg);
+    if (!cli) return ESP_FAIL;
+
+    if (bearer_token && bearer_token[0]) {
+        char auth[300];
+        snprintf(auth, sizeof auth, "Bearer %s", bearer_token);
+        esp_http_client_set_header(cli, "Authorization", auth);
+    }
+
+    esp_err_t err = esp_http_client_perform(cli);
+    int status = esp_http_client_get_status_code(cli);
+    esp_http_client_cleanup(cli);
+    if (received) *received = ctx.received;
+
+    if (ctx.failed) return ESP_ERR_INVALID_RESPONSE;
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "perform failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    if (status < 200 || status >= 300) {
+        ESP_LOGE(TAG, "http status %d", status);
+        return (status == 404) ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "streamed %u bytes", (unsigned)ctx.received);
+    return ESP_OK;
 }

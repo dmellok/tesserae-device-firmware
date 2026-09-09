@@ -1,0 +1,69 @@
+# ------------------------------------------------------------------
+# Shared ESP-IDF config for ESP32-C6 boards: the paperlesspaper OpenPaper 7
+# and OpenPaper L (ESP32-C6-MINI-1-N4). A FIFTH parallel base alongside
+# sdkconfig.defaults (S3, UART0, octal PSRAM), sdkconfig.usbjtag.defaults (S3,
+# native USB), sdkconfig.c3.defaults (C3) and sdkconfig.esp32.defaults
+# (classic ESP32): the C6 has 4 MB of flash, NO PSRAM, tops out at 160 MHz,
+# and these boards route the console through a CP2102N on UART0.
+#
+# SDKCONFIG_DEFAULTS is a full override rather than an append, so anything
+# non-console added to sdkconfig.defaults must be added here too or these
+# boards silently lose it.
+# ------------------------------------------------------------------
+
+# --- Flash ---
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- CPU ---
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+CONFIG_FREERTOS_HZ=1000
+
+# --- Main task stack ---
+# Same as sdkconfig.defaults: protocol v2 overflowed 8 KB live on 2026-07-27.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+
+# --- Networking ---
+CONFIG_LWIP_LOCAL_HOSTNAME="tesserae-esp32"
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
+
+# --- TLS / HTTPS via mbedTLS bundled root CAs ---
+CONFIG_ESP_TLS_USING_MBEDTLS=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# HKDF-SHA256 for the cloud relay's frame-key derivation (relay_crypto.c).
+CONFIG_MBEDTLS_HKDF_C=y
+
+# --- MQTT ---
+CONFIG_MQTT_PROTOCOL_311=y
+
+# --- HTTP server (SoftAP captive portal) ---
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+
+# --- Logging ---
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_COLORS=y
+
+# --- Console: UART0 through the board's CP2102N bridge (TXD0/RXD0, the
+# module's default UART0 pins). No secondary console: the C6's USB-Serial-JTAG
+# pads are GPIO12/13, which these boards use as ordinary GPIO (panel rail on
+# the L, expansion header on the 7). ---
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# --- USB PHY off: GPIO12/13 are the C6's USB D-/D+ pads. With the PHY left
+# on, the internal pull-up on D+ fights whatever the board wires there. ---
+CONFIG_ESP_PHY_ENABLE_USB=n
+
+# --- Power ---
+CONFIG_PM_ENABLE=n
+
+# --- IPv6 (issue #2): reach servers that only listen on IPv6 ---
+CONFIG_LWIP_IPV6_AUTOCONFIG=y
+
+# --- FATFS: long filenames on heap (the SD deck cache stores frames as
+# <16-hex-digest>.bin, which exceeds 8.3; without LFN the rename fails) ---
+CONFIG_FATFS_LFN_HEAP=y

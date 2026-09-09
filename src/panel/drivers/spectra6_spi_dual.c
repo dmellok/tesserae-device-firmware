@@ -103,15 +103,28 @@ static esp_err_t spi_tx_raw(const uint8_t *data, size_t len)
     return ESP_OK;
 }
 
+/* Boards without a DC line (paperlesspaper OpenPaper L, EPD_NO_DC) run the
+ * panel in its CS-framed mode: the first byte after CS falls is the opcode and
+ * everything until CS rises is its data. Every caller here already frames one
+ * command + data per CS window, so dropping the DC edges is all it takes. */
+static inline void set_dc(int level)
+{
+#ifdef EPD_NO_DC
+    (void)level;
+#else
+    gpio_set_level(EPD_PIN_DC, level);
+#endif
+}
+
 static void send_cmd(uint8_t cmd)
 {
-    gpio_set_level(EPD_PIN_DC, 0);
+    set_dc(0);
     spi_tx_raw(&cmd, 1);
 }
 
 static void send_data_buf(const uint8_t *buf, size_t len)
 {
-    gpio_set_level(EPD_PIN_DC, 1);
+    set_dc(1);
     spi_tx_raw(buf, len);
 }
 
@@ -163,7 +176,10 @@ static esp_err_t s6d_port_init(void)
         .intr_type = GPIO_INTR_DISABLE,
         .mode = GPIO_MODE_OUTPUT,
         .pin_bit_mask =
-            (1ULL << EPD_PIN_RST)  | (1ULL << EPD_PIN_DC)  |
+            (1ULL << EPD_PIN_RST)  |
+#ifndef EPD_NO_DC
+            (1ULL << EPD_PIN_DC)   |
+#endif
             (1ULL << EPD_PIN_CS_M) | (1ULL << EPD_PIN_CS_S) |
             (1ULL << EPD_PIN_PWR),
         .pull_up_en = GPIO_PULLUP_ENABLE,
@@ -192,7 +208,13 @@ static esp_err_t s6d_port_init(void)
         .sclk_io_num = EPD_PIN_SCLK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
+#ifdef TESSERAE_STREAM_FRAMES
+        /* Frames never exist whole on a streaming board; spi_tx_raw chunks at
+         * 4 KiB, and a 960000-byte cap would just reserve DMA descriptors. */
+        .max_transfer_sz = 4096,
+#else
         .max_transfer_sz = EPD_BUF_BYTES,
+#endif
     };
     spi_device_interface_config_t dev = {
         .clock_speed_hz = EPD_SPI_HZ,
@@ -210,10 +232,14 @@ static esp_err_t s6d_port_init(void)
 /* The init sequence in the demo wraps every command in CS_M_0..CS_ALL(1);
  * a couple of commands intentionally only assert CS_M (the master controller
  * holds the shared registers). We preserve that distinction exactly. */
+#ifndef EPD_PWR_SETTLE_MS
+#define EPD_PWR_SETTLE_MS 10
+#endif
+
 static void s6d_init(void)
 {
     gpio_set_level(EPD_PIN_PWR, 1);   /* power-enable rail */
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(EPD_PWR_SETTLE_MS));
 
     hw_reset();
     wait_idle();
@@ -278,27 +304,20 @@ static void trigger_refresh(void)
 
 static void s6d_clear(uint8_t color)
 {
-    /* Each half is 300 bytes wide x 1600 rows = 480000 bytes. We allocate
-     * one half-buffer in PSRAM and reuse it for both controllers. */
-    const size_t HALF = EPD_BUF_BYTES / 2;
-    uint8_t *buf = heap_caps_malloc(HALF, MALLOC_CAP_SPIRAM);
-    if (!buf) {
-        ESP_LOGE(TAG, "OOM allocating %u-byte clear buffer", (unsigned)HALF);
-        return;
+    /* One 300-byte half-row repeated 1600 times per controller: the same
+     * bytes a 480000-byte scratch would send, without needing PSRAM for it
+     * (the OpenPaper L has none). */
+    const size_t HALF_ROW = EPD_WIDTH / 4;     /* 300 */
+    uint8_t row[HALF_ROW];
+    memset(row, (color << 4) | color, HALF_ROW);
+
+    for (int side = 0; side < 2; side++) {
+        gpio_set_level(side == 0 ? EPD_PIN_CS_M : EPD_PIN_CS_S, 0);
+        send_cmd(DTM);
+        for (size_t r = 0; r < EPD_HEIGHT; r++)
+            send_data_buf(row, HALF_ROW);
+        cs_both(1);
     }
-    memset(buf, (color << 4) | color, HALF);
-
-    gpio_set_level(EPD_PIN_CS_M, 0);
-    send_cmd(DTM);
-    send_data_buf(buf, HALF);
-    cs_both(1);
-
-    gpio_set_level(EPD_PIN_CS_S, 0);
-    send_cmd(DTM);
-    send_data_buf(buf, HALF);
-    cs_both(1);
-
-    free(buf);
     trigger_refresh();
 }
 
@@ -414,6 +433,78 @@ static void s6d_sleep(void)
     gpio_set_level(EPD_PIN_RST, 0);
 }
 
+#ifdef TESSERAE_STREAM_FRAMES
+/* ---------- row streaming (boards with no RAM for a frame) ----------
+ *
+ * Writes the frame into the controllers' RAM one block of rows at a time
+ * through the partial-window commands, so the caller never holds more than a
+ * block. Transcribed from the vendor's setImageFromFS_13inch(), which streams
+ * the same glass from a staging flash in 16 blocks of 100 rows:
+ *
+ *   PTLW 0x83  HRST HRED VRST VRED 0x01   window, per controller
+ *   PTIN 0x91                             enter partial mode
+ *   DTM  0x10  <rows x 300 bytes>          the block's half-rows
+ *
+ * The window units are the vendor's observation on this glass, not a
+ * datasheet figure: columns are counted x2 (HRED = 1199 for a 600-px half),
+ * rows are counted /2 (VRST = y/2). Keep them. After the last block the
+ * window is cleared on both controllers (0x83 with nine zero bytes) so the
+ * refresh that follows drives the whole panel. */
+#define PTLW 0x83
+#define PTIN 0x91
+
+static void stream_window(int cs_pin, int y0, int nrows)
+{
+    const uint16_t hrst = 0;
+    const uint16_t hred = (uint16_t)((EPD_WIDTH / 2) * 2 - 1);
+    const uint16_t vrst = (uint16_t)(y0 / 2);
+    const uint16_t vred = (uint16_t)((y0 + nrows) / 2 - 1);
+    const uint8_t win[9] = {
+        (uint8_t)(hrst >> 8), (uint8_t)hrst,
+        (uint8_t)(hred >> 8), (uint8_t)hred,
+        (uint8_t)(vrst >> 8), (uint8_t)vrst,
+        (uint8_t)(vred >> 8), (uint8_t)vred,
+        0x01,
+    };
+    gpio_set_level(cs_pin, 0); cmd_with_data(PTLW, win, sizeof win); cs_both(1);
+    gpio_set_level(cs_pin, 0); send_cmd(PTIN);                       cs_both(1);
+}
+
+static bool s6d_stream_begin(void)
+{
+    return s_port_inited;
+}
+
+static bool s6d_stream_rows(const uint8_t *rows, int y0, int nrows)
+{
+    const size_t HALF_ROW = EPD_WIDTH / 4;     /* 300 */
+    const size_t FULL_ROW = HALF_ROW * 2;      /* 600 */
+    if (nrows <= 0 || (nrows & 1) || y0 < 0 || y0 + nrows > EPD_HEIGHT) {
+        ESP_LOGE(TAG, "stream block y=%d n=%d rejected (rows must be even)", y0, nrows);
+        return false;
+    }
+    for (int side = 0; side < 2; side++) {
+        const int cs = side == 0 ? EPD_PIN_CS_M : EPD_PIN_CS_S;
+        stream_window(cs, y0, nrows);
+        gpio_set_level(cs, 0);
+        send_cmd(DTM);
+        for (int r = 0; r < nrows; r++)
+            send_data_buf(rows + (size_t)r * FULL_ROW + (size_t)side * HALF_ROW, HALF_ROW);
+        cs_both(1);
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    return true;
+}
+
+static bool s6d_stream_end(bool refresh)
+{
+    static const uint8_t no_window[9] = {0};
+    cs_both(0); cmd_with_data(PTLW, no_window, sizeof no_window); cs_both(1);
+    if (refresh) trigger_refresh();
+    return true;
+}
+#endif /* TESSERAE_STREAM_FRAMES */
+
 /* ---------- exported vtable ---------- */
 
 const epd_driver_t spectra6_spi_dual_driver = {
@@ -432,6 +523,11 @@ const epd_driver_t spectra6_spi_dual_driver = {
     .show_color_bars    = s6d_show_color_bars,
     .show_palette_sweep = s6d_show_palette_sweep,
     .sleep              = s6d_sleep,
+#ifdef TESSERAE_STREAM_FRAMES
+    .stream_begin       = s6d_stream_begin,
+    .stream_rows        = s6d_stream_rows,
+    .stream_end         = s6d_stream_end,
+#endif
 };
 
 #endif /* PANEL_DRIVER_SPECTRA6_SPI_DUAL */

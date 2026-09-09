@@ -43,3 +43,28 @@ void epd_display_partial_mode(const uint8_t *image, int x, int y, int w, int h,
         d->display_partial(image, x, y, w, h, mode != EPD_RF_GC16);
     }
 }
+
+/* Row streaming (see epd_panel.h). All three are present or none is. */
+bool epd_supports_stream(void)
+{
+    const epd_driver_t *d = epd_active_driver();
+    return d->stream_begin && d->stream_rows && d->stream_end;
+}
+
+bool epd_stream_begin(void)
+{
+    const epd_driver_t *d = epd_active_driver();
+    return d->stream_begin ? d->stream_begin() : false;
+}
+
+bool epd_stream_rows(const uint8_t *rows, int y0, int nrows)
+{
+    const epd_driver_t *d = epd_active_driver();
+    return d->stream_rows ? d->stream_rows(rows, y0, nrows) : false;
+}
+
+bool epd_stream_end(bool refresh)
+{
+    const epd_driver_t *d = epd_active_driver();
+    return d->stream_end ? d->stream_end(refresh) : false;
+}

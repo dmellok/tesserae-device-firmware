@@ -52,6 +52,10 @@
 #  include "xteink_x4.h"
 #elif defined(TESSERAE_BOARD_WAVESHARE_ESP32_DRIVER_75)
 #  include "waveshare_esp32_driver_75.h"
+#elif defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_7)
+#  include "paperlesspaper_openpaper_7.h"
+#elif defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L)
+#  include "paperlesspaper_openpaper_l.h"
 #else
 #  error "No TESSERAE_BOARD_* selected. Set one in platformio.ini build_flags."
 #endif

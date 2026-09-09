@@ -592,7 +592,7 @@ static void sleep_forever_or_until_timer(void)
     reason = "DEV_DISABLE_SLEEP";
 #elif defined(DEV_FORCE_SLEEP)
     /* Skip the USB-host check entirely; behave as if on battery. */
-#elif SOC_USB_SERIAL_JTAG_SUPPORTED
+#elif SOC_USB_SERIAL_JTAG_SUPPORTED && !defined(BOARD_USB_SERIAL_JTAG_ABSENT)
     if (usb_serial_jtag_is_connected()) {
         loop = true;
         reason = "USB host detected";
@@ -939,6 +939,113 @@ static bool fetch_and_paint_current(const char *server_url)
     frame_paint(&p);
     return true;
 }
+
+#ifdef TESSERAE_STREAM_FRAMES
+/* ---------- streamed paint (boards with no RAM for a frame) ----------
+ *
+ * The paperlesspaper OpenPaper L's 960000-byte frame cannot be held on its
+ * PSRAM-less ESP32-C6, so the download goes straight into the panel: the
+ * HTTP body is collected EPD_STREAM_ROWS rows at a time and each block is
+ * written into the controllers' RAM through the driver's stream_rows (partial
+ * windows), and only once the whole body has arrived, byte-exact, is the
+ * refresh triggered. Fetch and paint are therefore one step here, radio up
+ * throughout; the frame_fetch / frame_paint split above (always-on, deferred
+ * paints, relay, deck cache) needs a buffer and does not apply on this tier.
+ *
+ * A wrong Content-Length refuses before the first byte reaches the panel; a
+ * short body abandons without a refresh (stream_end(false)), so the glass
+ * keeps its previous image either way. */
+typedef struct {
+    uint8_t *block;         /* EPD_STREAM_ROWS rows of panel-native bytes */
+    size_t   block_bytes;
+    size_t   fill;          /* bytes in the block so far */
+    size_t   total;         /* bytes accepted from the body so far */
+    int      y;             /* panel row the next block starts at */
+    bool     bad;           /* refused; drop everything after */
+} stream_ctx_t;
+
+#define STREAM_ROW_BYTES ((size_t)EPD_BUF_BYTES / EPD_HEIGHT)
+
+static esp_err_t stream_sink(void *user, const uint8_t *data, size_t len,
+                             int64_t content_length)
+{
+    stream_ctx_t *c = user;
+    if (c->bad) return ESP_FAIL;
+    if (c->total == 0 && content_length > 0 &&
+        content_length != (int64_t)EPD_BUF_BYTES) {
+        ESP_LOGE(TAG, "frame size mismatch: Content-Length %lld, expected %u; "
+                 "refusing to paint", (long long)content_length,
+                 (unsigned)EPD_BUF_BYTES);
+        c->bad = true;
+        return ESP_FAIL;
+    }
+    if (c->total + len > (size_t)EPD_BUF_BYTES) {
+        ESP_LOGE(TAG, "frame body exceeds %u bytes; refusing to paint",
+                 (unsigned)EPD_BUF_BYTES);
+        c->bad = true;
+        return ESP_FAIL;
+    }
+    while (len) {
+        size_t n = c->block_bytes - c->fill;
+        if (n > len) n = len;
+        memcpy(c->block + c->fill, data, n);
+        c->fill  += n;
+        c->total += n;
+        data     += n;
+        len      -= n;
+        if (c->fill == c->block_bytes) {
+            if (!epd_stream_rows(c->block, c->y, EPD_STREAM_ROWS)) {
+                c->bad = true;
+                return ESP_FAIL;
+            }
+            c->y   += EPD_STREAM_ROWS;
+            c->fill = 0;
+        }
+    }
+    return ESP_OK;
+}
+
+static bool stream_fetch_and_paint(const char *url)
+{
+    stream_ctx_t c = {0};
+    c.block_bytes = (size_t)EPD_STREAM_ROWS * STREAM_ROW_BYTES;
+    c.block = heap_caps_malloc(c.block_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!c.block) {
+        ESP_LOGE(TAG, "OOM allocating %u-byte stream block", (unsigned)c.block_bytes);
+        return false;
+    }
+
+    ESP_ERROR_CHECK(epd_port_init());
+    epd_init();
+    if (!epd_stream_begin()) {
+        ESP_LOGE(TAG, "panel refused a streamed frame");
+        epd_sleep();
+        free(c.block);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "streaming frame into the panel (%d-row blocks)...", EPD_STREAM_ROWS);
+    size_t received = 0;
+    esp_err_t err = image_fetch_to_sink(url, NULL, stream_sink, &c, &received);
+    bool ok = (err == ESP_OK) && !c.bad && c.total == (size_t)EPD_BUF_BYTES;
+    if (ok && c.fill) {
+        /* Trailing partial block (only when EPD_HEIGHT is not a multiple of
+         * EPD_STREAM_ROWS). Whole rows by construction: total == EPD_BUF_BYTES. */
+        ok = epd_stream_rows(c.block, c.y, (int)(c.fill / STREAM_ROW_BYTES));
+    }
+    if (ok) {
+        ESP_LOGI(TAG, "streamed %u bytes; refreshing (~30 s)...", (unsigned)c.total);
+    } else {
+        ESP_LOGE(TAG, "streamed frame incomplete (%u of %u bytes, err %s); "
+                 "leaving the current image", (unsigned)c.total,
+                 (unsigned)EPD_BUF_BYTES, esp_err_to_name(err));
+    }
+    epd_stream_end(ok);
+    epd_sleep();
+    free(c.block);
+    return ok;
+}
+#endif /* TESSERAE_STREAM_FRAMES */
 
 #if BOARD_HAS_TOUCH
 /* Replay strokes queued from earlier wakes whose WiFi connect had failed. Each
@@ -2227,6 +2334,9 @@ void app_main(void)
     bool skip_paint     = false;
     bool just_onboarded = false;
     uint8_t *frame  = NULL;
+#ifdef TESSERAE_STREAM_FRAMES
+    bool streamed   = false;   /* frame already on the glass (stream_fetch_and_paint) */
+#endif
     char new_etag[80] = {0};
     bool deck_sync_needed = false;   /* status asked for a deck cache resync */
     char deck_srv_ver[DECK_VERSION_CAP] = {0};
@@ -2461,6 +2571,17 @@ void app_main(void)
         }
         char fullurl[512];
         resolve_url(c->server_url, fo.url, fullurl, sizeof fullurl);
+#ifdef TESSERAE_STREAM_FRAMES
+        /* No RAM for a frame on this board: the download is painted as it
+         * arrives, radio up (see stream_fetch_and_paint). By the time this
+         * returns true the frame is on the glass; the bookkeeping that the
+         * buffered path does after its paint runs below on `streamed`. */
+        if (stream_fetch_and_paint(fullurl)) {
+            streamed = true;
+        } else {
+            ESP_LOGE(TAG, "streamed frame failed for %s", fullurl);
+        }
+#else
         fetched_image_t img;
         if (image_fetch(fullurl, &img) == ESP_OK) {
             if (image_decode_to_frame(&img, fullurl, &frame) != ESP_OK) frame = NULL;
@@ -2476,6 +2597,7 @@ void app_main(void)
         } else {
             ESP_LOGE(TAG, "frame fetch failed for %s", fullurl);
         }
+#endif
     } else if (fs == REST_NOT_MODIFIED) {
         ESP_LOGI(TAG, "frame unchanged (304); skipping paint");
         skip_paint = true;
@@ -2682,6 +2804,20 @@ void app_main(void)
         !proto2_sync_pending())
         wifi_sta_stop();
 
+#ifdef TESSERAE_STREAM_FRAMES
+    if (streamed) {
+        /* Painted during the fetch; only the after-paint bookkeeping is left. */
+        if (new_etag[0]) { rest_config_set_frame_etag(new_etag); cfg_dirty = true; }
+        rest_config_set_ui_state(UI_CONNECTED);
+        proto2_frame_painted(new_etag);
+        touch3_after_paint(new_etag);
+        deck_network_painted();
+        const char *album_digest = fc_digest_valid(new_etag) ? new_etag : NULL;
+        if (new_etag[0] && !album_digest)
+            ESP_LOGW(TAG, "frame ETag is not an Album digest; resuming without slot inference");
+        collection_network_painted(album_digest);
+    } else
+#endif
     if (frame != NULL) {
         ESP_LOGI(TAG, "painting downloaded frame (~30 s)...");
         ESP_ERROR_CHECK(epd_port_init());

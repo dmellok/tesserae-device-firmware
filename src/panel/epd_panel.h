@@ -94,6 +94,20 @@ typedef struct epd_driver {
      * are unaffected. */
     void (*display_partial_mode)(const uint8_t *image, int x, int y, int w,
                                  int h, epd_refresh_t mode);
+
+    /* OPTIONAL (all three NULL = unsupported): paint a frame the caller
+     * cannot hold whole. For boards whose frame outgrows their RAM (the
+     * paperlesspaper OpenPaper L: 960000 bytes on a PSRAM-less C6), the frame
+     * goes into the panel controllers' own memory a block of rows at a time
+     * while it is still downloading. Call order, after init():
+     *   stream_begin(), then stream_rows(rows, y0, n) for consecutive blocks
+     *   (rows = n panel-native packed rows, frame layout), then
+     *   stream_end(true) to refresh, or stream_end(false) to abandon without
+     *   touching the glass (the RAM is left half-written; the next paint
+     *   overwrites it). Drivers may restrict n (even counts, a maximum). */
+    bool (*stream_begin)(void);
+    bool (*stream_rows)(const uint8_t *rows, int y0, int nrows);
+    bool (*stream_end)(bool refresh);
 } epd_driver_t;
 
 /* The single driver selected for this board at build time. Never NULL --

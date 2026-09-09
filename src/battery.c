@@ -18,13 +18,29 @@ bool battery_present(void)
 
 int battery_pct(int mv)
 {
+    if (mv <= 0)    return 0;       /* unknown -> 0 is the safe report */
+#ifdef BOARD_BATTERY_NIMH_CELLS
+    /* NiMH pack (paperlesspaper frames: 4 x AAA / AA). Per-cell curve: flat
+     * around 1.2 V for most of the discharge, then a knee under 1.15 V; the
+     * vendor cuts the frame off at 1.05 V/cell. Breakpoints are generic NiMH
+     * resting-voltage figures, not a measured pack. */
+    const int c = mv / BOARD_BATTERY_NIMH_CELLS;
+    if (c >= 1400) return 100;
+    if (c >= 1300) return 90 + (c - 1300) * 10 / 100;
+    if (c >= 1250) return 70 + (c - 1250) * 20 / 50;
+    if (c >= 1200) return 40 + (c - 1200) * 30 / 50;
+    if (c >= 1150) return 20 + (c - 1150) * 20 / 50;
+    if (c >= 1100) return 8 + (c - 1100) * 12 / 50;
+    if (c >= 1050) return (c - 1050) * 8 / 50;
+    return 0;
+#else
     /* Two-segment piecewise linear: the Li-Po discharge curve is non-linear
      * below 3.7 V, so a single line over-reports remaining capacity. */
-    if (mv <= 0)    return 0;       /* unknown -> 0 is the safe report */
     if (mv >= 4200) return 100;
     if (mv <= 3300) return 0;
     if (mv >= 3700) return 30 + (mv - 3700) * 70 / 500;
     return (mv - 3300) * 30 / 400;
+#endif
 }
 
 int battery_read_pct(void)
@@ -97,6 +113,23 @@ int battery_read_mv(void)
 #ifndef BOARD_BATTERY_DIVIDER
 #  define BOARD_BATTERY_DIVIDER     3     /* 1:3 resistor divider on the sense pin */
 #endif
+/* A board whose effective ratio is not a whole number (a high-impedance
+ * divider the ADC under-samples, calibrated against a meter) gives it as
+ * hundredths instead. */
+#ifdef BOARD_BATTERY_DIVIDER_X100
+#  define BATTERY_SCALE(pin_mv)  ((pin_mv) * BOARD_BATTERY_DIVIDER_X100 / 100)
+#else
+#  define BATTERY_SCALE(pin_mv)  ((pin_mv) * BOARD_BATTERY_DIVIDER)
+#endif
+/* Load-switch polarity: most boards enable the divider with a HIGH; a P-FET
+ * high-side switch (paperlesspaper OpenPaper 7) wants a LOW. */
+#ifdef BOARD_VBAT_SWITCH_ACTIVE_LOW
+#  define VBAT_SWITCH_ON   0
+#  define VBAT_SWITCH_OFF  1
+#else
+#  define VBAT_SWITCH_ON   1
+#  define VBAT_SWITCH_OFF  0
+#endif
 
 int battery_read_mv(void)
 {
@@ -104,7 +137,7 @@ int battery_read_mv(void)
     /* Some boards gate the sense divider behind a load switch to avoid a
      * constant drain; enable it around the read. */
     gpio_set_direction(BOARD_VBAT_SWITCH_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_level(BOARD_VBAT_SWITCH_PIN, 1);
+    gpio_set_level(BOARD_VBAT_SWITCH_PIN, VBAT_SWITCH_ON);
     vTaskDelay(pdMS_TO_TICKS(10));   /* let the load switch + divider settle */
 #endif
 
@@ -141,9 +174,9 @@ int battery_read_mv(void)
 
 done:
 #ifdef BOARD_VBAT_SWITCH_PIN
-    gpio_set_level(BOARD_VBAT_SWITCH_PIN, 0);
+    gpio_set_level(BOARD_VBAT_SWITCH_PIN, VBAT_SWITCH_OFF);
 #endif
-    return pin_mv * BOARD_BATTERY_DIVIDER;
+    return BATTERY_SCALE(pin_mv);
 }
 
 #else  /* no battery sense configured for this board */
@@ -171,9 +204,9 @@ void battery_debug_sweep(void)
     static const char *T = "BATSWEEP";
 #ifdef BOARD_VBAT_SWITCH_PIN
     gpio_set_direction(BOARD_VBAT_SWITCH_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_level(BOARD_VBAT_SWITCH_PIN, 1);
+    gpio_set_level(BOARD_VBAT_SWITCH_PIN, VBAT_SWITCH_ON);
     vTaskDelay(pdMS_TO_TICKS(20));
-    ESP_LOGW(T, "load switch GPIO%d driven HIGH", BOARD_VBAT_SWITCH_PIN);
+    ESP_LOGW(T, "load switch GPIO%d driven to %d", BOARD_VBAT_SWITCH_PIN, VBAT_SWITCH_ON);
 #endif
 #ifdef BATTERY_SWEEP_ENABLE_PINS
     /* Probe: drive candidate battery-divider enable pins HIGH before sweeping,

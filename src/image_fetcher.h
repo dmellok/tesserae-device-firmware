@@ -45,3 +45,15 @@ esp_err_t image_fetch_conditional(const char *url, const char *bearer_token,
                                   const char *etag_in,
                                   char *etag_out, size_t etag_out_cap,
                                   int *status, fetched_image_t *out);
+
+/* Streamed variant for boards that cannot hold a frame: the body is handed to
+ * `sink` in arrival order, chunk by chunk, and never buffered here. The sink
+ * gets the response Content-Length (-1 when chunked / unknown) with every
+ * call so it can refuse a wrong-sized frame before the first byte reaches
+ * the panel; returning anything but ESP_OK aborts the download, and the call
+ * then returns ESP_ERR_INVALID_RESPONSE. Only 2xx bodies reach the sink.
+ * *received (optional) is the byte count delivered. */
+typedef esp_err_t (*image_sink_fn)(void *user, const uint8_t *data, size_t len,
+                                   int64_t content_length);
+esp_err_t image_fetch_to_sink(const char *url, const char *bearer_token,
+                              image_sink_fn sink, void *user, size_t *received);

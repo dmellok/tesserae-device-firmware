@@ -64,6 +64,13 @@ void epd_display_partial(const uint8_t *image, int x, int y, int w, int h,
 void epd_display_partial_mode(const uint8_t *image, int x, int y, int w, int h,
                               epd_refresh_t mode);
 
+/* Row streaming for boards with no RAM for a frame (epd_panel.h stream_*).
+ * epd_supports_stream() is a build-time fact of the active driver. */
+bool epd_supports_stream(void);
+bool epd_stream_begin(void);
+bool epd_stream_rows(const uint8_t *rows, int y0, int nrows);
+bool epd_stream_end(bool refresh);
+
 /* Override the 4-gray register-LUT tuning at runtime (EPD_GRAY_TUNER builds).
  * A no-op on panels that do not use register LUTs. Applied at the next
  * epd_init(), since that is when the LUTs and CDI are uploaded. */

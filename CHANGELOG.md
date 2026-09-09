@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- paperlesspaper OpenPaper 7 (env `paperlesspaper-openpaper-7`): the first
+  ESP32-C6 target, with its own `sdkconfig.c6.defaults` (UART0 console through
+  the board's CP2102N, USB PHY off so GPIO12/13 are plain GPIO). The 7.3"
+  Spectra 6 panel runs the single-controller driver with the vendor's own
+  GDEP073E01 init block (`EPD_S6_INIT_GDEP073E01_V2`). The 4 × AAA NiMH pack
+  reports through a new NiMH percentage curve, an active-low load switch and a
+  fractional divider (`BOARD_BATTERY_DIVIDER_X100`); the low-battery goodbye
+  and OTA floor are per-board overrides now, since the Li-Po figures would
+  have hibernated a healthy NiMH pack. On a PSRAM-less board the frame
+  download buffer is sized to one frame up front instead of doubling, so the
+  192000-byte frame is allocated once and never copied.
+- paperlesspaper OpenPaper L (env `paperlesspaper-openpaper-l`), built without
+  the hardware: the 13.3" EL133UF3 panel on the same ESP32-C6. Its two
+  controllers have no DC line (`EPD_NO_DC`: every command is one CS-framed
+  burst, which is how the dual driver already framed them), and its
+  960000-byte frame cannot exist in the C6's RAM, so `TESSERAE_STREAM_FRAMES`
+  streams the HTTP body straight into the panel controllers in 100-row
+  partial-window blocks (new `stream_begin / stream_rows / stream_end` driver
+  entry points and `image_fetch_to_sink()`), and the splash renders in the
+  same bands. The dual driver's clear now streams a half-row instead of
+  allocating a 480 KB PSRAM scratch; the bytes on the wire are unchanged.
+
 ## [1.32.2] - 2026-09-08
 
 ### Fixed

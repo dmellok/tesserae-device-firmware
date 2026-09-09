@@ -34,11 +34,16 @@ static const char *TAG = "splash";
 #define COL_BLK EPD_COL_BLACK
 #define COL_WHT EPD_COL_WHITE
 
-/* Render target for the current call. */
+/* Render target for the current call. On a board that streams frames (no RAM
+ * for a whole one) s_fb is a band of s_rows rows starting at panel row s_y0,
+ * and the draw routine runs once per band; px() clips to it. Elsewhere s_y0
+ * is 0 and s_rows the full height, and the band is the frame. */
 static uint8_t  *s_fb;
 static const int s_W = EPD_WIDTH;
 static const int s_H = EPD_HEIGHT;
 static int       s_bpp = 4;   /* set per call from the active driver */
+static int       s_y0 = 0;
+static int       s_rows = EPD_HEIGHT;
 
 /* Per-call text for the portal-note / message splashes (set before render). */
 static const char *s_portal_note;   /* NULL -> default "Setup mode" subtitle */
@@ -53,6 +58,8 @@ static bool        s_ble_maintenance;
 static inline void px(int x, int y, uint8_t c)
 {
     if (x < 0 || y < 0 || x >= s_W || y >= s_H) return;
+    y -= s_y0;
+    if (y < 0 || y >= s_rows) return;
     if (s_bpp == 1) {
         /* Packed 1bpp, MSB = leftmost pixel; bit 1 = white. */
         size_t i = (size_t)y * (s_W / 8) + (size_t)(x >> 3);
@@ -187,6 +194,58 @@ static void draw_qr(const uint8_t *qr, int x, int y, int scale)
 
 /* ---------- render harness ---------- */
 
+static inline uint8_t white_byte(void)
+{
+    /* White background: 1bpp -> all bits set; 2bpp -> COL_WHT in all four
+     * 2-bit slots (0xFF on 4-gray, 0x55 on BWR); 4bpp -> packed nibbles. */
+    return (s_bpp == 1) ? 0xFF
+         : (s_bpp == 2) ? (uint8_t)(COL_WHT * 0x55)
+         : (uint8_t)((COL_WHT << 4) | COL_WHT);
+}
+
+#ifdef TESSERAE_STREAM_FRAMES
+/* Banded variant for boards whose frame outgrows their RAM: render the splash
+ * EPD_STREAM_ROWS rows at a time into a small band and stream each band into
+ * the panel (epd_panel.h stream_*). `draw` runs once per band; it draws the
+ * whole layout each time and px() keeps only the rows in the band. The
+ * drawing is text, a QR and the logo, so redoing it 16 times costs nothing
+ * next to the refresh. */
+static esp_err_t render_and_paint_banded(void (*draw)(void), const char *label)
+{
+    const size_t row_bytes = EPD_BUF_BYTES / EPD_HEIGHT;
+    const int    band_rows = EPD_STREAM_ROWS;
+    uint8_t *band = heap_caps_malloc((size_t)band_rows * row_bytes,
+                                     MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!band) {
+        ESP_LOGE(TAG, "OOM allocating %u-byte splash band",
+                 (unsigned)((size_t)band_rows * row_bytes));
+        return ESP_ERR_NO_MEM;
+    }
+
+    ESP_LOGI(TAG, "painting %s splash (%dx%d, %d-row bands, ~30 s)...",
+             label, s_W, s_H, band_rows);
+    epd_init();
+    bool ok = epd_stream_begin();
+    s_fb = band;
+    for (int y0 = 0; ok && y0 < EPD_HEIGHT; y0 += band_rows) {
+        int n = EPD_HEIGHT - y0 < band_rows ? EPD_HEIGHT - y0 : band_rows;
+        s_y0 = y0;
+        s_rows = n;
+        memset(band, white_byte(), (size_t)n * row_bytes);
+        draw();
+        ok = epd_stream_rows(band, y0, n);
+    }
+    s_y0 = 0;
+    s_rows = EPD_HEIGHT;
+    s_fb = NULL;
+    if (!ok) ESP_LOGE(TAG, "%s splash: streaming failed; not refreshing", label);
+    epd_stream_end(ok);
+    epd_sleep();
+    free(band);
+    return ok ? ESP_OK : ESP_FAIL;
+}
+#endif /* TESSERAE_STREAM_FRAMES */
+
 /* Allocate the framebuffer (PSRAM), clear to white, run `draw`, paint, free. */
 static esp_err_t render_and_paint(void (*draw)(void), const char *label)
 {
@@ -198,16 +257,16 @@ static esp_err_t render_and_paint(void (*draw)(void), const char *label)
 
     s_bpp = epd_active_driver()->info.bpp;
 
+#ifdef TESSERAE_STREAM_FRAMES
+    return render_and_paint_banded(draw, label);
+#endif
+
     s_fb = heap_caps_malloc(EPD_BUF_BYTES, TESSERAE_FB_CAPS);
     if (!s_fb) {
         ESP_LOGE(TAG, "OOM allocating %u-byte splash buffer", (unsigned)EPD_BUF_BYTES);
         return ESP_ERR_NO_MEM;
     }
-    /* White background: 1bpp -> all bits set; 2bpp -> COL_WHT in all four
-     * 2-bit slots (0xFF on 4-gray, 0x55 on BWR); 4bpp -> packed nibbles. */
-    memset(s_fb, (s_bpp == 1) ? 0xFF
-                : (s_bpp == 2) ? (uint8_t)(COL_WHT * 0x55)
-                : (uint8_t)((COL_WHT << 4) | COL_WHT), EPD_BUF_BYTES);
+    memset(s_fb, white_byte(), EPD_BUF_BYTES);
 
     draw();
 

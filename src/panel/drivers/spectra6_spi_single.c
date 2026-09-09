@@ -243,6 +243,7 @@ static const uint8_t TRES[]  = {0x03, 0x20, 0x01, 0xe0};   /* 0x0320=800 x 0x01e
 static const uint8_t TVDCS[] = {0x01};
 static const uint8_t PWS[]   = {0x2f};
 
+static bool run_init_sequence(void) __attribute__((unused));
 static bool run_init_sequence(void)
 {
 #ifdef EPD_PIN_PWR
@@ -268,9 +269,59 @@ static bool run_init_sequence(void)
     return wait_busy("init");
 }
 
+#ifdef EPD_S6_INIT_GDEP073E01_V2
+/* Good Display's 2024 GDEP073E01 reference init, as shipped for the
+ * paperlesspaper OpenPaper 7 (their GxEPD2 fork, GxEPD2_730c_GDEP073E01::
+ * _InitDisplay): a 6-byte PWR, IPC/TSE/VDCS/CCSET/TSSET in place of the PFS +
+ * BTST1-3 block above, PLL 0x02. Same glass family as the E1002, different
+ * vendor reference; a board opts in with EPD_S6_INIT_GDEP073E01_V2. Bytes
+ * copied verbatim; do NOT edit. */
+static const uint8_t V2_PWR[]   = {0x3f, 0x00, 0x32, 0x2a, 0x0e, 0x2a};
+static const uint8_t V2_PSR[]   = {0x5f};
+static const uint8_t V2_IPC[]   = {0x00, 0x04};
+static const uint8_t V2_PLL[]   = {0x02};
+static const uint8_t V2_TSE[]   = {0x00};
+static const uint8_t V2_VDCS[]  = {0x1e};
+static const uint8_t V2_AGID[]  = {0x00};
+static const uint8_t V2_CCSET[] = {0x00};
+static const uint8_t V2_TSSET[] = {0x00};
+
+static bool run_init_sequence_v2(void)
+{
+#ifdef EPD_PIN_PWR
+    gpio_set_level(EPD_PIN_PWR, 1);
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+    reset_panel();
+    if (!wait_busy("reset")) return false;
+
+    if (!cmd_data(0xaa, CMD_H,    sizeof CMD_H))    return false;
+    if (!cmd_data(0x01, V2_PWR,   sizeof V2_PWR))   return false;
+    if (!cmd_data(0x00, V2_PSR,   sizeof V2_PSR))   return false;
+    if (!cmd_data(0x13, V2_IPC,   sizeof V2_IPC))   return false;
+    if (!cmd_data(0x30, V2_PLL,   sizeof V2_PLL))   return false;
+    if (!cmd_data(0x41, V2_TSE,   sizeof V2_TSE))   return false;
+    if (!cmd_data(0x50, CDI,      sizeof CDI))      return false;
+    if (!cmd_data(0x60, TCON,     sizeof TCON))     return false;
+    if (!cmd_data(0x61, TRES,     sizeof TRES))     return false;
+    if (!cmd_data(0x82, V2_VDCS,  sizeof V2_VDCS))  return false;
+    if (!cmd_data(0x84, TVDCS,    sizeof TVDCS))    return false;
+    if (!cmd_data(0x86, V2_AGID,  sizeof V2_AGID))  return false;
+    if (!cmd_data(0xe3, PWS,      sizeof PWS))      return false;
+    if (!cmd_data(0xe0, V2_CCSET, sizeof V2_CCSET)) return false;
+    if (!cmd_data(0xe6, V2_TSSET, sizeof V2_TSSET)) return false;
+    return wait_busy("init");
+}
+#endif /* EPD_S6_INIT_GDEP073E01_V2 */
+
 static void s6s_init(void)
 {
-    if (!run_init_sequence()) ESP_LOGE(TAG, "init sequence failed");
+#ifdef EPD_S6_INIT_GDEP073E01_V2
+    const bool ok = run_init_sequence_v2();
+#else
+    const bool ok = run_init_sequence();
+#endif
+    if (!ok) ESP_LOGE(TAG, "init sequence failed");
     else ESP_LOGI(TAG, "init complete");
 }
 
