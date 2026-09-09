@@ -2741,6 +2741,15 @@ void app_main(void)
                              so.ota_manifest.sha256[2]);
                     ota_report_set(OTA_REPORT_DOWNLOADING, "",
                                    so.ota_manifest.fw_version, attempt);
+                    /* Release this wake's frame before the download. An
+                     * applied install reboots without painting it anyway, and
+                     * on a PSRAM-less board (OpenPaper 7: 192000 bytes of a
+                     * ~295 KB heap) holding it leaves no room for the TLS
+                     * session the download needs. The ETag is only stored at
+                     * paint time, so a failed install just refetches the frame
+                     * on the next wake. */
+                    free(frame);
+                    frame = NULL;
                     ota_install_result_t install =
                         ota_install_apply(&so.ota_manifest);
                     if (install == OTA_INSTALL_APPLIED) {
