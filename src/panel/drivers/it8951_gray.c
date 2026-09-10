@@ -14,7 +14,8 @@
  * buffer address), then per frame: load the 4bpp buffer into the controller's
  * DRAM at that address (LD_IMG_AREA), and trigger a GC16 grayscale refresh
  * (DPY_AREA mode 2). The ED103TC2 mirrors X, so each row is reversed and its
- * nibbles swapped before streaming, exactly as FastEPD does.
+ * nibbles swapped before streaming, exactly as FastEPD does (EPD_IT8951_MIRROR_X,
+ * on by default; a board with un-mirrored glass turns it off).
  */
 #include "app_config.h"          /* board.h -> PANEL_DRIVER_* selection */
 
@@ -67,6 +68,36 @@ static const char *TAG = "epd_it8951";
  * of; overridable per build in case a panel batch maps it elsewhere. */
 #ifndef EPD_IT8951_INIT_MODE
 #define EPD_IT8951_INIT_MODE MODE_INIT
+#endif
+
+/* X-mirror. The E1003 / EE03 (ED103TC2) glass is physically left-right
+ * mirrored, so each row streams reversed (byte order + nibble swap) and a
+ * partial window is addressed from the mirrored edge. A board whose glass is
+ * not mirrored -- the M5Paper's ED047TC1, which M5GFX drives with no MIRROR_X
+ * -- sets this 0 and rows stream straight through. Default 1 keeps the shipped
+ * E1003 / EE03 path byte-identical. The LD_IMG endian bit stays ENDIAN_B
+ * either way (M5GFX uses it too; it is SPI word order, not the mirror). */
+#ifndef EPD_IT8951_MIRROR_X
+#define EPD_IT8951_MIRROR_X 1
+#endif
+
+/* Forced panel temperature, in Celsius, for waveform-LUT selection (IT8951
+ * CMD_TEMP). E-ink waveforms are temperature-dependent; the controller can
+ * auto-sense but FastEPD forces a fixed value and so does this driver. 14 is
+ * FastEPD's number for the E1003; a board that runs warmer (a handheld) sets
+ * a higher value, since too cold a LUT under-drives the mid greys. */
+#ifndef EPD_IT8951_FORCE_TEMP_C
+#define EPD_IT8951_FORCE_TEMP_C 14
+#endif
+
+/* VCOM magnitude in mV to program at init, or 0 to keep whatever the
+ * controller has in OTP. Each panel's ideal VCOM is set at the factory and
+ * printed on its FPC; the E1003 driver overrides it with FastEPD's 1500, but
+ * a board whose stored value is already right (M5Paper: 2800) sets 0 and the
+ * driver leaves it alone (what M5GFX does). The stored value is logged at
+ * init either way. */
+#ifndef EPD_VCOM_MV
+#define EPD_VCOM_MV 0
 #endif
 
 static spi_device_handle_t s_spi;
@@ -300,9 +331,11 @@ static void it8951_init(void)
         if (info[0] == EPD_WIDTH && info[1] == EPD_HEIGHT) {
             s_recovery_sleeps = 0;
             s_img_buf_addr = ((uint32_t)info[3] << 16) | info[2];
+#if EPD_VCOM_MV > 0
             write_cmd(VCOM); write_data(0x0001); write_data(EPD_VCOM_MV);
+#endif
             write_reg(REG_I80CPCR, 0x0001);
-            write_cmd(CMD_TEMP); write_data(0x0001); write_data(14);
+            write_cmd(CMD_TEMP); write_data(0x0001); write_data(EPD_IT8951_FORCE_TEMP_C);
             ESP_LOGI(TAG, "init complete (soft attach): dev %ux%u, img_buf=0x%08x",
                      info[0], info[1], (unsigned)s_img_buf_addr);
             return;
@@ -361,9 +394,18 @@ static void it8951_init(void)
      * temperature. Packed-write is required for the byte-stream image load to be
      * interpreted correctly; the forced temperature selects a waveform LUT (with
      * neither, the panel accepts everything but never develops -- stays blank). */
+    uint16_t vcom_stored = 0;
+    write_cmd(VCOM); write_data(0x0000); read_ndata(&vcom_stored, 1);
+#if EPD_VCOM_MV > 0
+    ESP_LOGI(TAG, "VCOM: panel stored %u mV, overriding with %u mV, LUT temp %d C",
+             vcom_stored, (unsigned)EPD_VCOM_MV, EPD_IT8951_FORCE_TEMP_C);
     write_cmd(VCOM); write_data(0x0001); write_data(EPD_VCOM_MV);
+#else
+    ESP_LOGI(TAG, "VCOM: keeping panel stored %u mV, LUT temp %d C",
+             vcom_stored, EPD_IT8951_FORCE_TEMP_C);
+#endif
     write_reg(REG_I80CPCR, 0x0001);                              /* packed write */
-    write_cmd(CMD_TEMP); write_data(0x0001); write_data(14);     /* force 14 C */
+    write_cmd(CMD_TEMP); write_data(0x0001); write_data(EPD_IT8951_FORCE_TEMP_C);  /* waveform LUT */
 
     ESP_LOGI(TAG, "init complete: dev %ux%u, img_buf=0x%08x",
              info[0], info[1], (unsigned)s_img_buf_addr);
@@ -378,8 +420,9 @@ static void load_img_area_start_rect(int cx, int cy, int cw, int ch)
     /* ensure 1bpp mode is off (we use 4bpp) */
     write_reg(REG_UP1SR + 2, (uint16_t)(read_reg(REG_UP1SR + 2) & ~(1 << 2)));
 
-    /* info word: MIRROR_X -> big-endian; 4bpp; rotate 0. Then x,y,w,h in
-     * CONTROLLER coordinates (post software mirror). */
+    /* info word: big-endian SPI words; 4bpp; rotate 0. x,y,w,h in CONTROLLER
+     * coordinates (which equal frame coordinates unless EPD_IT8951_MIRROR_X
+     * reversed them). */
     uint16_t args[5] = {
         (uint16_t)((ENDIAN_B << 8) | (PIXFMT_4BPP << 4) | 0),
         (uint16_t)cx, (uint16_t)cy, (uint16_t)cw, (uint16_t)ch,
@@ -392,16 +435,22 @@ static void load_img_area_start(void)
     load_img_area_start_rect(0, 0, EPD_WIDTH, EPD_HEIGHT);
 }
 
-/* Stream one 4bpp row (936 bytes) with the ED103TC2 MIRROR_X transform: reverse
- * the byte order and swap the two nibbles in each byte (so pixels fully reverse
- * left-to-right). `scratch` is a caller-owned iPitch buffer. */
-static void stream_row_mirrored(const uint8_t *row, uint8_t *scratch)
+/* Stream one 4bpp row through `scratch` (a caller-owned iPitch buffer). The
+ * copy is not optional: the frame buffer can live in PSRAM, which SPI DMA
+ * cannot reach on the classic ESP32, so every row goes via an internal
+ * DMA-capable bounce. With EPD_IT8951_MIRROR_X the copy also reverses the row
+ * (byte order + nibble swap) for the ED103TC2's physical left-right mirror. */
+static void stream_row(const uint8_t *row, uint8_t *scratch)
 {
-    const int iPitch = EPD_WIDTH / 2;   /* 936 */
+    const int iPitch = EPD_WIDTH / 2;   /* 936 on the E1003, 480 on the M5Paper */
+#if EPD_IT8951_MIRROR_X
     for (int x = 0; x < iPitch; x++) {
         uint8_t b = row[x];
         scratch[iPitch - 1 - x] = (uint8_t)((b >> 4) | (b << 4));
     }
+#else
+    memcpy(scratch, row, iPitch);
+#endif
     spi_transaction_t t = {0};
     t.length = iPitch * 8; t.tx_buffer = scratch;
     spi_device_polling_transmit(s_spi, &t);
@@ -423,7 +472,7 @@ static void write_and_refresh(const uint8_t *fb)
     wait_ready();
     const uint8_t *s = fb;
     for (int y = 0; y < EPD_HEIGHT; y++) {
-        stream_row_mirrored(s, scratch);
+        stream_row(s, scratch);
         s += iPitch;
     }
     cs(1);
@@ -458,12 +507,12 @@ static void it8951_display(const uint8_t *image)
  * waveform inside wait_display_done(), not the SPI load. Consequence for
  * callers: shrinking a refresh rect buys ghosting hygiene, NOT latency. The
  * lever that does move it is the waveform, which is why callers can ask for A2
- * (see it8951_display_partial_mode). The rect
- * arrives in FRAME coordinates; the ED103TC2's software MIRROR_X maps it to
- * controller x' = W - x - w, and within the window the bytes stream reversed
- * + nibble-swapped exactly like the full-frame path. x/w are widened to a
- * multiple of 4 px (whole bytes at 4bpp, and the IT8951 prefers 4-px
- * alignment for area operations). */
+ * (see it8951_display_partial_mode). The rect arrives in FRAME coordinates;
+ * with EPD_IT8951_MIRROR_X the ED103TC2's software mirror maps it to
+ * controller x' = W - x - w and the window bytes stream reversed + nibble-
+ * swapped like the full-frame path, otherwise the window maps straight
+ * through. x/w are widened to a multiple of 4 px (whole bytes at 4bpp, and
+ * the IT8951 prefers 4-px alignment for area operations). */
 static void it8951_partial_wave(const uint8_t *fb, int x, int y, int w,
                                 int h, int wave)
 {
@@ -477,7 +526,11 @@ static void it8951_partial_wave(const uint8_t *fb, int x, int y, int w,
     int x1 = (x + w + 3) & ~3;
     if (x1 > EPD_WIDTH) x1 = EPD_WIDTH;
     int aw = x1 - x0;
+#if EPD_IT8951_MIRROR_X
     int cx = EPD_WIDTH - x1;             /* mirrored window left edge */
+#else
+    int cx = x0;
+#endif
 
     const int seg = aw / 2;              /* bytes per window row */
     uint8_t *scratch = heap_caps_malloc(seg, MALLOC_CAP_DMA);
@@ -493,10 +546,14 @@ static void it8951_partial_wave(const uint8_t *fb, int x, int y, int w,
     const int iPitch = EPD_WIDTH / 2;
     for (int yy = y; yy < y + h; yy++) {
         const uint8_t *row = fb + (size_t)yy * iPitch + x0 / 2;
+#if EPD_IT8951_MIRROR_X
         for (int i = 0; i < seg; i++) {
             uint8_t b = row[seg - 1 - i];
             scratch[i] = (uint8_t)((b >> 4) | (b << 4));
         }
+#else
+        memcpy(scratch, row, seg);
+#endif
         spi_transaction_t t = {0};
         t.length = seg * 8; t.tx_buffer = scratch;
         spi_device_polling_transmit(s_spi, &t);
@@ -621,6 +678,12 @@ static void it8951_show_color_bars(void)
     const int BAND_H = EPD_HEIGHT / 16;   /* ~87 rows/band */
     uint8_t *row = heap_caps_malloc(iPitch, MALLOC_CAP_DMA);
     if (!row) return;
+
+    /* Drive the glass to a clean white reference first: a GC16 ramp painted
+     * straight after a cold power-up derives its transitions from whatever the
+     * IT8951's DRAM held, which is undefined, so the lighter bands come out
+     * uneven. Cheap, and selftest-only. */
+    fill_and_refresh(0x0F, EPD_IT8951_INIT_MODE);
 
     write_cmd(SYS_RUN);
     wait_display_done();
