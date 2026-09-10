@@ -26,11 +26,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `battery.c` picks the ADC calibration scheme per target
   (`ADC_CALI_SCHEME_*_SUPPORTED`) instead of hard-coding curve fitting, which
   the classic ESP32 lacks -- it has line fitting off eFuse Two Point / Vref.
+  The `BATTERY_DEBUG_SWEEP` bring-up path chooses the same way.
 - `it8951_gray` gained board knobs: `EPD_IT8951_FORCE_TEMP_C` (waveform-LUT
   temperature, default 14 as before; M5Paper uses 22), `EPD_IT8951_MIRROR_X`
   (the ED047TC1 is not left-right mirrored like the E1003's ED103TC2), and
   `EPD_VCOM_MV 0` to keep the controller's factory VCOM instead of overriding
-  it. The stored VCOM is logged at init.
+  it. The stored VCOM is logged at init. Its selftest now clears the glass to
+  white before painting the grey ramp -- on every board using this driver, not
+  just the new one: a GC16 ramp painted straight after a cold power-up derives
+  its transitions from whatever the controller's DRAM held, so the light bands
+  came out uneven.
 - GT911 touch on a board with no TP_RST line (`BOARD_TOUCH_RST_PIN` undefined):
   `touch_gt911.c` skips the reset / address-strap sequence and probes the
   controller's two possible I2C addresses. New `BOARD_TOUCH_FRAME_W/H` (default

@@ -38,11 +38,12 @@ one board (and thus one driver) per PlatformIO environment.
 | [Waveshare **PhotoPainter 7.3"**](https://www.waveshare.com/esp32-s3-photopainter.htm) | Spectra-6, single | ED2208-GCA | 800×480, 4bpp | `spectra6_spi_single` | `waveshare-photopainter-73` |
 | [Waveshare **E-Paper ESP32 Driver Board**](https://www.waveshare.com/e-paper-esp32-driver-board.htm) + 7.5" mono (V2) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `waveshare-esp32-driver-75` |
 | [**M5Stack PaperS3**](https://docs.m5stack.com/en/core/PaperS3) | Grayscale (4.7") | none (raw parallel glass) | 960×540, 4bpp gray | `parallel_epd_gray` | `m5stack-papers3` |
+| [**M5Stack M5Paper**](https://docs.m5stack.com/en/core/m5paper) (the original, pre-S3) | Grayscale (4.7") | IT8951 | 960×540, 4bpp gray | `it8951_gray` | `m5stack-m5paper` |
 | **Xteink X4** | Mono B/W (4.26") | SSD1677 | 800×480, 1bpp | `ssd1677_gray` (`EPD_MONO`) | `xteink-x4` |
 
-The four reTerminals, the PhotoPainter, the EE02, the TRMNL 7.5" kit, and the
-Waveshare 10.85-inch G have been verified end-to-end on real hardware; the Waveshare 13.3E6 is the seed target and
-builds green. The EE04 pair builds green but is **not yet hardware-verified**
+The four reTerminals, the PhotoPainter, the EE02, the TRMNL 7.5" kit, the
+Waveshare 10.85-inch G, and the M5Stack M5Paper have been verified end-to-end
+on real hardware; the Waveshare 13.3E6 is the seed target and builds green. The EE04 pair builds green but is **not yet hardware-verified**
 (pin map taken from Seeed_GFX; the EE04 takes one panel on either its 24-pin or
 50-pin FPC — flash the env matching the attached panel and set the jumper caps
 accordingly). The **EE03** (10.3" kit) builds green but is **not yet
@@ -75,6 +76,13 @@ board header:
   driver (same T133A01 panel), with only a different pin map.
 - The **TRMNL 7.5" OG DIY Kit** shares the E1001's `mono_spi` driver (same
   800×480 mono panel), with its own pin map.
+- The **M5Stack M5Paper** (the original, pre-S3) shares the E1003's
+  `it8951_gray` driver — same IT8951 controller over SPI, at 960×540 instead of
+  1872×1404. Every difference is a board-header knob: `EPD_IT8951_MIRROR_X 0`
+  (its ED047TC1 glass is not left-right mirrored like the E1003's ED103TC2), a
+  warmer `EPD_IT8951_FORCE_TEMP_C`, and `EPD_VCOM_MV 0` to keep the
+  controller's factory VCOM. It is the only classic-ESP32 board here **with
+  PSRAM**, so it carries its own `sdkconfig.esp32-psram.defaults`.
 - The **Xteink X4** shares the Sticky's `ssd1677_gray` driver — same controller,
   800×480, active-HIGH BUSY. It is not mounted rotated (the driver derives that
   from the geometry), runs the driver's 1bpp `EPD_MONO` path, and needs
@@ -90,7 +98,9 @@ waveform flash, so retuning the greys is a table edit. Every other epdiy-class
 board (Inkplate, LilyGo T5, epdiy V7) has this same shape, so the next one is a
 pin map plus a matrix. Sequences ported from bitbank2's FastEPD. **Not yet
 confirmed on physical hardware**: flash `m5stack-papers3-selftest` and judge
-the 16 grey bands first.
+the 16 grey bands first. This applies to the **PaperS3** only — the original
+M5Paper above is a different machine behind the same glass, with an IT8951
+between the MCU and the panel, and it needed no new driver.
 
 The three XIAO ESP32-S3 boards (PhotoPainter, EE02, TRMNL 7.5") are **native-USB**
 (no CH340), so their console runs on USB-Serial-JTAG via
@@ -227,7 +237,7 @@ format the firmware expects for that kind:
 | `xiao_epaper_75_bwr` | 2bpp packed BWR (4 px/byte, MSB-first, 0=black 1=white 2=red, 3 reserved) | 96000 B |
 | `waveshare_1085g` | 2bpp packed B/W/Y/R (4 px/byte, MSB-first, 0=black 1=white 2=yellow 3=red) | 163200 B |
 | `seeed_reterminal_e1003`, `seeed_ee03` | 4bpp packed grayscale (0=black…0xF=white) | 1314144 B |
-| `m5stack_papers3` | 4bpp packed grayscale (0=black…0xF=white) | 259200 B |
+| `m5stack_papers3`, `m5stack_m5paper` | 4bpp packed grayscale (0=black…0xF=white) | 259200 B |
 
 The PhotoPainter reuses the E1002's 800×480 4bpp format exactly (render normally
 — the **180° rotation is done on-device**, so do not pre-rotate on the server).

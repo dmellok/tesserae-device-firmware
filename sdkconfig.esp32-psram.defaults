@@ -38,6 +38,21 @@ CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 # Buffers below this size stay in internal RAM (DMA-capable, fast).
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 
+# --- IRAM headroom: WATCH THIS ---
+# Enabling SPIRAM on classic-ESP32 silicon force-enables
+# CONFIG_SPIRAM_CACHE_WORKAROUND (the rev-1/2 PSRAM cache erratum), which drags
+# a dozen newlib libraries -- LIBJMP, LIBMATH, LIBIO, LIBSTR, LIBMEM and friends
+# -- into IRAM. That costs 18080 bytes against the no-PSRAM classic-ESP32 build:
+# this board links at 127615 of 131072 IRAM bytes (97.4%), the Waveshare driver
+# board at 109535 (83.6%). ~3.4 KB of headroom, and IRAM is a hard ceiling on
+# this part, so a future change that puts one more ISR in IRAM breaks THIS
+# board's build and no other. If that happens, the relief valves in rough order
+# of "free-est first" are CONFIG_ESP_WIFI_RX_IRAM_OPT=n and
+# CONFIG_ESP_WIFI_IRAM_OPT=n (both cost WiFi throughput, which a panel fetching
+# one frame per wake does not notice), then CONFIG_NEWLIB_NANO_FORMAT=y. They
+# are deliberately NOT set here: the 2026-09-10 hardware verification ran on
+# this exact configuration.
+
 # --- CPU ---
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_FREERTOS_HZ=1000
