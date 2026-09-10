@@ -153,10 +153,25 @@ int battery_read_mv(void)
         adc_oneshot_del_unit(adc); adc = NULL; goto done;
     }
 
+    /* Calibration scheme is per-target: the S3 / C3 / C6 have curve fitting (a
+     * factory polynomial in eFuse); the classic ESP32 (and S2) have only line
+     * fitting off eFuse Two Point / Vref. Build whichever this target ships.
+     * If the eFuse carries no calibration data, create fails and the read
+     * falls through to 0 mV, which the server reads as "unknown". */
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
     adc_cali_curve_fitting_config_t cc = {
         .unit_id = BOARD_BATTERY_ADC_UNIT, .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_12,
     };
-    if (adc_cali_create_scheme_curve_fitting(&cc, &cali) != ESP_OK) {
+    esp_err_t cali_err = adc_cali_create_scheme_curve_fitting(&cc, &cali);
+#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+    adc_cali_line_fitting_config_t lc = {
+        .unit_id = BOARD_BATTERY_ADC_UNIT, .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_12,
+    };
+    esp_err_t cali_err = adc_cali_create_scheme_line_fitting(&lc, &cali);
+#else
+#  error "battery.c: no ADC calibration scheme available for this target"
+#endif
+    if (cali_err != ESP_OK) {
         adc_oneshot_del_unit(adc); adc = NULL; goto done;
     }
 
@@ -169,7 +184,11 @@ int battery_read_mv(void)
     }
     if (ok > 0) pin_mv = sum / ok;
 
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
     adc_cali_delete_scheme_curve_fitting(cali);
+#else
+    adc_cali_delete_scheme_line_fitting(cali);
+#endif
     adc_oneshot_del_unit(adc);
 
 done:
