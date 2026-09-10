@@ -31,6 +31,7 @@ idf_component_register(
         "bq27220.c"
         "sht4x.c"
         "shtc3.c"
+        "sht3x.c"
         "i2c_bus.c"
         "touch_coords.c"
         "touch_gt911.c"

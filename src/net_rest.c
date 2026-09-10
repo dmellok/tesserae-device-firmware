@@ -28,6 +28,7 @@
 #include "lwip/netdb.h"   /* getaddrinfo: IPv6-only server detection */
 #include "sht4x.h"
 #include "shtc3.h"
+#include "sht3x.h"
 
 #include <string.h>
 #include <strings.h>
@@ -1061,6 +1062,18 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         cJSON_AddStringToObject(o, "env_sensor", "shtc3");
     } else {
         ESP_LOGW(TAG, "status: SHTC3 read failed: %s", esp_err_to_name(environment_err));
+    }
+#elif defined(BOARD_HAS_SHT3X)
+    sht3x_sample_t environment;
+    esp_err_t environment_err = sht3x_read(&environment);
+    if (environment_err == ESP_OK) {
+        ESP_LOGI(TAG, "status: environment=%.1f C, %.1f %%RH",
+                 environment.temperature_c, environment.humidity_pct);
+        cJSON_AddNumberToObject(o, "temperature_c", environment.temperature_c);
+        cJSON_AddNumberToObject(o, "humidity_pct", environment.humidity_pct);
+        cJSON_AddStringToObject(o, "env_sensor", "sht3x");
+    } else {
+        ESP_LOGW(TAG, "status: SHT3x read failed: %s", esp_err_to_name(environment_err));
     }
 #endif
     if (sleep_until && !c->always_on)

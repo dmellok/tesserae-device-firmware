@@ -1,0 +1,103 @@
+# ------------------------------------------------------------------
+# Shared ESP-IDF config for classic-ESP32 (Xtensa LX6) boards that DO carry
+# PSRAM: the M5Stack M5Paper (ESP32-D0WDQ6-V3, 16 MB flash, quad PSRAM in a
+# WROVER-style wiring). A FIFTH base alongside sdkconfig.defaults
+# (S3, octal PSRAM), sdkconfig.usbjtag.defaults (S3, native USB),
+# sdkconfig.c3.defaults / c6.defaults (RISC-V, no PSRAM) and
+# sdkconfig.esp32.defaults (classic ESP32, 4 MB, NO PSRAM).
+#
+# Differs from sdkconfig.esp32.defaults in the flash size (16 MB, not 4 MB)
+# and the PSRAM setup: SPIRAM on in QUAD mode (the classic ESP32 has no octal
+# option), plus MBEDTLS_EXTERNAL_MEM_ALLOC, which is only reachable with
+# SPIRAM. The 259200-byte greyscale frame does not fit in the ~180 KB of
+# internal DRAM left after WiFi + TLS, so this board needs the external RAM;
+# the mono Waveshare driver board (48000-byte frame) does not and stays on the
+# no-PSRAM base.
+#
+# SDKCONFIG_DEFAULTS is a full override rather than an append, so anything
+# non-console added to sdkconfig.defaults must be added here too or this board
+# silently loses it.
+# ------------------------------------------------------------------
+
+# --- Flash ---
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- PSRAM (quad, external, WROVER-style pins -- IDF defaults CLK=IO17 CS=IO16) ---
+# 40 MHz, not 80: 80 MHz quad PSRAM on the classic ESP32 also forces the SPI
+# flash to 80 MHz and has a long history of instability. 40 MHz is the safe
+# default and this path is network-bound anyway.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_40M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# Buffers below this size stay in internal RAM (DMA-capable, fast).
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+
+# --- IRAM headroom: WATCH THIS ---
+# Enabling SPIRAM on classic-ESP32 silicon force-enables
+# CONFIG_SPIRAM_CACHE_WORKAROUND (the rev-1/2 PSRAM cache erratum), which drags
+# a dozen newlib libraries -- LIBJMP, LIBMATH, LIBIO, LIBSTR, LIBMEM and friends
+# -- into IRAM. That costs 18080 bytes against the no-PSRAM classic-ESP32 build:
+# this board links at 127615 of 131072 IRAM bytes (97.4%), the Waveshare driver
+# board at 109535 (83.6%). ~3.4 KB of headroom, and IRAM is a hard ceiling on
+# this part, so a future change that puts one more ISR in IRAM breaks THIS
+# board's build and no other. If that happens, the relief valves in rough order
+# of "free-est first" are CONFIG_ESP_WIFI_RX_IRAM_OPT=n and
+# CONFIG_ESP_WIFI_IRAM_OPT=n (both cost WiFi throughput, which a panel fetching
+# one frame per wake does not notice), then CONFIG_NEWLIB_NANO_FORMAT=y. They
+# are deliberately NOT set here: the 2026-09-10 hardware verification ran on
+# this exact configuration.
+
+# --- CPU ---
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+
+# --- Main task stack ---
+# Same as sdkconfig.defaults: protocol v2 overflowed 8 KB live on 2026-07-27.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+
+# --- Networking ---
+CONFIG_LWIP_LOCAL_HOSTNAME="tesserae-esp32"
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
+
+# --- TLS / HTTPS via mbedTLS bundled root CAs ---
+CONFIG_ESP_TLS_USING_MBEDTLS=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# Allocate mbedTLS buffers from PSRAM instead of internal DRAM (see the long
+# note in sdkconfig.defaults: the TLS handshake for OTA fails otherwise once
+# the frame buffer has taken its share of internal RAM).
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# HKDF-SHA256 for the cloud relay's frame-key derivation (relay_crypto.c).
+CONFIG_MBEDTLS_HKDF_C=y
+
+# --- MQTT ---
+CONFIG_MQTT_PROTOCOL_311=y
+
+# --- HTTP server (SoftAP captive portal) ---
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+
+# --- Logging ---
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_COLORS=y
+
+# --- Console: UART0 through the onboard USB-serial bridge (CH9102). The classic
+# ESP32 has no USB-Serial-JTAG peripheral, so there is no secondary console. ---
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# --- Power ---
+CONFIG_PM_ENABLE=n
+
+# --- IPv6 (issue #2): reach servers that only listen on IPv6 ---
+CONFIG_LWIP_IPV6_AUTOCONFIG=y
+
+# --- FATFS: long filenames on heap (the SD deck cache stores frames as
+# <16-hex-digest>.bin, which exceeds 8.3; without LFN the rename fails) ---
+CONFIG_FATFS_LFN_HEAP=y

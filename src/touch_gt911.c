@@ -53,6 +53,18 @@ static const char *TAG = "touch";
 #ifndef BOARD_TOUCH_INVERT_Y
 #define BOARD_TOUCH_INVERT_Y   0
 #endif
+/* Output coordinate space for translated touches. The server hit-tests taps
+ * in COMPOSITION space; on most boards that equals the panel geometry
+ * (EPD_WIDTH x EPD_HEIGHT) so these defaults are right. A board whose server
+ * renderer rotates the composition (M5Paper: esp32_gray_bin composes 540x960
+ * and rotates to a 960x540 panel) sets these to the composition dims so the
+ * reported coordinates land back in the space the regions live in. */
+#ifndef BOARD_TOUCH_FRAME_W
+#define BOARD_TOUCH_FRAME_W    EPD_WIDTH
+#endif
+#ifndef BOARD_TOUCH_FRAME_H
+#define BOARD_TOUCH_FRAME_H    EPD_HEIGHT
+#endif
 
 /* GT911 16-bit registers (big-endian on the wire). */
 #define GT_REG_CONFIG_X    0x8048   /* X output max, little-endian u16 */
@@ -71,8 +83,8 @@ static i2c_master_bus_handle_t s_bus = NULL;
 static i2c_master_dev_handle_t s_dev = NULL;
 static bool     s_ready = false;
 static uint32_t s_product_id = 0;
-static int      s_rmax_x = EPD_WIDTH;    /* GT911 configured output maxima */
-static int      s_rmax_y = EPD_HEIGHT;
+static int      s_rmax_x = BOARD_TOUCH_FRAME_W;  /* GT911 configured output maxima */
+static int      s_rmax_y = BOARD_TOUCH_FRAME_H;
 
 static esp_err_t gt_read(uint16_t reg, uint8_t *data, size_t len)
 {
@@ -84,6 +96,26 @@ static esp_err_t gt_write_u8(uint16_t reg, uint8_t val)
 {
     uint8_t b[3] = { (uint8_t)(reg >> 8), (uint8_t)(reg & 0xff), val };
     return i2c_master_transmit(s_dev, b, 3, GT_TIMEOUT_MS);
+}
+
+/* (Re)bind s_dev to `addr` on the shared bus. Used to probe the GT911's two
+ * possible I2C addresses on a board that cannot strap it (no TP_RST). */
+static esp_err_t gt_open_at(uint8_t addr)
+{
+    if (s_dev != NULL) { i2c_master_bus_rm_device(s_dev); s_dev = NULL; }
+    i2c_device_config_t cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address  = addr,
+        .scl_speed_hz    = BOARD_TOUCH_I2C_HZ,
+    };
+    return i2c_master_bus_add_device(s_bus, &cfg, &s_dev);
+}
+
+/* True when a product-id read returns "911..." into `id`. */
+static bool gt_id_ok(uint8_t id[4])
+{
+    return gt_read(GT_REG_PRODUCT_ID, id, 4) == ESP_OK &&
+           id[0] == '9' && id[1] == '1' && id[2] == '1';
 }
 
 /* Digitiser power rail. Some boards gate the GT911 behind a load switch
@@ -108,10 +140,15 @@ static void touch_power_on(void)
 #endif
 }
 
+#ifdef BOARD_TOUCH_RST_PIN
 /* Reset + I2C-address-select. The GT911 latches its 7-bit address from the INT
  * level at the RST rising edge: INT low -> 0x5d, INT high -> 0x14. We drive the
  * 0x5d sequence explicitly rather than trust board pulls. Leaves TP_RST high and
- * TP_INT as an input (the controller drives it as the interrupt line). */
+ * TP_INT as an input (the controller drives it as the interrupt line).
+ *
+ * Compiled only when the board routes TP_RST to the MCU. A board that does not
+ * (M5Paper, PaperS3) relies on the controller being permanently powered and
+ * hardware-strapped to its address; touch_init() just retries the warm read. */
 static void gt_reset_select_5d(void)
 {
     const int rst = BOARD_TOUCH_RST_PIN;
@@ -137,6 +174,7 @@ static void gt_reset_select_5d(void)
     gpio_set_pull_mode(intp, GPIO_FLOATING);
     vTaskDelay(pdMS_TO_TICKS(50));
 }
+#endif /* BOARD_TOUCH_RST_PIN */
 
 esp_err_t touch_init(void)
 {
@@ -148,27 +186,44 @@ esp_err_t touch_init(void)
                                 BOARD_TOUCH_I2C_SCL, &s_bus);
     if (err != ESP_OK) { ESP_LOGW(TAG, "i2c bus: %s", esp_err_to_name(err)); return err; }
 
-    if (s_dev == NULL) {
-        i2c_device_config_t dev_cfg = {
-            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-            .device_address  = BOARD_TOUCH_I2C_ADDR,
-            .scl_speed_hz    = BOARD_TOUCH_I2C_HZ,
-        };
-        err = i2c_master_bus_add_device(s_bus, &dev_cfg, &s_dev);
-        if (err != ESP_OK) { ESP_LOGW(TAG, "add dev: %s", esp_err_to_name(err)); return err; }
+    if (gt_open_at(BOARD_TOUCH_I2C_ADDR) != ESP_OK) {
+        ESP_LOGW(TAG, "add dev 0x%02x failed", BOARD_TOUCH_I2C_ADDR);
+        return ESP_FAIL;
     }
 
-    /* The GT911 keeps running across our deep sleep (TP_RST external pull-up), so
-     * on a touch wake it is already alive at 0x5d. Try reading the product id
-     * WITHOUT the ~120 ms reset first -- that latency is subtracted straight off
-     * the wake-to-first-sample window, which is what a quick tap races. Only if it
-     * does not answer (cold boot / lost address) do the full reset + select. */
+    /* The GT911 keeps running across our deep sleep, so on a touch wake it is
+     * already alive at its address. Try a product-id read WITHOUT the ~120 ms
+     * reset first -- that latency is subtracted straight off the wake-to-first-
+     * sample window, which is what a quick tap races. */
     uint8_t id[4] = {0};
-    if (gt_read(GT_REG_PRODUCT_ID, id, sizeof id) != ESP_OK ||
-        id[0] != '9' || id[1] != '1' || id[2] != '1') {
+    bool alive = gt_id_ok(id);
+    if (!alive) {
+#ifdef BOARD_TOUCH_RST_PIN
         gt_reset_select_5d();
         err = gt_read(GT_REG_PRODUCT_ID, id, sizeof id);
         if (err != ESP_OK) { ESP_LOGW(TAG, "product-id read: %s", esp_err_to_name(err)); return err; }
+#else
+        /* No MCU reset line: the address latched at power-on cannot be forced
+         * and which of the GT911's two it landed on is not knowable here, so
+         * probe both -- the configured one a few times, then the alternate
+         * (M5GFX does the same alternation for the M5Paper). */
+        const uint8_t alt = (BOARD_TOUCH_I2C_ADDR == 0x14) ? 0x5d : 0x14;
+        for (int i = 0; i < 4 && !alive; i++) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            alive = gt_id_ok(id);
+        }
+        if (!alive && gt_open_at(alt) == ESP_OK) {
+            for (int i = 0; i < 4 && !alive; i++) {
+                vTaskDelay(pdMS_TO_TICKS(20));
+                alive = gt_id_ok(id);
+            }
+            if (alive) ESP_LOGI(TAG, "GT911 answered at the alternate 0x%02x", alt);
+        }
+        if (!alive) {
+            ESP_LOGW(TAG, "GT911 not answering at 0x14 or 0x5d (no reset line)");
+            return ESP_ERR_NOT_FOUND;
+        }
+#endif
     }
     s_product_id = (uint32_t)id[0] | ((uint32_t)id[1] << 8) |
                    ((uint32_t)id[2] << 16) | ((uint32_t)id[3] << 24);
@@ -188,16 +243,22 @@ esp_err_t touch_init(void)
 
     /* TP_INT must be a plain GPIO input whichever way we got here. The reset
      * path above leaves it that way, but the warm path (controller already
-     * answering at 0x5d, no reset) never touched the pad, and after a deep
-     * sleep or a cold boot it can sit unconfigured with its input buffer off,
-     * so touch_int_asserted() reads a constant instead of the line. Pull-up:
-     * the GT911 drives INT low to report, so idle reads high with or without
-     * an external pull. */
+     * answering, no reset) never touched the pad, and after a deep sleep or a
+     * cold boot it can sit unconfigured with its input buffer off, so
+     * touch_int_asserted() reads a constant instead of the line. Pull-up: the
+     * GT911 drives INT actively, so it idles high with or without one -- and a
+     * classic-ESP32 input-only pad (GPIO34-39, the M5Paper's INT) has no
+     * internal pull to ask for, so requesting one only logs an error. */
     {
+#if defined(CONFIG_IDF_TARGET_ESP32) && (BOARD_TOUCH_INT_PIN >= 34)
+        const gpio_pullup_t int_pu = GPIO_PULLUP_DISABLE;
+#else
+        const gpio_pullup_t int_pu = GPIO_PULLUP_ENABLE;
+#endif
         gpio_config_t io = {
             .pin_bit_mask = 1ULL << BOARD_TOUCH_INT_PIN,
             .mode         = GPIO_MODE_INPUT,
-            .pull_up_en   = GPIO_PULLUP_ENABLE,
+            .pull_up_en   = int_pu,
             .pull_down_en = GPIO_PULLDOWN_DISABLE,
             .intr_type    = GPIO_INTR_DISABLE,
         };
@@ -243,7 +304,8 @@ esp_err_t touch_read_raw(int *rx, int *ry, bool *pressed)
 
 void touch_translate_raw(int rx, int ry, int *fx, int *fy)
 {
-    touch_raw_to_frame(rx, ry, s_rmax_x, s_rmax_y, EPD_WIDTH, EPD_HEIGHT,
+    touch_raw_to_frame(rx, ry, s_rmax_x, s_rmax_y,
+                       BOARD_TOUCH_FRAME_W, BOARD_TOUCH_FRAME_H,
                        BOARD_TOUCH_SWAP_XY, BOARD_TOUCH_INVERT_X,
                        BOARD_TOUCH_INVERT_Y, fx, fy);
 }

@@ -153,10 +153,25 @@ int battery_read_mv(void)
         adc_oneshot_del_unit(adc); adc = NULL; goto done;
     }
 
+    /* Calibration scheme is per-target: the S3 / C3 / C6 have curve fitting (a
+     * factory polynomial in eFuse); the classic ESP32 (and S2) have only line
+     * fitting off eFuse Two Point / Vref. Build whichever this target ships.
+     * If the eFuse carries no calibration data, create fails and the read
+     * falls through to 0 mV, which the server reads as "unknown". */
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
     adc_cali_curve_fitting_config_t cc = {
         .unit_id = BOARD_BATTERY_ADC_UNIT, .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_12,
     };
-    if (adc_cali_create_scheme_curve_fitting(&cc, &cali) != ESP_OK) {
+    esp_err_t cali_err = adc_cali_create_scheme_curve_fitting(&cc, &cali);
+#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+    adc_cali_line_fitting_config_t lc = {
+        .unit_id = BOARD_BATTERY_ADC_UNIT, .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_12,
+    };
+    esp_err_t cali_err = adc_cali_create_scheme_line_fitting(&lc, &cali);
+#else
+#  error "battery.c: no ADC calibration scheme available for this target"
+#endif
+    if (cali_err != ESP_OK) {
         adc_oneshot_del_unit(adc); adc = NULL; goto done;
     }
 
@@ -169,7 +184,11 @@ int battery_read_mv(void)
     }
     if (ok > 0) pin_mv = sum / ok;
 
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
     adc_cali_delete_scheme_curve_fitting(cali);
+#else
+    adc_cali_delete_scheme_line_fitting(cali);
+#endif
     adc_oneshot_del_unit(adc);
 
 done:
@@ -224,10 +243,20 @@ void battery_debug_sweep(void)
     if (adc_oneshot_new_unit(&init, &adc) != ESP_OK) { ESP_LOGE(T, "adc unit init failed"); return; }
 
     adc_cali_handle_t cali = NULL;
+    /* Same per-target split as battery_read_mv() above: the classic ESP32 has
+     * only line fitting, and a board being brought up is exactly where this
+     * sweep gets used. */
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
     adc_cali_curve_fitting_config_t cc = {
         .unit_id = ADC_UNIT_1, .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_12,
     };
     adc_cali_create_scheme_curve_fitting(&cc, &cali);
+#else
+    adc_cali_line_fitting_config_t lc = {
+        .unit_id = ADC_UNIT_1, .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_12,
+    };
+    adc_cali_create_scheme_line_fitting(&lc, &cali);
+#endif
 
     ESP_LOGW(T, "sweeping ADC1 ch0..9 (GPIO1..10), atten=12dB. A valid 1S cell "
                 "reads pin*2 in 3300-4200mV; 2S reads pin*3/4 in 6000-8400mV.");
