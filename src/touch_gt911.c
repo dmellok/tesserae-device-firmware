@@ -83,8 +83,13 @@ static i2c_master_bus_handle_t s_bus = NULL;
 static i2c_master_dev_handle_t s_dev = NULL;
 static bool     s_ready = false;
 static uint32_t s_product_id = 0;
-static int      s_rmax_x = BOARD_TOUCH_FRAME_W;  /* GT911 configured output maxima */
-static int      s_rmax_y = BOARD_TOUCH_FRAME_H;
+/* GT911 configured output maxima, in the DIGITISER's own space: overwritten by
+ * the config-register read in touch_init(), so these are only the fallback if
+ * that read fails. The panel dims are the right guess for that (the digitiser
+ * is laid out over the glass), not BOARD_TOUCH_FRAME_W/H, which is the OUTPUT
+ * space touch_translate_raw() scales into. */
+static int      s_rmax_x = EPD_WIDTH;
+static int      s_rmax_y = EPD_HEIGHT;
 
 static esp_err_t gt_read(uint16_t reg, uint8_t *data, size_t len)
 {
