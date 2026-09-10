@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- M5Stack M5Paper (env `m5stack-m5paper`), the original pre-S3 M5Paper: the
+  4.7" 960x540 16-level greyscale panel reached through an IT8951 controller,
+  so it reuses the E1003's `it8951_gray` driver with only a new board header.
+  First classic-ESP32 (Xtensa LX6) target **with PSRAM**, on its own
+  `sdkconfig.esp32-psram.defaults` (quad PSRAM, 16 MB flash, UART0 console) --
+  the 259200-byte frame does not fit the classic ESP32's internal DRAM. One
+  combined T-CON power/reset rail on GPIO23, a GPIO2 battery self-latch.
+  Verified end-to-end on hardware 2026-09-10: panel, battery telemetry, the
+  three side buttons cycling dashboards, the SHT30 sensor, and GT911 touch
+  dispatch through the server. Not wired: microSD deck cache, and deep-sleep
+  wake for touch or the outer buttons.
+- `buttons.h` gained a classic-ESP32 deep-sleep wake backend. Its ext1 has no
+  `ANY_LOW` mode and it has no GPIO deep-sleep wake, so it falls back to ext0
+  on the refresh pin -- one button wakes, the rest work while awake. S3 / S2 /
+  C6 / C3 button paths are byte-identical.
+- `battery.c` picks the ADC calibration scheme per target
+  (`ADC_CALI_SCHEME_*_SUPPORTED`) instead of hard-coding curve fitting, which
+  the classic ESP32 lacks -- it has line fitting off eFuse Two Point / Vref.
+- `it8951_gray` gained board knobs: `EPD_IT8951_FORCE_TEMP_C` (waveform-LUT
+  temperature, default 14 as before; M5Paper uses 22), `EPD_IT8951_MIRROR_X`
+  (the ED047TC1 is not left-right mirrored like the E1003's ED103TC2), and
+  `EPD_VCOM_MV 0` to keep the controller's factory VCOM instead of overriding
+  it. The stored VCOM is logged at init.
+- GT911 touch on a board with no TP_RST line (`BOARD_TOUCH_RST_PIN` undefined):
+  `touch_gt911.c` skips the reset / address-strap sequence and probes the
+  controller's two possible I2C addresses. New `BOARD_TOUCH_FRAME_W/H` (default
+  `EPD_WIDTH/HEIGHT`) let a board whose server renderer rotates the frame
+  report taps in composition space -- the M5Paper composes 540x960 and
+  `esp32_gray_bin` rotates to the 960x540 panel. Always-on only (deep-sleep
+  touch wake needs the ext1 `ANY_LOW` the classic ESP32 lacks).
+- New `src/sht3x.c`: a Sensirion SHT3x reader (its single-shot command set
+  differs from the SHT4x and SHTC3), shares the I2C bus through
+  `i2c_bus_get()`.
+
 ## [1.33.1] - 2026-09-09
 
 ### Fixed
