@@ -59,14 +59,35 @@ static inline const char *button_name(button_id_t b)
 #include "freertos/task.h"
 #include "soc/soc_caps.h"
 
-/* Same "wake on any low", two backends. The RISC-V parts (C3) have no ext1 and
- * no RTC IO -- esp_sleep_enable_ext1_wakeup() is not even declared there -- and
- * take a plain GPIO mask limited to GPIO0-5, configuring the pads themselves
- * inside esp_deep_sleep_start(). */
-#if SOC_PM_SUPPORT_EXT1_WAKEUP
+/* "Wake on any button low", three backends:
+ *
+ *  - S3 / S2 / C6: ext1 ANY_LOW over the whole button mask. All buttons wake.
+ *  - C3 (RISC-V): no ext1, no RTC IO -- a plain GPIO-LOW mask (GPIO0-5),
+ *    configured inside esp_deep_sleep_start(). All buttons wake.
+ *  - classic ESP32: ext1 exists but its hardware has no ANY_LOW mode (only
+ *    ALL_LOW / ANY_HIGH -- IDF 5.5 does not even declare ANY_LOW for this
+ *    target), and the part has no deep-sleep GPIO wake at all. ext0 is the
+ *    only usable path and it takes ONE pin, so only the refresh button wakes
+ *    from deep sleep here; left/right work while awake. The mask argument is
+ *    ignored -- BTN_WAKE_IS_EXT0 tells buttons_which_woke() to read the ext0
+ *    wake cause instead of an ext1 / GPIO status word. */
+#if SOC_PM_SUPPORT_EXT1_WAKEUP && !CONFIG_IDF_TARGET_ESP32
 #  include "driver/rtc_io.h"
 #  define BTN_IDLE_HIGH(g)  do { rtc_gpio_pullup_en(g); rtc_gpio_pulldown_dis(g); } while (0)
 #  define BTN_ENABLE_WAKE(m) esp_sleep_enable_ext1_wakeup((m), ESP_EXT1_WAKEUP_ANY_LOW)
+#elif SOC_PM_SUPPORT_EXT1_WAKEUP  /* classic ESP32: ext0 on the refresh pin only */
+#  define BTN_WAKE_IS_EXT0 1
+   /* No rtc_gpio_pullup_en here: a classic-ESP32 button board wiring the keys
+    * to GPIO34-39 (the M5Paper does) hits input-only pads with no internal
+    * pulls -- the call just logs "GPIO number error". Those boards must have
+    * external pull-ups, and ext0 only watches the level, so this is a no-op. */
+#  define BTN_IDLE_HIGH(g)  ((void)(g))
+#  ifdef BOARD_BTN_REFRESH_PIN
+#    define BTN_ENABLE_WAKE(m) do { (void)(m); \
+        esp_sleep_enable_ext0_wakeup((gpio_num_t)BOARD_BTN_REFRESH_PIN, 0); } while (0)
+#  else
+#    define BTN_ENABLE_WAKE(m) ((void)(m))   /* no refresh pin -> no button wake */
+#  endif
 #else
 #  define BTN_IDLE_HIGH(g)  ((void)(g))
 #  define BTN_ENABLE_WAKE(m) esp_deep_sleep_enable_gpio_wakeup((m), ESP_GPIO_WAKEUP_GPIO_LOW)
@@ -151,7 +172,14 @@ static inline void buttons_poll_init(void)
     gpio_config_t io = {
         .pin_bit_mask = BUTTON_WAKE_MASK,
         .mode         = GPIO_MODE_INPUT,
+        /* On the ext0 (classic ESP32) boards the keys are on input-only pads
+         * with no internal pulls and their own external ones; asking for a
+         * pull-up there just logs an error. Elsewhere keep the internal pull. */
+#if defined(BTN_WAKE_IS_EXT0)
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+#else
         .pull_up_en   = GPIO_PULLUP_ENABLE,
+#endif
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type    = GPIO_INTR_DISABLE,
     };
@@ -242,17 +270,23 @@ static inline bool buttons_refresh_held_for_maintenance(void)
  * sharing the mask -- so the caller distinguishes touch from button itself. */
 static inline button_id_t buttons_which_woke(void)
 {
-#if SOC_PM_SUPPORT_EXT1_WAKEUP
+#if defined(BTN_WAKE_IS_EXT0)
+    /* classic ESP32: ext0 wakes only on the refresh pin (see the backend
+     * selection above), so the cause alone identifies the button. */
+    return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0 ? BTN_REFRESH : BTN_NONE;
+#else
+#  if SOC_PM_SUPPORT_EXT1_WAKEUP
     if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT1) return BTN_NONE;
     uint64_t st = esp_sleep_get_ext1_wakeup_status();
-#else
+#  else
     if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_GPIO) return BTN_NONE;
     uint64_t st = esp_sleep_get_gpio_wakeup_status();
-#endif
+#  endif
     if (st & BUTTONS__REFRESH_BIT) return BTN_REFRESH;
     if (st & BUTTONS__LEFT_BIT)    return BTN_LEFT;
     if (st & BUTTONS__RIGHT_BIT)   return BTN_RIGHT;
     return BTN_NONE;   /* ext1 fired but not a button (e.g. touch INT) */
+#endif
 }
 
 #else  /* !BOARD_HAS_BUTTONS */
