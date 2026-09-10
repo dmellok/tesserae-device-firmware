@@ -243,10 +243,20 @@ void battery_debug_sweep(void)
     if (adc_oneshot_new_unit(&init, &adc) != ESP_OK) { ESP_LOGE(T, "adc unit init failed"); return; }
 
     adc_cali_handle_t cali = NULL;
+    /* Same per-target split as battery_read_mv() above: the classic ESP32 has
+     * only line fitting, and a board being brought up is exactly where this
+     * sweep gets used. */
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
     adc_cali_curve_fitting_config_t cc = {
         .unit_id = ADC_UNIT_1, .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_12,
     };
     adc_cali_create_scheme_curve_fitting(&cc, &cali);
+#else
+    adc_cali_line_fitting_config_t lc = {
+        .unit_id = ADC_UNIT_1, .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_12,
+    };
+    adc_cali_create_scheme_line_fitting(&lc, &cali);
+#endif
 
     ESP_LOGW(T, "sweeping ADC1 ch0..9 (GPIO1..10), atten=12dB. A valid 1S cell "
                 "reads pin*2 in 3300-4200mV; 2S reads pin*3/4 in 6000-8400mV.");
