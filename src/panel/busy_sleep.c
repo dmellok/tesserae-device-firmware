@@ -76,12 +76,11 @@ uint32_t epd_busy_sleep(gpio_num_t pin, int ready_level, uint32_t ms)
      * high off its pull-up so the wait ends early (bench E1002 2026-09-11:
      * a 29 s Spectra refresh "finished" in 11 s, plus a task-watchdog trip
      * from the resulting wake/sleep spin). Keep the pads in their active
-     * configuration across light sleep; deep sleep still uses hold/RTC. */
-    static bool s_pads_kept;
-    if (!s_pads_kept) {
-        esp_sleep_enable_gpio_switch(false);
-        s_pads_kept = true;
-    }
+     * configuration across THIS nap only, and hand the switch back
+     * afterwards: leaving it off changes what the pads do in the deep sleep
+     * that follows (1.34.0 isolated them there), and a Sticky woke on a
+     * phantom touch a second into its first deep sleep with it left off. */
+    esp_sleep_enable_gpio_switch(false);
 
     /* Level-triggered so a BUSY that released between the read above and the
      * sleep entry wakes us immediately instead of after the timer. */
@@ -101,6 +100,7 @@ uint32_t epd_busy_sleep(gpio_num_t pin, int ready_level, uint32_t ms)
     uint32_t nap_ms = ms < EPD_NAP_MIN_MS ? EPD_NAP_MIN_MS : ms;
     esp_sleep_enable_timer_wakeup((uint64_t)nap_ms * 1000ULL);
     esp_err_t r = esp_light_sleep_start();
+    esp_sleep_enable_gpio_switch(true);   /* back to IDF's default for deep sleep */
 
     /* Leave nothing armed for the deep-sleep entry that follows the paint:
      * it configures its own timer and ext1 sources from scratch. */
