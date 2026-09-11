@@ -203,7 +203,8 @@ it in boards/seeed_reterminal_sticky.h.
    mono soak build made the server's 96000-byte frames fail the size check
    ("refusing to paint"); use seeed-reterminal-e1001-gray-soak for that
    unit. On the gray soak build a real dashboard painted: 96000 bytes,
-   OTP waveform, refresh 3720 ms, `paint done in 3953 ms (18 naps)`.
+   OTP waveform, refresh 3720 ms, `paint done in 3953 ms (18 naps)`; the
+   user confirmed the dashboard on the glass looks normal (2026-09-11).
 
    Done so far (2026-09-11, the user's E1001, OTP batch per the NVS probe
    cache): bars full 4847 ms; partial band 3 flip 1214 ms total (894 ms
