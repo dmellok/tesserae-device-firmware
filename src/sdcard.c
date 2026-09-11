@@ -25,12 +25,16 @@ static sdmmc_card_t *s_card;
 
 bool sdcard_mounted(void) { return s_card != NULL; }
 
-void sdcard_quiesce(void)
+/* Park the SD lines: CS driven high (deselected) and the slot rail off.
+ * Called at boot (sdcard_quiesce) and again after every failed mount and
+ * every unmount, because ESP-IDF's sdspi teardown (deinit_slot) hands CS
+ * back as a FLOATING INPUT -- with a card fitted that is exactly the
+ * half-selected state that stalled E1001 refreshes on the bench
+ * (2026-07-23), and it is the state an E1002 sat in for the whole panel
+ * refresh whenever its card failed to mount (firmware #34). */
+static void park_lines(void)
 {
 #if !defined(SD_USE_SDMMC)
-    /* Shared bus: deselect the card (CS high) and cut the slot rail so a
-     * fitted card can never sit half-selected on the panel's SPI lines. The
-     * sdspi driver re-owns CS on mount; mount re-raises the rail. */
     gpio_config_t out = {
         .pin_bit_mask = (1ULL << SD_PIN_CS)
 #ifdef SD_PIN_EN
@@ -46,6 +50,39 @@ void sdcard_quiesce(void)
     gpio_set_level((gpio_num_t)SD_PIN_EN, 0);
 #endif
 #endif /* !SD_USE_SDMMC */
+}
+
+void sdcard_quiesce(void)
+{
+    /* Shared bus: deselect the card (CS high) and cut the slot rail so a
+     * fitted card can never sit half-selected on the panel's SPI lines. The
+     * sdspi driver re-owns CS on mount; mount re-raises the rail. */
+    park_lines();
+}
+
+/* Card init is a one-shot in ESP-IDF (no retry inside sdmmc_card_init), and
+ * a card that is still finishing its own power-on reset answers the first
+ * commands with junk -- Seeed's Arduino reference for these slots retries
+ * SD.begin() for seconds. Settle longer after raising the rail, and give the
+ * probe a few power-cycled attempts before declaring the card absent. */
+#ifndef SD_RAIL_SETTLE_MS
+#define SD_RAIL_SETTLE_MS   50
+#endif
+#ifndef SD_MOUNT_ATTEMPTS
+#define SD_MOUNT_ATTEMPTS   3
+#endif
+#define SD_RETRY_OFF_MS     100
+
+static void slot_power_cycle(void)
+{
+#ifdef SD_PIN_EN
+    gpio_set_level((gpio_num_t)SD_PIN_EN, 0);
+    vTaskDelay(pdMS_TO_TICKS(SD_RETRY_OFF_MS));
+    gpio_set_level((gpio_num_t)SD_PIN_EN, 1);
+    vTaskDelay(pdMS_TO_TICKS(SD_RAIL_SETTLE_MS));
+#else
+    vTaskDelay(pdMS_TO_TICKS(SD_RETRY_OFF_MS));
+#endif
 }
 
 bool sdcard_mount(void)
@@ -83,7 +120,7 @@ bool sdcard_mount(void)
     };
     gpio_config(&en);
     gpio_set_level((gpio_num_t)SD_PIN_EN, 1);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(SD_RAIL_SETTLE_MS));
 #endif
 
     esp_vfs_fat_sdmmc_mount_config_t mnt = {
@@ -103,7 +140,12 @@ bool sdcard_mount(void)
     slot.d0  = (gpio_num_t)SD_MMC_PIN_D0;
     slot.width = 1;
     slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-    err = esp_vfs_fat_sdmmc_mount(SDCARD_MOUNT_POINT, &host, &slot, &mnt, &s_card);
+    for (int attempt = 1;; attempt++) {
+        err = esp_vfs_fat_sdmmc_mount(SDCARD_MOUNT_POINT, &host, &slot, &mnt, &s_card);
+        if (err == ESP_OK || attempt >= SD_MOUNT_ATTEMPTS) break;
+        ESP_LOGW(TAG, "mount attempt %d: %s; retrying", attempt, esp_err_to_name(err));
+        slot_power_cycle();
+    }
 #else
     /* Fellow SPI devices must stay quiet while the card talks: park every
      * panel chip-select deselected. On the E1003 the IT8951 also shares the
@@ -192,7 +234,15 @@ bool sdcard_mount(void)
     sdspi_device_config_t slot = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot.host_id = EPD_SPI_HOST;
     slot.gpio_cs = (gpio_num_t)SD_PIN_CS;
-    err = esp_vfs_fat_sdspi_mount(SDCARD_MOUNT_POINT, &host, &slot, &mnt, &s_card);
+    for (int attempt = 1;; attempt++) {
+        err = esp_vfs_fat_sdspi_mount(SDCARD_MOUNT_POINT, &host, &slot, &mnt, &s_card);
+        if (err == ESP_OK || attempt >= SD_MOUNT_ATTEMPTS) break;
+        /* A failed attempt leaves CS floating (IDF deinit_slot); the next
+         * sdspi init re-owns it, so only the rail needs cycling here. */
+        ESP_LOGW(TAG, "mount attempt %d: %s; power-cycling the slot",
+                 attempt, esp_err_to_name(err));
+        slot_power_cycle();
+    }
 #endif
 
     if (err != ESP_OK) {
@@ -207,9 +257,10 @@ bool sdcard_mount(void)
     return true;
 
 fail_power:
-#ifdef SD_PIN_EN
-    gpio_set_level((gpio_num_t)SD_PIN_EN, 0);
-#endif
+    /* Not just the rail: re-park CS too. IDF's failed-mount teardown leaves
+     * it a floating input, and the panel refresh that follows runs over the
+     * same SCLK/MOSI lines with the card still fitted. */
+    park_lines();
     return false;
 }
 
@@ -219,11 +270,10 @@ void sdcard_unmount(void)
         esp_vfs_fat_sdcard_unmount(SDCARD_MOUNT_POINT, s_card);
         s_card = NULL;
     }
-#ifdef SD_PIN_EN
     /* Cut slot power for deep sleep (the pin goes hi-Z in sleep; the board's
-     * default keeps the slot dark without an active driver). */
-    gpio_set_level((gpio_num_t)SD_PIN_EN, 0);
-#endif
+     * default keeps the slot dark without an active driver) and re-park CS,
+     * which the sdspi teardown hands back as a floating input. */
+    park_lines();
 }
 
 void *sdcard_handle(void) { return s_card; }

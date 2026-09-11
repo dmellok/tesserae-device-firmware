@@ -260,6 +260,8 @@ verified (exact length + digest, mbedTLS SHA-256) before painting; any
 mount/read/parse failure falls back to the network path. Card layout:
 `/tesserae/decks/<deck_id>/manifest.json` + `<digest>.bin`. Bring-up: the
 `…-sdtest` env runs a mount + write/read/verify round trip over serial.
+Bench-verified on the E1001, E1003, E1004 and PhotoPainter; the E1002 shares
+the E1001's slot map but has not had its own pass yet (firmware #34).
 
 ### Local overlay rendering (hybrid render mode)
 

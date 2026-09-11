@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- Shared-bus microSD boards (reTerminal E1001 / E1002 / E1003 / E1004) no
+  longer leave the card half-selected on the panel's SPI lines after a failed
+  mount: ESP-IDF's sdspi teardown hands the card's chip-select back as a
+  floating input, and every panel refresh that followed ran over SCLK/MOSI
+  with a fitted, unpowered, un-deselected card -- the "update logged as
+  successful, glass unchanged" symptom whenever a card would not mount
+  (firmware #34). Chip-select is now re-parked high and the slot rail cut
+  after every failed mount and every unmount, the same parking the boot path
+  already did.
+- microSD probing tolerates slow-starting cards: the slot rail settles 50 ms
+  (was 10 ms) before the first command, and card init gets up to three
+  power-cycled attempts instead of ESP-IDF's single shot. Seeed's Arduino
+  reference for these slots retries `SD.begin()` for seconds; the one-shot
+  probe is the leading suspect for cards answering CMD59 with "illegal
+  command" on an E1002 (firmware #34).
+
+### Added
+
+- `seeed-reterminal-e1002-sdtest`: microSD bring-up env for the E1002 (mount
+  + write/read/digest-verify over serial), matching the E1001 / E1003 ones.
+
 ## [1.34.0] - 2026-09-11
 
 ### Added
