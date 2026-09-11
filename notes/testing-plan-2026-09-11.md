@@ -157,6 +157,15 @@ Needs a µA-range meter on the battery connector.
 
 ## 7. IT8951 10 MHz data phase and 400 kHz touch bus (E1003)
 
+   Done 2026-09-11 (E1003 soak build): splash full paint 2.2 s vs 3.8 s on
+   v1.34.0; a real 1314144-byte dashboard painted in 5.0 s including the
+   INIT clear, reads still at 4 MHz with the SD card mounted (4 MHz, SD32G);
+   the user confirmed the dashboard is clean on the glass. RTC (VL set ->
+   written back), charger, and the E1003 SOC table (4158 mV -> 100 percent,
+   was 91) all behaved. Observation: the panel's stored VCOM is 1400 mV,
+   Seeed's exact value; we override to 1500 (see 13). Touch at 400 kHz:
+   pending taps.
+
 1. Full paint: log line for the data clock; paint time should drop by
    ~1.5 s versus 1.34.0. Look for any tearing, wrong-gray bands or an
    `LD_IMG` timeout; if so, drop `EPD_IT8951_DATA_HZ` to 8 MHz and retry.
