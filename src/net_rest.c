@@ -8,6 +8,8 @@
  * the endpoint shapes, JSON fields, and status mapping match it exactly.
  */
 #include "net_rest.h"
+#include "rtc_pcf8563.h"
+#include "sy6974.h"
 #include "rest_config.h"
 #include "app_config.h"
 #include "battery.h"
@@ -398,6 +400,12 @@ static rest_status_t do_request(esp_http_client_method_t method, const char *url
         wake_align_note_discipline(
             (int64_t)old_tv.tv_sec * 1000 + old_tv.tv_usec / 1000,
             (int64_t)s_server_date * 1000);
+        /* Keep the board RTC (reTerminals: PCF8563 on a coin cell) in step so
+         * the next cold boot has a clock before its first fetch. Only when
+         * the discipline actually moved the clock; a write per wake would be
+         * two I2C transactions for nothing. */
+        int64_t moved_s = (int64_t)s_server_date - (int64_t)old_tv.tv_sec;
+        if (moved_s > 2 || moved_s < -2) rtc_pcf8563_store_clock();
     }
 
     ESP_LOGI(TAG, "<- %d (%u bytes)", http, (unsigned)s_rx_len);
@@ -1022,6 +1030,18 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     if (have_battery) {
         cJSON_AddNumberToObject(o, "battery_mv", mv);
         cJSON_AddNumberToObject(o, "battery_pct", pct);
+    }
+    /* Charger IC (reTerminals: SY6974): whether USB power is present and the
+     * cell is charging. Omitted on boards without one or when it does not
+     * answer, so an absent field stays unambiguous like the battery pair. */
+    sy6974_status_t chg;
+    if (sy6974_read(&chg)) {
+        ESP_LOGI(TAG, "status: charger vbus=%d charging=%d done=%d fault=%d (reg08=0x%02x reg09=0x%02x)",
+                 chg.vbus_present, chg.charging, chg.charge_done, chg.battery_fault,
+                 chg.reg08, chg.reg09);
+        cJSON_AddBoolToObject(o, "vbus", chg.vbus_present);
+        cJSON_AddBoolToObject(o, "charging", chg.charging);
+        if (chg.battery_fault) cJSON_AddBoolToObject(o, "battery_fault", true);
     }
     cJSON_AddNumberToObject(o, "rssi", rssi);
     cJSON_AddStringToObject(o, "ip", ip ? ip : "");

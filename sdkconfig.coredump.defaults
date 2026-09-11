@@ -1,0 +1,14 @@
+# Flash core dumps, for boards whose partition table carries a `coredump`
+# partition (partitions_ota.csv / partitions_e1004_ota.csv from 2026-09-11;
+# the Xteink X4 factory table has had one all along). Layer it after the OTA
+# defaults on 16 MB+ boards only: the 4 MB layouts have no room, and enabling
+# it without a partition just logs an error on every boot.
+#
+# A panic writes an ELF dump to the partition; `espcoredump.py info_corefile`
+# (or `idf.py coredump-info`) reads it back over serial. The next OTA report
+# can carry the fact that one exists so a crash in the field is triageable
+# without a cable.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+CONFIG_ESP_COREDUMP_MAX_TASKS_NUM=32

@@ -16,6 +16,13 @@ bool touch_wakestub_take(int *rx, int *ry)
     return true;
 }
 
+uint8_t touch_wakestub_gesture(void)
+{
+    uint8_t g = (uint8_t)g_touch_wake_capture.gesture;
+    g_touch_wake_capture.gesture = 0;   /* consume so it is not replayed */
+    return g;
+}
+
 #ifdef BOARD_TOUCH_WAKE_STUB
 
 #include "esp_sleep.h"        /* esp_default_wake_deep_sleep, esp_wake_deep_sleep */
@@ -40,6 +47,7 @@ bool touch_wakestub_take(int *rx, int *ry)
  * touch_gt911.c: point-1 block verified at 0x8150 on E1003 hardware. */
 #define TWS_REG_STATUS   0x814e
 #define TWS_REG_POINT1   0x8150
+#define TWS_REG_GESTURE  0x814b   /* gesture-mode result byte (TOUCH_GESTURE_SLEEP) */
 
 /* Half an I2C clock period. ~5 us => ~100 kHz, matching the driver's bus speed. */
 #define TWS_HALF_US      5
@@ -197,6 +205,20 @@ void RTC_IRAM_ATTR esp_wake_deep_sleep(void)
     tws_pin_init(TWS_SDA);
     esp_rom_delay_us(TWS_HALF_US);
 
+#ifdef TOUCH_GESTURE_SLEEP
+    /* The controller was parked in gesture mode (touch_gt911.c): it reports a
+     * gesture id at 0x814b and no point at 0x8150, so the status/point read
+     * below would be meaningless. Grab the id instead. The stash's magic is
+     * deliberately NOT set: there is no coordinate, so app_main must not treat
+     * this as a captured tap. The id is left in the controller (not cleared);
+     * touch_init() hardware-resets it on the way back to coordinate mode. */
+    uint8_t gid = 0;
+    g_touch_wake_capture.stage = TWS_STAGE_STATUS_FAIL;
+    if (!tws_read_reg(TWS_REG_GESTURE, &gid, 1)) goto done;
+    g_touch_wake_capture.gesture = gid;
+    g_touch_wake_capture.status  = 0;
+    g_touch_wake_capture.stage   = TWS_STAGE_GESTURE;
+#else
     uint8_t status = 0;
     g_touch_wake_capture.stage = TWS_STAGE_STATUS_FAIL;
     if (!tws_read_reg(TWS_REG_STATUS, &status, 1)) goto done;
@@ -212,6 +234,7 @@ void RTC_IRAM_ATTR esp_wake_deep_sleep(void)
     g_touch_wake_capture.ry = (int32_t)(p[2] | (p[3] << 8));
     g_touch_wake_capture.magic = TOUCH_WAKE_MAGIC;
     g_touch_wake_capture.stage = TWS_STAGE_CAPTURED;
+#endif /* TOUCH_GESTURE_SLEEP */
 
 done:
     tws_release(TWS_SDA);

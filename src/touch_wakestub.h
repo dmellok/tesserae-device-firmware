@@ -34,6 +34,7 @@ enum {
     TWS_STAGE_NO_POINT    = 3,   /* status read OK but no fresh point buffered */
     TWS_STAGE_POINT_FAIL  = 4,   /* point read NACKed mid-way */
     TWS_STAGE_CAPTURED    = 5,   /* rx/ry stashed */
+    TWS_STAGE_GESTURE     = 6,   /* TOUCH_GESTURE_SLEEP: gesture id read from 0x814b */
 };
 
 typedef struct {
@@ -43,6 +44,8 @@ typedef struct {
     uint32_t runs;     /* total stub executions since power-on (diag) */
     uint32_t stage;    /* TWS_STAGE_* reached on the last wake (diag) */
     uint32_t status;   /* last GT911 status byte the stub read (diag) */
+    uint32_t gesture;  /* TOUCH_GESTURE_SLEEP: gesture id from 0x814b, 0 = none;
+                        * consumed by touch_wakestub_gesture(). Unused otherwise. */
 } touch_wake_capture_t;
 
 /* The stash the wake stub writes and app_main reads. Always defined (even without
@@ -54,3 +57,11 @@ extern touch_wake_capture_t g_touch_wake_capture;
 /* True if the wake stub captured a raw point this wake. Clears the stash so a
  * later wake without a stub capture does not replay a stale point. */
 bool touch_wakestub_take(int *rx, int *ry);
+
+/* TOUCH_GESTURE_SLEEP only: the GT911 gesture id the stub read from 0x814b on
+ * this wake (Goodix ids: 0xcc double tap, 0xaa/0xbb/0xab/0xba swipe right/
+ * left/down/up, ASCII letters for the drawn shapes), or 0 if none. Clears the
+ * stash so it is not replayed. Always 0 in the default build. In gesture mode
+ * the controller reports no coordinate, so touch_wakestub_take() never
+ * captures a point; this is what the stub records instead. */
+uint8_t touch_wakestub_gesture(void);

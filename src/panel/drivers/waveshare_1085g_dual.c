@@ -12,6 +12,7 @@
 #if defined(PANEL_DRIVER_WAVESHARE_1085G_DUAL)
 
 #include "drivers/waveshare_1085g_dual.h"
+#include "../busy_sleep.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -82,9 +83,10 @@ static void ws1085g_data_for(gpio_num_t cs, const uint8_t *data, size_t len)
 /* BUSY is active-low. A normal refresh is slow; 90s is a safe fail-stop. */
 static bool ws1085g_wait_idle(void)
 {
-    for (int elapsed = 0; elapsed < 90000; elapsed += 10) {
+    uint32_t elapsed = 0;
+    while (elapsed < 90000) {
         if (gpio_get_level(EPD_PIN_BUSY)) return true;
-        vTaskDelay(pdMS_TO_TICKS(10));
+        elapsed += epd_busy_sleep(EPD_PIN_BUSY, 1, 10);   /* light-sleep until BUSY high; real ms */
     }
     ESP_LOGE(TAG, "BUSY remained low for 90 seconds");
     return false;

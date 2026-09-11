@@ -26,6 +26,7 @@
 #if defined(PANEL_DRIVER_SPECTRA6_T133A01_DUAL)
 
 #include "drivers/spectra6_t133a01_dual.h"
+#include "../busy_sleep.h"
 
 #include <string.h>
 
@@ -136,26 +137,83 @@ static inline void write_cmd_data(uint8_t cmd, const uint8_t *data, size_t len, 
     tx_cmd_data(cmd, data, len, true, both);
 }
 
-/* Block until BUSY goes HIGH (idle). UC81xx idle == BUSY high. A full T133A01
- * refresh can take a long time; bb_epaper allows 60 s before giving up, so we
- * only warn past that. */
-static void wait_idle(void)
+/* BUSY handling ported from mono_spi: active-LOW busy (UC81xx idle == BUSY
+ * high), bounded waits with a consecutive-ready filter, and an assert-before-
+ * idle handshake so a phase whose controller has not pulled BUSY low yet is
+ * not mistaken for one that has already finished.
+ *
+ * Timeouts follow Seeed's GxEPD2 T133A01 port for this glass: PON 5 s, DRF
+ * 60 s (a full Spectra-6 refresh is 30-40 s), POF 5 s, CCSET 1 s. Every wait
+ * MUST be bounded. The previous wait_idle warned at 60 s and then spun for
+ * ever, so a panel whose BUSY never cleared was never sent POF / DSLP and
+ * never had EN dropped -- the glass stayed driven indefinitely. Timing out and
+ * continuing into the power-down costs one bad frame; hanging costs the
+ * image and, over time, the panel. */
+#define BUSY_IDLE_STABLE_SAMPLES 3
+#define BUSY_POLL_MS             20
+#define BUSY_ASSERT_TIMEOUT_MS   1000
+#define BUSY_PON_TIMEOUT_MS      5000
+#define BUSY_DRF_TIMEOUT_MS      60000
+#define BUSY_POF_TIMEOUT_MS      5000
+#define BUSY_CCSET_TIMEOUT_MS    1000
+#define BUSY_RESET_TIMEOUT_MS    5000
+
+/* Wait for BUSY to read high on BUSY_IDLE_STABLE_SAMPLES consecutive samples
+ * or for `timeout_ms` to elapse. Returns false on timeout; callers continue
+ * regardless so the panel still reaches POF / DSLP / EN-low. */
+static bool wait_idle(const char *tag, uint32_t timeout_ms)
 {
-    int ticks = 0;
+    uint32_t waited = 0;
+    int high = 0;
     bool warned = false;
-    while (gpio_get_level(EPD_PIN_BUSY) == 0) {
-        vTaskDelay(pdMS_TO_TICKS(20));
-        if (!warned && ++ticks >= 3000) {   /* 3000 * 20 ms = 60 s */
-            ESP_LOGW(TAG, "BUSY still low after 60 s -- panel may be stuck");
+    while (high < BUSY_IDLE_STABLE_SAMPLES) {
+        if (gpio_get_level(EPD_PIN_BUSY) == 0) {
+            high = 0;
+            /* Light-sleep until BUSY releases (or the poll interval ends);
+             * count the REAL time the nap took, not the nominal interval. */
+            waited += epd_busy_sleep(EPD_PIN_BUSY, 1, BUSY_POLL_MS);
+        } else {
+            /* epd_busy_sleep() returns at once when BUSY already reads high,
+             * which would collapse the stable-sample filter into back-to-back
+             * reads; keep a plain spacing between ready samples. */
+            high++;
+            vTaskDelay(pdMS_TO_TICKS(BUSY_POLL_MS));
+            waited += BUSY_POLL_MS;
+        }
+        if (!warned && waited >= 10000 && timeout_ms > 10000) {
+            ESP_LOGW(TAG, "%s: BUSY still low after 10 s; panel may be slow or stuck", tag);
             warned = true;
         }
+        if (waited >= timeout_ms) {
+            ESP_LOGE(TAG, "%s: BUSY never cleared in %u ms; continuing so the "
+                          "panel is still powered down rather than left driven",
+                     tag, (unsigned)timeout_ms);
+            return false;
+        }
     }
+    return true;
+}
+
+/* Wait for the panel to ASSERT busy, i.e. to acknowledge that the phase it was
+ * just told to run has actually started. update_phase() previously polled for
+ * idle straight after the command: if the controller had not pulled BUSY low
+ * yet the wait returned instantly, the next phase (POF after DRF) went out
+ * mid-waveform, and the glass was left with a partial frame. */
+static bool wait_busy_asserted(void)
+{
+    for (int waited = 0; waited < BUSY_ASSERT_TIMEOUT_MS; waited += 2) {
+        if (gpio_get_level(EPD_PIN_BUSY) == 0) return true;
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    return false;
 }
 
 /* T133A01 update phase (bb_epaper t133a01_update_phase): assert both CS,
- * write cmd+data to both controllers, release primary, wait for BUSY idle
- * while the second CS is still asserted, then release it and settle 30 ms. */
-static void update_phase(uint8_t cmd, const uint8_t *data, size_t len)
+ * write cmd+data to both controllers, release primary, wait for BUSY to
+ * assert and then clear while the second CS is still asserted, then release
+ * it and settle 30 ms. Returns false if the idle wait timed out. */
+static bool update_phase(const char *tag, uint8_t cmd, const uint8_t *data,
+                         size_t len, uint32_t timeout_ms)
 {
     gpio_set_level(EPD_PIN_CS_S, 0);
     gpio_set_level(EPD_PIN_CS_M, 0);
@@ -168,9 +226,21 @@ static void update_phase(uint8_t cmd, const uint8_t *data, size_t len)
     }
 
     gpio_set_level(EPD_PIN_CS_M, 1);
-    wait_idle();
+    if (!wait_busy_asserted()) {
+        /* A missed assert only matters where the work is long: on DRF it
+         * means the idle wait below may return before the refresh has
+         * started. PON / POF pulse BUSY briefly and can slip between polls. */
+        if (cmd == DRF)
+            ESP_LOGW(TAG, "%s: panel never asserted BUSY within %d ms; "
+                          "waiting for idle anyway", tag, BUSY_ASSERT_TIMEOUT_MS);
+        else
+            ESP_LOGD(TAG, "%s: BUSY assert not observed within %d ms",
+                     tag, BUSY_ASSERT_TIMEOUT_MS);
+    }
+    bool ok = wait_idle(tag, timeout_ms);
     gpio_set_level(EPD_PIN_CS_S, 1);
     vTaskDelay(pdMS_TO_TICKS(30));
+    return ok;
 }
 
 /* Reset pulse per bbepT133A01InitIO: RST low 20 ms, high 20 ms, wait idle. */
@@ -178,7 +248,7 @@ static void hw_reset(void)
 {
     gpio_set_level(EPD_PIN_RST, 0); vTaskDelay(pdMS_TO_TICKS(20));
     gpio_set_level(EPD_PIN_RST, 1); vTaskDelay(pdMS_TO_TICKS(20));
-    wait_idle();
+    wait_idle("reset", BUSY_RESET_TIMEOUT_MS);
 }
 
 /* Clamp each nibble to a valid Spectra-6 colour (t133a01_panel_byte). Our
@@ -300,10 +370,13 @@ static void t133_init(void)
  * wait in between (bbepRefresh T133A01 branch). */
 static void trigger_refresh(void)
 {
-    update_phase(PON, NULL,  0);
-    update_phase(DRF, DRF_V, sizeof(DRF_V));
-    update_phase(POF, POF_V, sizeof(POF_V));
-    ESP_LOGI(TAG, "refresh done");
+    /* Each phase runs whether or not the previous one timed out: POF must go
+     * out after DRF regardless, so the panel is never left driven. */
+    bool ok = update_phase("PON", PON, NULL,  0, BUSY_PON_TIMEOUT_MS);
+    ok = update_phase("DRF", DRF, DRF_V, sizeof(DRF_V), BUSY_DRF_TIMEOUT_MS) && ok;
+    ok = update_phase("POF", POF, POF_V, sizeof(POF_V), BUSY_POF_TIMEOUT_MS) && ok;
+    if (ok) ESP_LOGI(TAG, "refresh done");
+    else    ESP_LOGE(TAG, "refresh finished with a BUSY timeout; frame may be incomplete");
 }
 
 /* Stream one half-frame (DTM + 300 bytes/row x 1600 rows) to a single CS. */
@@ -337,7 +410,7 @@ static void t133_display(const uint8_t *image)
 
     /* Per-frame "current frame" CCSET (0xE0,0x01) to both controllers. */
     write_cmd_data(CCSET, CCSET_V, sizeof(CCSET_V), true);
-    wait_idle();
+    wait_idle("CCSET", BUSY_CCSET_TIMEOUT_MS);
     vTaskDelay(pdMS_TO_TICKS(10));
 
     /* Left half -> primary (CS_M) */
@@ -372,7 +445,7 @@ static void t133_clear(uint8_t color)
     memset(buf, packed, HALF);
 
     write_cmd_data(CCSET, CCSET_V, sizeof(CCSET_V), true);
-    wait_idle();
+    wait_idle("CCSET", BUSY_CCSET_TIMEOUT_MS);
     vTaskDelay(pdMS_TO_TICKS(10));
 
     write_half(EPD_PIN_CS_M, buf, HALF);
@@ -394,7 +467,7 @@ static void t133_show_color_bars(void)
     uint8_t row[HALF_ROW];
 
     write_cmd_data(CCSET, CCSET_V, sizeof(CCSET_V), true);
-    wait_idle();
+    wait_idle("CCSET", BUSY_CCSET_TIMEOUT_MS);
     vTaskDelay(pdMS_TO_TICKS(10));
 
     for (int side = 0; side < 2; side++) {
@@ -423,7 +496,7 @@ static void t133_show_palette_sweep(void)
     uint8_t row[HALF_ROW];
 
     write_cmd_data(CCSET, CCSET_V, sizeof(CCSET_V), true);
-    wait_idle();
+    wait_idle("CCSET", BUSY_CCSET_TIMEOUT_MS);
     vTaskDelay(pdMS_TO_TICKS(10));
 
     for (int side = 0; side < 2; side++) {
@@ -449,7 +522,8 @@ static void t133_sleep(void)
 {
     tx_cmd_data(POF, POF_V, sizeof(POF_V), true,  false);  /* primary (CS_M) */
     tx_cmd_data(POF, POF_V, sizeof(POF_V), false, true);   /* second  (CS_S) */
-    wait_idle();
+    wait_busy_asserted();                    /* POF's BUSY pulse is short; best effort */
+    wait_idle("POF", BUSY_POF_TIMEOUT_MS);   /* bounded: DSLP + EN-low always follow */
 
     uint8_t magic = 0xA5;
     tx_cmd_data(DEEP_SLEEP, &magic, 1, true,  false);      /* primary (CS_M) */

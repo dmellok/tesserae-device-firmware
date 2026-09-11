@@ -17,6 +17,26 @@
  *   BOARD_TOUCH_EN_PIN                          gated digitiser rail (active high)
  *   BOARD_TOUCH_HOLD_RST                        latch TP_RST high across sleep
  *   BOARD_TOUCH_WAKE_STUB                       RTC wake-stub quick-tap capture
+ *
+ * Build flag (off by default; pass -DTOUCH_GESTURE_SLEEP to turn it on):
+ *   TOUCH_GESTURE_SLEEP   Park the GT911 in its gesture mode across deep sleep
+ *                         instead of leaving it in normal scan, and wake on
+ *                         TP_INT going HIGH via ext0 with an RTC pull-down.
+ *                         Mirrors Seeed's SenseCraft HMI firmware
+ *                         (GT911::enterGestureMode: 0x8046 <- 0x08, 0x8040 <-
+ *                         0x08; Gt911Touch::enableGestureWakeup: INT as RTC
+ *                         input, pull-down, wait <= 300 ms for idle-low, ext0
+ *                         active-high). A normally scanning GT911 draws
+ *                         mA-class current for the whole sleep; gesture mode
+ *                         is the controller's own low-power scan. Costs: the
+ *                         controller reports a gesture id at 0x814b instead
+ *                         of a point at 0x8150 while parked, so the wake stub
+ *                         records the id rather than a coordinate, and the
+ *                         next touch_init() hardware-resets the controller
+ *                         (~120 ms) to get coordinate mode back. Whether a
+ *                         plain single tap counts as a wake gesture is a
+ *                         property of the GT911's stored config; see
+ *                         touch_gt911.c. Off: byte-identical to before.
  */
 #pragma once
 
@@ -94,10 +114,32 @@ esp_err_t touch_capture_stroke_cb(touch_stroke_t *out,
  * read used to poll during the linger window without hammering I2C. */
 bool touch_int_asserted(void);
 
-/* Prepare for deep sleep: leave the GT911 scanning (monitor mode) so it raises
- * INT on a touch, latch TP_RST with gpio_hold so the digital-domain pin does
- * not float and reset the controller (which would re-sample its I2C address),
- * and arm EXT0 wake on TP_INT going high. Call on the real deep-sleep path. */
+/* Prepare for deep sleep. Call on the real deep-sleep path, BEFORE the caller
+ * arms the button ext1 mask.
+ *
+ * Default: leave the GT911 scanning (monitor mode) so it pulls INT low on a
+ * touch, latch TP_RST / TOUCH_EN where the board asks for it, and leave the
+ * wake to the caller: buttons_arm_ext1_with(touch_sleep_wake_mask()) folds the
+ * active-low INT into the button ext1 ANY_LOW mask.
+ *
+ * TOUCH_GESTURE_SLEEP: additionally command gesture mode, configure INT as an
+ * RTC input with a pull-down, wait for it to idle low, and arm ext0 on INT
+ * HIGH here. touch_sleep_wake_mask() then returns 0 so the caller leaves the
+ * ext1 mask to the buttons. The next touch_init() (any wake cause) resets the
+ * controller back to coordinate mode. */
 void touch_prepare_sleep(void);
+
+/* Bits the caller should fold into the button ext1 ANY_LOW mask after
+ * touch_prepare_sleep(): TOUCH_INT_WAKE_MASK in the default mode, 0 under
+ * TOUCH_GESTURE_SLEEP (ext0 is armed inside touch_prepare_sleep() instead;
+ * adding INT to an ANY_LOW mask with a pull-up would wake immediately, since
+ * INT idles low in gesture mode). */
+uint64_t touch_sleep_wake_mask(void);
+
+/* True when this boot is an ext0 wake, which under TOUCH_GESTURE_SLEEP can only
+ * be the GT911 gesture INT (nothing else arms ext0 on these boards). Always
+ * false in the default build, where a touch wake is an ext1 wake whose status
+ * word carries TOUCH_INT_WAKE_MASK. */
+bool touch_woke_by_gesture(void);
 
 #endif /* BOARD_HAS_TOUCH */

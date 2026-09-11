@@ -64,6 +64,32 @@
 #define BOARD_SHT4X_I2C_HZ         100000
 #define BOARD_SHT4X_I2C_ADDR       0x44
 
+/* PCF8563 real-time clock with a CR1220 backup, on the sensor bus. Address and
+ * register map per Seeed's examples/base/RTC_PCF8563/RTC_PCF8563.ino, which
+ * names SDA 19 / SCL 20 for every E1001-E1004. Holds UTC (rtc_pcf8563.h). */
+#define BOARD_HAS_PCF8563          1
+#define BOARD_PCF8563_I2C_PORT     0
+#define BOARD_PCF8563_I2C_SDA      19
+#define BOARD_PCF8563_I2C_SCL      20
+#define BOARD_PCF8563_I2C_HZ       400000
+#define BOARD_PCF8563_I2C_ADDR     0x51
+
+/* SY6974 charger, status read only (sy6974.h never writes it). Shares the
+ * sensor bus here, unlike the E1001/E1002: SenseCraft
+ * src/boards/reterminal_e1003/config.h maps PMIC_I2C_SDA/SCL to ESP32_SDA/SCL
+ * (19/20). */
+#define BOARD_HAS_SY6974           1
+#define BOARD_SY6974_I2C_PORT      0
+#define BOARD_SY6974_I2C_SDA       19
+#define BOARD_SY6974_I2C_SCL       20
+#define BOARD_SY6974_I2C_HZ        400000
+#define BOARD_SY6974_I2C_ADDR      0x6B
+
+/* Green status LED, active-low (the pin sinks; LOW = on). Seeed's
+ * examples/base/LED_Control/LED_Control.ino: GPIO16 on the E1003 (SD_EN is GPIO39 here, so 16 is free). */
+#define BOARD_LED_PIN              16
+#define BOARD_LED_ACTIVE_LOW       1
+
 /* Onboard Goodix GT911 capacitive touch controller (reTerminal E1003 only).
  * Shares the SHT4x I2C bus (port 0, GPIO19/20). TP_INT on GPIO2 is RTC-capable
  * and ACTIVE-LOW (idles high, pulses low on touch -- verified on hardware); it
@@ -124,6 +150,23 @@
 #define SD_PIN_CS     14
 #define SD_PIN_DET    15
 #define SD_PIN_EN     39
+
+/* Rails the firmware never uses, driven low + held through deep sleep
+ * (main.c sleep_park_rails): GPIO38 enables the PDM microphone's TPS22916
+ * load switch, GPIO46 the expansion-header rail (SenseCraft HEADER_EN).
+ * Bench 2026-09-11: gain unmeasured. */
+#define BOARD_SLEEP_DRIVE_LOW_MASK  ((1ULL << 38) | (1ULL << 46))
+
+/* IT8951 pixel-data clock for the LD_IMG burst (it8951_gray.c uses a second
+ * SPI device for the data phase only; commands and reads stay at EPD_SPI_HZ,
+ * which the dev-info reads need). Seeed drives the whole controller at
+ * 10 MHz (GxEPD2_reTerminal_E1003.ino); the 1.3 MB frame takes ~2.6 s of
+ * clocking at 4 MHz vs ~1 s here. */
+#define EPD_IT8951_DATA_HZ  (10 * 1000 * 1000)
+
+/* GT911 at 400 kHz like every Seeed E1003 source (E1003_TouchDraw.ino:322);
+ * the SHT4x on the same bus keeps its own 100 kHz device clock. */
+#define BOARD_TOUCH_I2C_HZ  400000
 
 /* Board model -> default device id "reTerminal_E1003_<mac-suffix>". */
 #define TESSERAE_DEVICE_MODEL  "reTerminal_E1003"

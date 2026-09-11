@@ -13,3 +13,9 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_ota.csv"
 # mark it valid only after its local health checks pass; reset/crash first and
 # the bootloader returns to the previous slot.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Timed deep-sleep wakes skip the bootloader's SHA-256 pass over the ~3 MB app
+# (power-on, RESET and every OTA boot still validate, and PENDING_VERIFY
+# rollback is unaffected). Seeed's TRMNL E1003 build ships this; it trims the
+# wake-to-app time by the hash of the image on every cycle.
+CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP=y

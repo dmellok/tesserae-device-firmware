@@ -76,6 +76,16 @@ static const char *TAG = "touch";
  * of the common GT9xx map -- a swipe sweeps the 0x8150 byte smoothly while the
  * would-be track-id at 0x8150 stays put, confirming X-low lives here. */
 #define GT_REG_POINT1_XY   0x8150   /* Xl,Xh,Yl,Yh of the first touch point */
+/* Command registers (Goodix GT911 programming guide; the values below are the
+ * ones Seeed's SenseCraft HMI firmware writes, lib/GT911/GT911.h + .cpp:
+ * enterGestureMode() = 0x8046 <- 0x08, 1 ms, 0x8040 <- 0x08, 10 ms). 0x8046 is
+ * the "command check" byte the controller compares against 0x8040 before it
+ * accepts a mode change; 0x814b is where gesture mode reports the gesture id
+ * instead of a point at 0x8150. */
+#define GT_REG_COMMAND     0x8040   /* 0x00 = coordinate mode, 0x05 = sleep, 0x08 = gesture */
+#define GT_REG_COMMAND_CHK 0x8046   /* write the same value here first */
+#define GT_REG_GESTURE_ID  0x814b   /* gesture-mode result byte, 0 = none */
+#define GT_CMD_GESTURE     0x08
 
 #define GT_TIMEOUT_MS      50
 
@@ -90,6 +100,15 @@ static uint32_t s_product_id = 0;
  * space touch_translate_raw() scales into. */
 static int      s_rmax_x = EPD_WIDTH;
 static int      s_rmax_y = EPD_HEIGHT;
+
+#ifdef TOUCH_GESTURE_SLEEP
+/* Set by touch_prepare_sleep() when it parked the GT911 in gesture mode, so the
+ * next boot's touch_init() knows the controller must be brought back to
+ * coordinate mode before anything reads 0x8150. RTC-retained across the deep
+ * sleep, zero on a cold boot. Consumed (cleared) by touch_init(). */
+#define GESTURE_ARMED_MAGIC 0x47455354u   /* 'GEST' */
+RTC_DATA_ATTR static uint32_t s_gesture_armed;
+#endif
 
 static esp_err_t gt_read(uint16_t reg, uint8_t *data, size_t len)
 {
@@ -202,6 +221,29 @@ esp_err_t touch_init(void)
      * sample window, which is what a quick tap races. */
     uint8_t id[4] = {0};
     bool alive = gt_id_ok(id);
+#ifdef TOUCH_GESTURE_SLEEP
+    /* The last sleep parked the controller in gesture mode. It still answers
+     * its product id there, so the warm path above would happily leave it
+     * reporting gesture ids at 0x814b instead of points at 0x8150. Return it
+     * to coordinate mode first. With a reset line that is a hardware reset,
+     * which is how Seeed's firmware leaves gesture mode (every boot re-runs
+     * probe_gt911()'s RST low/high) and how the Goodix reference driver's
+     * wakeup path does it; the reset also re-latches the 0x5d address and
+     * restores the flash-stored config. Without one, fall back to the soft
+     * command (0x8040 <- 0x00, "read coordinate status") and hope. */
+    if (s_gesture_armed == GESTURE_ARMED_MAGIC) {
+        s_gesture_armed = 0;
+#ifdef BOARD_TOUCH_RST_PIN
+        ESP_LOGI(TAG, "leaving gesture mode: hardware reset");
+        alive = false;   /* take the reset path below */
+#else
+        ESP_LOGI(TAG, "leaving gesture mode: 0x8040 <- 0x00");
+        gt_write_u8(GT_REG_COMMAND, 0x00);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        gt_write_u8(GT_REG_GESTURE_ID, 0x00);
+#endif
+    }
+#endif
     if (!alive) {
 #ifdef BOARD_TOUCH_RST_PIN
         gt_reset_select_5d();
@@ -419,11 +461,78 @@ void touch_prepare_sleep(void)
     gpio_deep_sleep_hold_en();
 #endif
 
+#ifdef TOUCH_GESTURE_SLEEP
+    /* Gesture-mode sleep, as Seeed's SenseCraft HMI firmware does it
+     * (Gt911Touch::enableGestureWakeup + GT911::enterGestureMode): a GT911 left
+     * in normal scan draws mA-class current for the whole sleep; in gesture
+     * mode it idles at a low scan rate and raises INT ACTIVE-HIGH when it
+     * recognises a gesture. Sequence, with Seeed's delays:
+     *   0x814b <- 0x00   clear a stale gesture id      (GT911::clearGesture)
+     *   0x8046 <- 0x08   command check                 (GT911::enterGestureMode)
+     *   1 ms
+     *   0x8040 <- 0x08   enter gesture mode
+     *   10 ms
+     * Then TP_INT becomes an RTC input with the pull-DOWN on and the pull-up
+     * off, we wait up to 300 ms for it to settle low (the controller drops it
+     * once the mode switch takes; if it is still high the sleep will wake at
+     * once), and arm ext0 on level 1. The buttons keep their own ext1 mask;
+     * touch_sleep_wake_mask() returns 0 in this mode so the caller does not
+     * also fold INT into the ANY_LOW mask with a pull-up (that would wake
+     * immediately, since INT now idles low). */
+    {
+        const gpio_num_t intp = (gpio_num_t)BOARD_TOUCH_INT_PIN;
+        gt_write_u8(GT_REG_GESTURE_ID, 0x00);
+        gt_write_u8(GT_REG_COMMAND_CHK, GT_CMD_GESTURE);
+        esp_rom_delay_us(1000);
+        esp_err_t err = gt_write_u8(GT_REG_COMMAND, GT_CMD_GESTURE);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        if (err != ESP_OK) ESP_LOGW(TAG, "gesture-mode command: %s", esp_err_to_name(err));
+
+        rtc_gpio_init(intp);
+        rtc_gpio_set_direction(intp, RTC_GPIO_MODE_INPUT_ONLY);
+        rtc_gpio_pullup_dis(intp);
+        rtc_gpio_pulldown_en(intp);
+
+        int64_t t0 = esp_timer_get_time();
+        while (rtc_gpio_get_level(intp) != 0 &&
+               esp_timer_get_time() - t0 < 300 * 1000) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        int lvl = rtc_gpio_get_level(intp);
+        ESP_LOGI(TAG, "gesture sleep: INT=%d before sleep (%s), ext0 active-high armed",
+                 lvl, lvl == 0 ? "idle" : "STILL ACTIVE, may wake at once");
+
+        err = esp_sleep_enable_ext0_wakeup(intp, 1);
+        if (err != ESP_OK) ESP_LOGW(TAG, "ext0 arm: %s", esp_err_to_name(err));
+        s_gesture_armed = GESTURE_ARMED_MAGIC;
+    }
+#else
     /* TP_INT is ACTIVE-LOW (verified on E1003 hardware: idles high, the GT911
      * pulls it low on a touch -- the "active high" board note was wrong). The
      * wake is armed by the caller as an ext1 ANY_LOW bit shared with the buttons
-     * (buttons_arm_ext1_with(TOUCH_INT_WAKE_MASK)); ext0 did not fire on this
-     * line, but the button ext1 path wakes reliably on the same hardware. */
+     * (buttons_arm_ext1_with(touch_sleep_wake_mask())); ext0 did not fire on
+     * this line, but the button ext1 path wakes reliably on the same hardware. */
+#endif /* TOUCH_GESTURE_SLEEP */
+}
+
+uint64_t touch_sleep_wake_mask(void)
+{
+#ifdef TOUCH_GESTURE_SLEEP
+    return 0;                     /* ext0 armed inside touch_prepare_sleep() */
+#else
+    return TOUCH_INT_WAKE_MASK;   /* caller folds INT into the ext1 ANY_LOW mask */
+#endif
+}
+
+bool touch_woke_by_gesture(void)
+{
+#ifdef TOUCH_GESTURE_SLEEP
+    /* Nothing else on these boards arms ext0 (the buttons use ext1 on the S3),
+     * so an ext0 wake can only be the gesture INT. */
+    return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0;
+#else
+    return false;
+#endif
 }
 
 #endif /* BOARD_HAS_TOUCH */

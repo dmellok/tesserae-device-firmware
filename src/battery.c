@@ -1,6 +1,8 @@
 #include "battery.h"
 #include "app_config.h"   /* pulls board.h -> BOARD_BATTERY_* */
 #include "bq27220.h"
+#include <stdint.h>
+#include "esp_timer.h"
 
 bool battery_present(void)
 {
@@ -16,9 +18,90 @@ bool battery_present(void)
 #endif
 }
 
+
+/* ---------- per-board state-of-charge tables ----------
+ *
+ * Seeed's SenseCraft HMI firmware ships a measured 101-point voltage -> percent
+ * table per reTerminal model (src/boards/reterminal_e100x/config.h in
+ * Seeed-Projects/OSHW-reTerminal-Series-E-D, review 2026-09-11). Index is the
+ * percent, value is the resting cell voltage in mV through the same 2:1
+ * divider and eFuse-calibrated ADC path we use. All three top out near
+ * 4.11 V, the charger's real termination point, so the generic 4.20 V line
+ * below never reached 100 percent on these boards and under-read the middle
+ * of the curve by about half (3.70 V: 30 percent generic, ~60 measured on
+ * the E1001). E1001 and E1002 share a cell and a table. The E1001 table has
+ * a step at 90 -> 91 (3927 -> 3984 mV); that is Seeed's data, kept verbatim. */
+#if defined(TESSERAE_BOARD_SEEED_E1001) || defined(TESSERAE_BOARD_SEEED_E1001_GRAY) || \
+    defined(TESSERAE_BOARD_SEEED_E1001_GRAY_LEGACY) || defined(TESSERAE_BOARD_SEEED_E1002)
+#define BATTERY_SOC_TABLE 1
+static const uint16_t s_soc_mv[101] = {
+    2795, 2795, 2990, 3107, 3189, 3252, 3300, 3334, 3354, 3367,
+    3378, 3389, 3399, 3409, 3418, 3426, 3434, 3442, 3449, 3457,
+    3464, 3471, 3478, 3485, 3491, 3498, 3504, 3510, 3516, 3522,
+    3528, 3534, 3540, 3546, 3552, 3558, 3564, 3569, 3575, 3581,
+    3587, 3592, 3598, 3603, 3609, 3614, 3620, 3625, 3631, 3636,
+    3642, 3647, 3653, 3658, 3664, 3669, 3675, 3680, 3686, 3691,
+    3697, 3703, 3709, 3715, 3721, 3727, 3733, 3739, 3746, 3752,
+    3759, 3765, 3772, 3779, 3786, 3793, 3801, 3808, 3816, 3824,
+    3832, 3840, 3849, 3858, 3867, 3876, 3886, 3896, 3906, 3916,
+    3927, 3984, 3995, 4007, 4019, 4032, 4045, 4059, 4074, 4090,
+    4111,
+};
+#elif defined(TESSERAE_BOARD_SEEED_E1003)
+#define BATTERY_SOC_TABLE 1
+static const uint16_t s_soc_mv[101] = {
+    3204, 3263, 3308, 3345, 3376, 3402, 3424, 3444, 3462, 3477,
+    3492, 3505, 3517, 3528, 3539, 3550, 3560, 3570, 3579, 3588,
+    3597, 3606, 3614, 3623, 3631, 3640, 3648, 3656, 3665, 3673,
+    3682, 3691, 3700, 3709, 3718, 3727, 3736, 3745, 3754, 3764,
+    3772, 3781, 3790, 3798, 3806, 3814, 3821, 3829, 3836, 3843,
+    3849, 3856, 3862, 3868, 3874, 3880, 3885, 3890, 3895, 3900,
+    3905, 3910, 3914, 3919, 3923, 3928, 3932, 3937, 3941, 3945,
+    3949, 3954, 3958, 3962, 3966, 3971, 3975, 3980, 3984, 3989,
+    3994, 3999, 4004, 4010, 4015, 4021, 4027, 4033, 4039, 4045,
+    4051, 4057, 4063, 4069, 4075, 4081, 4087, 4093, 4098, 4104,
+    4110,
+};
+#elif defined(TESSERAE_BOARD_SEEED_E1004)
+#define BATTERY_SOC_TABLE 1
+static const uint16_t s_soc_mv[101] = {
+    3090, 3092, 3181, 3245, 3292, 3320, 3337, 3351, 3361, 3369,
+    3377, 3384, 3392, 3402, 3411, 3421, 3430, 3438, 3446, 3454,
+    3461, 3468, 3475, 3481, 3486, 3492, 3497, 3502, 3506, 3511,
+    3515, 3519, 3523, 3527, 3531, 3535, 3538, 3542, 3546, 3550,
+    3554, 3558, 3562, 3566, 3570, 3575, 3579, 3585, 3590, 3595,
+    3601, 3607, 3613, 3620, 3627, 3634, 3643, 3651, 3660, 3670,
+    3680, 3690, 3701, 3712, 3723, 3733, 3744, 3753, 3763, 3772,
+    3781, 3790, 3798, 3806, 3814, 3822, 3831, 3841, 3851, 3861,
+    3871, 3881, 3891, 3900, 3908, 3916, 3924, 3931, 3938, 3945,
+    3954, 3965, 3976, 3987, 3998, 4010, 4022, 4034, 4047, 4061,
+    4113,
+};
+#endif
+
+#ifdef BATTERY_SOC_TABLE
+/* Interpolate within the table; clamp outside it. */
+static int soc_from_table(int mv)
+{
+    if (mv <= s_soc_mv[0])   return 0;
+    if (mv >= s_soc_mv[100]) return 100;
+    int lo = 0, hi = 100;
+    while (hi - lo > 1) {            /* largest lo with s_soc_mv[lo] <= mv */
+        int mid = (lo + hi) / 2;
+        if (s_soc_mv[mid] <= mv) lo = mid; else hi = mid;
+    }
+    int span = s_soc_mv[hi] - s_soc_mv[lo];
+    if (span <= 0) return hi;
+    return lo + ((mv - s_soc_mv[lo]) * 2 + span) / (2 * span);   /* nearest */
+}
+#endif
+
 int battery_pct(int mv)
 {
     if (mv <= 0)    return 0;       /* unknown -> 0 is the safe report */
+#ifdef BATTERY_SOC_TABLE
+    return soc_from_table(mv);
+#endif
 #ifdef BOARD_BATTERY_NIMH_CELLS
     /* NiMH pack (paperlesspaper frames: 4 x AAA / AA). Per-cell curve: flat
      * around 1.2 V for most of the discharge, then a knee under 1.15 V; the
@@ -131,7 +214,33 @@ int battery_read_mv(void)
 #  define VBAT_SWITCH_OFF  0
 #endif
 
+/* The first read of a wake happens before the radio is up (the goodbye gate
+ * in main.c); later ones (status post, OTA gate, BLE) land under Wi-Fi TX
+ * bursts that sag a small cell through the divider and read low, and each
+ * costs a load-switch pulse plus an ADC unit init. Reuse the quiet reading
+ * for BATTERY_CACHE_MS, long enough for a normal wake, short enough that a
+ * long BLE session or always-on loop still sees fresh numbers. TRMNL samples
+ * once before Wi-Fi and reuses it for the same reason. */
+#ifndef BATTERY_CACHE_MS
+#define BATTERY_CACHE_MS  60000
+#endif
+static int     s_cache_mv;
+static int64_t s_cache_at_us = -1;
+
+static int battery_sample_mv(void);
+
 int battery_read_mv(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (s_cache_at_us >= 0 && s_cache_mv > 0 &&
+        now - s_cache_at_us < (int64_t)BATTERY_CACHE_MS * 1000)
+        return s_cache_mv;
+    int mv = battery_sample_mv();
+    if (mv > 0) { s_cache_mv = mv; s_cache_at_us = now; }
+    return mv;
+}
+
+static int battery_sample_mv(void)
 {
 #ifdef BOARD_VBAT_SWITCH_PIN
     /* Some boards gate the sense divider behind a load switch to avoid a

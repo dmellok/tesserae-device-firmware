@@ -1,4 +1,6 @@
 #include "ble_setup.h"
+#include "led.h"
+#include "panel/busy_sleep.h"
 
 #include "sdkconfig.h"
 
@@ -810,6 +812,8 @@ static void scrub_session(void)
 ble_setup_result_t ble_setup_run(ble_setup_mode_t mode, uint32_t timeout_s)
 {
     bool button_exit = false;
+    epd_light_sleep_set_ble(true);   /* no light sleep under a live BLE host */
+    led_blink(100, 1000);            /* slow blink: setup session open */
     s_mode = mode;
     s_result = BLE_SETUP_RESULT_TIMEOUT;
     s_stopping = false; s_notify = false; s_conn = BLE_HS_CONN_HANDLE_NONE;
@@ -858,6 +862,8 @@ ble_setup_result_t ble_setup_run(ble_setup_mode_t mode, uint32_t timeout_s)
         }
     }
     stop_ble();
+    epd_light_sleep_set_ble(false);
+    led_set(false);
     if (button_exit) s_result = BLE_SETUP_RESULT_CANCELLED;
     if (mode == BLE_SETUP_MODE_MAINTENANCE) wifi_sta_stop();
     scrub_session();

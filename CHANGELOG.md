@@ -6,6 +6,89 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Review of Seeed's reTerminal firmware hub (Seeed-Projects/OSHW-reTerminal-Series-E-D,
+2026-09-11; notes/seeed-oshw-review-2026-09-11.md) brought the items below
+across. Everything marked *bench* is compiled and wired but not yet measured
+on hardware; see notes/testing-plan-2026-09-11.md.
+
+### Added
+
+- Light sleep during panel refreshes (`src/panel/busy_sleep.c`): every driver's
+  BUSY wait now naps the SoC with a GPIO level wake on BUSY plus a timer
+  backstop instead of spinning at full clock for the 2-30 s paint, as the
+  official TRMNL build does on the same glass. Gated on the radios being down
+  (every Wi-Fi / BLE start and stop reports in) and skipped while a host is on
+  the native USB console; `-DEPD_NO_LIGHT_SLEEP` disables it. The paint log
+  line now carries the nap count. The IT8951 boards (E1003, M5Paper, EE03)
+  are excluded: their long wait polls a controller register over SPI and
+  their HRDY waits are per-row, too short to nap. Two things the bench
+  taught (E1002, 2026-09-11): the nap's timer backstop must exceed the S3's
+  sleep entry overhead or IDF rejects it (floor 200 ms; the BUSY wake ends it
+  early), and IDF's sleep GPIO workaround must be switched off for light
+  sleep or every pad floats mid-waveform (the panel aborted, BUSY read high,
+  a 29 s refresh "finished" in 11 s). With both fixed the E1002 splash takes
+  its normal 29 s with the SoC awake for 0.3 s of it. *bench: paint-phase
+  current still unmeasured.*
+- Per-model battery state-of-charge tables for the E1001/E1002, E1003 and
+  E1004 (Seeed's measured 101-point curves), replacing the generic two-segment
+  Li-Po line on those boards. A full reTerminal now reads 100 percent at its
+  real 4.11 V termination instead of never, and the middle of the curve stops
+  under-reporting by about half.
+- Board RTC support (`src/rtc_pcf8563.c`): the PCF8563 on every reTerminal is
+  read at boot to seed the system clock (when its voltage-low flag is clear
+  and the year is plausible) and written back whenever the server's Date
+  header moves the clock by more than 2 s; CLKOUT is switched off. Quiet
+  hours and wake alignment now have a clock before the first fetch.
+- Charger IC readout (`src/sy6974.c`, read-only): the status heartbeat carries
+  `vbus`, `charging` and, when raised, `battery_fault` from the SY6974 on
+  every reTerminal (E1001/E1002 reach it over a second I2C bus on GPIO39/40).
+  *bench: confirm the chip answers on each model.*
+- Green status LED (`src/led.c`): on through a cold boot until the first
+  paint, slow blink while the captive portal or a Bluetooth session is open,
+  a short fast blink before a no-network retry sleep, dark on timed wakes and
+  in deep sleep. E1001/E1002 GPIO6, E1003 GPIO16, E1004 GPIO48 (*bench: E1004
+  polarity is disputed between Seeed's own sources*).
+- E1001 fast and partial refresh in `mono_spi.c`, ported from bb_epaper (the
+  TRMNL build's driver): a FAST full-refresh mode selectable at runtime and a
+  `display_partial` path (previous frame to DTM1, new to DTM2, PTOU + DRF,
+  forced full paint after 8 partials). Both compiled for the OTP and the
+  register-LUT glass batches. The partial path, and with it the overlay
+  capability on the E1001, stays behind `-DEPD_MONO_PARTIAL` until both
+  batches pass on the bench; `seeed-reterminal-e1001-partialtest` is the
+  bring-up env. *bench.*
+- GT911 gesture mode across deep sleep behind `-DTOUCH_GESTURE_SLEEP` (E1003,
+  Sticky): the controller is put into its low-power gesture mode before sleep
+  and wakes the SoC on INT via ext0, instead of scanning at mA-class current
+  for the whole sleep. Off by default. *bench: sleep current and whether a
+  plain tap wakes.*
+- IT8951 image loads at 10 MHz on the E1003 (second SPI device for the
+  pixel-data burst only; commands and reads stay at 4 MHz). GT911 bus at
+  400 kHz on the E1003.
+- Core-dump partition (64 KB after ota_1) on every 16 MB OTA layout and
+  flash core dumps enabled through `sdkconfig.coredump.defaults`; the 4 MB
+  layouts are unchanged. Applies at the next USB flash, not over OTA.
+- Timed deep-sleep wakes skip the bootloader's image hash
+  (`CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP`); power-on, RESET and OTA
+  boots still validate and rollback is unaffected.
+- reTerminal Sticky: the battery self-latch from the TRMNL Sticky build
+  (GPIO45 data, GPIO46 clock) is driven at boot. *bench: whether a Sticky on
+  battery now stays up after the power button is released.*
+- microSD mounts log the card type, name and clock, and the retry ladder now
+  also steps the SPI clock down (configured -> 4 MHz -> 1 MHz) between
+  power-cycled attempts.
+
+### Changed
+
+- The battery voltage is sampled once before the radio comes up and reused
+  for the rest of the wake (60 s cache), so the status report no longer
+  reads the cell under a Wi-Fi TX burst.
+- E1004: the BUSY waits are bounded (PON 5 s, DRF 60 s, POF 5 s) and wait
+  for BUSY to assert before polling for idle, so a stuck controller still
+  reaches POF / DSLP / rail-off instead of hanging the wake.
+- Unused load-switch enables (the microphone rail on GPIO38; on the E1003
+  also the header rail on GPIO46) are driven low and held through deep sleep.
+  *bench: sleep current before/after.*
+
 ### Fixed
 
 - Shared-bus microSD boards (reTerminal E1001 / E1002 / E1003 / E1004) no

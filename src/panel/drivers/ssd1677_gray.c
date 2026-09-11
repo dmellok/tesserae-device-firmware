@@ -11,6 +11,7 @@
 #if defined(PANEL_DRIVER_SSD1677_GRAY)
 
 #include "drivers/ssd1677_gray.h"
+#include "../busy_sleep.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -157,8 +158,7 @@ static bool wait_idle(void)
     int waited = 0;
     bool warned = false;
     while (gpio_get_level(EPD_PIN_BUSY)) {      /* HIGH = busy */
-        vTaskDelay(pdMS_TO_TICKS(10));
-        waited += 10;
+        waited += epd_busy_sleep(EPD_PIN_BUSY, 0, 10);   /* light-sleep until BUSY low; real ms */
         if (!warned && waited >= 10000) {
             ESP_LOGW(TAG, "BUSY still high after 10 s; panel may be stuck");
             warned = true;

@@ -166,6 +166,15 @@
  * button pins (4/5/6) match the three defined just below. */
 #define BOARD_BUZZER_PIN           48
 
+/* Battery self-latch, per the TRMNL Sticky build (examples/official/
+ * TRMNL_E1004/src/bl.cpp in Seeed's OSHW hub, 2026-09-11): GPIO45 = hold
+ * (DATA), GPIO46 = lock (CLK); 45 high then a rising edge on 46 keeps the
+ * battery rail on after the power button is released. Both are S3 strapping
+ * pins, harmless to drive after boot. UNVERIFIED here: every Sticky pass so
+ * far ran on USB. See power_latch.h. */
+#define BOARD_POWER_LATCH_DATA_PIN 45
+#define BOARD_POWER_LATCH_CLK_PIN  46
+
 #define BOARD_BTN_REFRESH_PIN  4    /* AI / power */
 #define BOARD_BTN_LEFT_PIN     5    /* up   */
 #define BOARD_BTN_RIGHT_PIN    6    /* down */

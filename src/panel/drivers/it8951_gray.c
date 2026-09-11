@@ -22,6 +22,7 @@
 #if defined(PANEL_DRIVER_IT8951_GRAY)
 
 #include "drivers/it8951_gray.h"
+#include "../busy_sleep.h"
 
 #include <string.h>
 
@@ -100,8 +101,25 @@ static const char *TAG = "epd_it8951";
 #define EPD_VCOM_MV 0
 #endif
 
-static spi_device_handle_t s_spi;
+static spi_device_handle_t s_spi;        /* commands, register reads, args */
+static spi_device_handle_t s_spi_data;   /* LD_IMG pixel bursts only */
 static bool     s_port_inited = false;
+
+/* Pixel-data clock. Register/dev-info READS are marginal above a few MHz on
+ * this link (hence EPD_SPI_HZ at 4 MHz on the E1003), but the IT8951 accepts
+ * the write-only LD_IMG burst far faster: Seeed's reference runs the whole
+ * link at 10 MHz. A board header may define EPD_IT8951_DATA_HZ to raise only
+ * the burst clock; until it does, both devices run at EPD_SPI_HZ and nothing
+ * changes. */
+#ifndef EPD_IT8951_DATA_HZ
+#define EPD_IT8951_DATA_HZ EPD_SPI_HZ
+#endif
+
+static void log_data_clock(const char *what)
+{
+    ESP_LOGI(TAG, "%s: LD_IMG data at %d kHz (cmd/read at %d kHz)", what,
+             EPD_IT8951_DATA_HZ / 1000, EPD_SPI_HZ / 1000);
+}
 
 /* The controller's previous-image reference no longer earns a plain GC16.
  * A GC16 pass derives every transition from the image the controller holds,
@@ -140,6 +158,10 @@ static inline void cs(int level) { gpio_set_level(EPD_PIN_CS, level); }
 /* HRDY: wait while BUSY is LOW (controller busy). ~3 s cap. */
 static void wait_ready(void)
 {
+    /* Plain polling on purpose: HRDY waits are sub-millisecond and happen
+     * once per command and per image row, so a light-sleep entry (ms of
+     * overhead each) here would slow the load, not save power. The long
+     * refresh wait polls LUTAFSR over SPI and cannot nap either. */
     int n = 0;
     while (gpio_get_level(EPD_PIN_BUSY) == 0) {
         vTaskDelay(pdMS_TO_TICKS(1));
@@ -305,6 +327,13 @@ static esp_err_t it8951_port_init(void)
     }
     ESP_ERROR_CHECK(spi_bus_add_device(EPD_SPI_HOST, &dev, &s_spi));
 
+    /* Same bus, same mode, same manual-CS framing (CS is a GPIO driven by
+     * cs(); the preamble word and the rows all sit inside one cs(0)..cs(1)
+     * window whichever device clocks them). Only the clock differs. */
+    spi_device_interface_config_t data_dev = dev;
+    data_dev.clock_speed_hz = EPD_IT8951_DATA_HZ;
+    ESP_ERROR_CHECK(spi_bus_add_device(EPD_SPI_HOST, &data_dev, &s_spi_data));
+
     s_port_inited = true;
     return ESP_OK;
 }
@@ -453,7 +482,7 @@ static void stream_row(const uint8_t *row, uint8_t *scratch)
 #endif
     spi_transaction_t t = {0};
     t.length = iPitch * 8; t.tx_buffer = scratch;
-    spi_device_polling_transmit(s_spi, &t);
+    spi_device_polling_transmit(s_spi_data, &t);
 }
 
 /* Load a full-frame 4bpp buffer into controller DRAM and GC16-refresh it. */
@@ -466,6 +495,7 @@ static void write_and_refresh(const uint8_t *fb)
     write_cmd(SYS_RUN);            /* ensure powered */
     wait_display_done();
     load_img_area_start();
+    log_data_clock("full");
 
     cs(0);
     wait_ready(); word_tx(0x0000);   /* data preamble */
@@ -539,6 +569,7 @@ static void it8951_partial_wave(const uint8_t *fb, int x, int y, int w,
     write_cmd(SYS_RUN);
     wait_display_done();
     load_img_area_start_rect(cx, y, aw, h);
+    log_data_clock("partial");
 
     cs(0);
     wait_ready(); word_tx(0x0000);       /* data preamble */
@@ -556,7 +587,7 @@ static void it8951_partial_wave(const uint8_t *fb, int x, int y, int w,
 #endif
         spi_transaction_t t = {0};
         t.length = seg * 8; t.tx_buffer = scratch;
-        spi_device_polling_transmit(s_spi, &t);
+        spi_device_polling_transmit(s_spi_data, &t);
     }
     cs(1);
     write_cmd(LD_IMG_END);
@@ -645,12 +676,13 @@ static void fill_and_refresh(uint8_t color, int wave)
     write_cmd(SYS_RUN);
     wait_display_done();
     load_img_area_start();
+    log_data_clock("fill");
     cs(0);
     wait_ready(); word_tx(0x0000);
     wait_ready();
     spi_transaction_t t = {0};
     t.length = iPitch * 8; t.tx_buffer = row;
-    for (int y = 0; y < EPD_HEIGHT; y++) spi_device_polling_transmit(s_spi, &t);
+    for (int y = 0; y < EPD_HEIGHT; y++) spi_device_polling_transmit(s_spi_data, &t);
     cs(1);
     write_cmd(LD_IMG_END);
     uint16_t dargs[5] = { 0, 0, EPD_WIDTH, EPD_HEIGHT, (uint16_t)wave };
@@ -696,7 +728,7 @@ static void it8951_show_color_bars(void)
         int h = (g == 15) ? (EPD_HEIGHT - 15 * BAND_H) : BAND_H;
         spi_transaction_t t = {0};
         t.length = iPitch * 8; t.tx_buffer = row;
-        for (int y = 0; y < h; y++) spi_device_polling_transmit(s_spi, &t);
+        for (int y = 0; y < h; y++) spi_device_polling_transmit(s_spi_data, &t);
     }
     cs(1);
     write_cmd(LD_IMG_END);

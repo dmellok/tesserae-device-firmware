@@ -55,6 +55,9 @@
 #include "touch_queue.h"    /* RTC replay queue for unsent touches (guarded) */
 #include "touch_wakestub.h" /* RTC wake-stub early touch capture (guarded) */
 #include "battery.h"
+#include "led.h"          /* green status LED (no-op without one) */
+#include "rtc_pcf8563.h"  /* board RTC seed at boot (no-op without one) */
+#include "panel/busy_sleep.h" /* light sleep gate while radios are down */
 #include "ble_setup.h"
 #include "epd_driver.h"
 #include "image_decoder.h"
@@ -556,6 +559,26 @@ static void always_on_loop(void)
     wifi_sta_stop();
 }
 
+/* Load-switch enables the firmware never uses (reTerminal mic rail on
+ * GPIO38, the E1003 header rail on GPIO46) sit at their reset state through
+ * deep sleep. Drive them low and hold them so a floating enable cannot leak
+ * a rail on for the whole sleep; Seeed's ~14 uA figure was measured without
+ * doing this, so the gain is a bench question, the safety is not. */
+static void sleep_park_rails(void)
+{
+#ifdef BOARD_SLEEP_DRIVE_LOW_MASK
+    uint64_t mask = BOARD_SLEEP_DRIVE_LOW_MASK;
+    for (int pin = 0; pin < 64; pin++) {
+        if (!(mask & (1ULL << pin))) continue;
+        gpio_hold_dis((gpio_num_t)pin);
+        gpio_set_direction((gpio_num_t)pin, GPIO_MODE_OUTPUT);
+        gpio_set_level((gpio_num_t)pin, 0);
+        gpio_hold_en((gpio_num_t)pin);
+    }
+    gpio_deep_sleep_hold_en();
+#endif
+}
+
 static void sleep_forever_or_until_timer(void)
 {
     buzzer_idle();   /* never leave the piezo driven across a sleep (#258) */
@@ -568,6 +591,8 @@ static void sleep_forever_or_until_timer(void)
     /* Card off before every deep sleep (and before a dev-loop restart);
      * no-op when nothing is mounted. */
     deck_pre_sleep();
+    led_prepare_sleep();
+    sleep_park_rails();
 
     /* Decide between deep sleep (battery) and short-delay restart loop (dev):
      *   DEV_DISABLE_SLEEP defined -> always loop (dev override)
@@ -635,7 +660,7 @@ static void sleep_forever_or_until_timer(void)
     uint64_t touch_wake_mask = 0;
     if (rest_config_get()->touch_enabled) {
         touch_prepare_sleep();
-        touch_wake_mask = TOUCH_INT_WAKE_MASK;
+        touch_wake_mask = touch_sleep_wake_mask();   /* 0 when INT is armed as ext0 */
     }
     buttons_arm_ext1_with(touch_wake_mask);
 #else
@@ -682,9 +707,11 @@ static void run_provisioning_then_reboot(const char *note)
          * splash. The user can use 192.168.4.1 immediately, or hold the board's
          * maintenance control to tear AP down and switch to Companion BLE. */
         provisioning_begin();
+        led_blink(100, 1000);             /* slow blink: portal open */
         if (portal_note) splash_show_portal_note(portal_note);
         else             splash_show_portal();
         provisioning_result_t result = provisioning_serve();
+        led_set(false);
         if (result == PROVISIONING_RESULT_SAVED) {
             ESP_LOGI(TAG, "creds saved; rebooting to use them");
             esp_restart();
@@ -720,6 +747,8 @@ static void run_provisioning_then_reboot(const char *note)
         /* not reached */
     }
     ESP_LOGW(TAG, "captive portal expired idle; deep sleep until RESET button");
+    led_prepare_sleep();
+    sleep_park_rails();
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     /* No wake source at all, so on a latched board drop the rail: a real
      * power-off, not an indefinite trickle. No-op elsewhere. */
@@ -1301,6 +1330,7 @@ void app_main(void)
      * held, so every line below would be racing the user's thumb. No-op
      * elsewhere. See power_latch.h. */
     power_latch_hold();
+    led_init();   /* on: "booting" (off again below unless this is a cold boot) */
 
     /* Park the SD card's chip-select before ANY code touches the shared SPI
      * bus (selftests included) -- a floating CS with a card fitted disturbs
@@ -1328,6 +1358,18 @@ void app_main(void)
     bool first_boot = (reset_reason != ESP_RST_DEEPSLEEP);
     ESP_LOGI(TAG, "boot; reset_reason=%d wakeup_cause=%d settings_mode=%d first_boot=%d",
              reset_reason, esp_sleep_get_wakeup_cause(), settings_mode, first_boot);
+    /* The LED stays on through a cold boot (someone is looking) and goes off
+     * as soon as a frame paints; a timed wake in the night keeps it dark. */
+    if (!first_boot) led_set(false);
+    /* Board RTC (reTerminals: PCF8563 on a coin cell): a clock before the
+     * first fetch, so quiet hours / wake alignment work after a power loss
+     * or a Wi-Fi outage. The HTTP Date header still disciplines it later. */
+    if (rtc_pcf8563_seed_clock()) {
+        time_t now = time(NULL);
+        struct tm tm; gmtime_r(&now, &tm);
+        ESP_LOGI(TAG, "clock seeded from the board RTC: %04d-%02d-%02d %02d:%02d:%02dZ",
+                 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    }
 
     /* Front-button wake (see buttons.h): a press wakes us early via ext1. We tell
      * the REST client which button so the frame/status requests carry it, and we
@@ -2130,8 +2172,9 @@ void app_main(void)
      * wake is an ext1 wake whose status latch shows the TP_INT bit and no button
      * bit (so buttons_which_woke() above returned BTN_NONE for it). */
     bool woke_by_touch = rest_config_get()->touch_enabled &&
-                         esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1 &&
-                         (esp_sleep_get_ext1_wakeup_status() & TOUCH_INT_WAKE_MASK);
+                         (touch_woke_by_gesture() ||   /* ext0, TOUCH_GESTURE_SLEEP builds */
+                          (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1 &&
+                           (esp_sleep_get_ext1_wakeup_status() & TOUCH_INT_WAKE_MASK)));
     /* Kept in function scope so the WiFi-fail path can queue an unsent stroke. */
     touch_stroke_t touch_st = { .valid = false };
     uint64_t       touch_ev = 0;
@@ -2283,6 +2326,8 @@ void app_main(void)
                      (unsigned long)s_wifi_fail_count, WIFI_FAIL_AP_THRESHOLD,
                      WIFI_RETRY_SLEEP_S);
             wifi_sta_stop();
+            led_blink(80, 250);              /* fast blink: no network */
+            vTaskDelay(pdMS_TO_TICKS(1500));
             s_sleep_override_s = WIFI_RETRY_SLEEP_S;
             sleep_forever_or_until_timer();
             return;
@@ -2829,11 +2874,19 @@ void app_main(void)
 #endif
     if (frame != NULL) {
         ESP_LOGI(TAG, "painting downloaded frame (~30 s)...");
+        led_set(false);
         ESP_ERROR_CHECK(epd_port_init());
         epd_init();
         touch3_compose(frame);   /* draw v3 controls into their blank rects */
-        epd_display(frame);
-        epd_sleep();
+        {
+            int64_t t0 = esp_timer_get_time();
+            uint32_t ls0 = epd_light_sleep_count();
+            epd_display(frame);
+            epd_sleep();
+            ESP_LOGI(TAG, "paint done in %lld ms (%lu light-sleep naps)",
+                     (esp_timer_get_time() - t0) / 1000,
+                     (unsigned long)(epd_light_sleep_count() - ls0));
+        }
         if (new_etag[0]) { rest_config_set_frame_etag(new_etag); cfg_dirty = true; }
         rest_config_set_ui_state(UI_CONNECTED);   /* a real frame is up now */
         overlay_after_paint(frame, new_etag);      /* keep base copy + SD patches */

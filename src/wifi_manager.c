@@ -1,4 +1,5 @@
 #include "wifi_manager.h"
+#include "panel/busy_sleep.h"
 #include "app_config.h"
 
 #include <stdio.h>
@@ -242,9 +243,11 @@ esp_err_t wifi_scan_networks(wifi_network_t *out, size_t cap, size_t *count)
 
     s_autoconnect = false;
     esp_wifi_stop();
+    epd_light_sleep_set_wifi(false);
     esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
     if (err != ESP_OK) return err;
     err = esp_wifi_start();
+    epd_light_sleep_set_wifi(true);
     if (err != ESP_OK) return err;
 
     /* This is the scan Companion drives over BLE, so the controller is up and
@@ -262,6 +265,7 @@ esp_err_t wifi_scan_networks(wifi_network_t *out, size_t cap, size_t *count)
     }
     if (err != ESP_OK) {
         esp_wifi_stop();
+        epd_light_sleep_set_wifi(false);
         return err;
     }
 
@@ -288,6 +292,7 @@ esp_err_t wifi_scan_networks(wifi_network_t *out, size_t cap, size_t *count)
         }
     }
     esp_wifi_stop();
+    epd_light_sleep_set_wifi(false);
     if (count) *count = used;
     return err;
 }
@@ -389,6 +394,7 @@ static esp_err_t connect_once(const char *ssid, const char *pass,
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
+    epd_light_sleep_set_wifi(true);
 
     ESP_LOGI(TAG, "connecting to '%s'%s", ssid, bssid ? " (fast)" : "");
     int64_t deadline = esp_timer_get_time() +
@@ -458,4 +464,5 @@ void wifi_sta_stop(void)
     s_autoconnect = false;   /* stop the disconnect handler from retrying */
     esp_wifi_disconnect();
     esp_wifi_stop();
+    epd_light_sleep_set_wifi(false);
 }

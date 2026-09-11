@@ -29,6 +29,7 @@
 #if defined(PANEL_DRIVER_SPECTRA6_SPI_SINGLE)
 
 #include "drivers/spectra6_spi_single.h"
+#include "../busy_sleep.h"
 
 #include <string.h>
 
@@ -51,10 +52,10 @@ static bool s_port_inited = false;
 static bool wait_busy(const char *label)
 {
     vTaskDelay(pdMS_TO_TICKS(10));
-    uint32_t n = 0;
+    uint32_t waited_ms = 0;   /* real time: naps can outlast the nominal poll */
     while (gpio_get_level(EPD_PIN_BUSY) == 0) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-        if (++n > 6000) {
+        waited_ms += epd_busy_sleep(EPD_PIN_BUSY, 1, 10);   /* light-sleep until BUSY high */
+        if (waited_ms > 60000) {
             ESP_LOGE(TAG, "%s BUSY timeout", label);
             return false;
         }

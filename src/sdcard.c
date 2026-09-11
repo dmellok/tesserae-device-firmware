@@ -238,9 +238,16 @@ bool sdcard_mount(void)
         err = esp_vfs_fat_sdspi_mount(SDCARD_MOUNT_POINT, &host, &slot, &mnt, &s_card);
         if (err == ESP_OK || attempt >= SD_MOUNT_ATTEMPTS) break;
         /* A failed attempt leaves CS floating (IDF deinit_slot); the next
-         * sdspi init re-owns it, so only the rail needs cycling here. */
-        ESP_LOGW(TAG, "mount attempt %d: %s; power-cycling the slot",
-                 attempt, esp_err_to_name(err));
+         * sdspi init re-owns it, so only the rail needs cycling here. Step
+         * the data clock down as well: Seeed's own SD code never exceeds
+         * 4 MHz on this shared bus and ladders 4 -> 2 -> 1 MHz on failure,
+         * and the E1004 showed a card that inits fine at 20 MHz and then
+         * times out on its first bulk read. */
+        int next_khz = host.max_freq_khz > 4000 ? 4000
+                     : host.max_freq_khz > 1000 ? 1000 : host.max_freq_khz;
+        ESP_LOGW(TAG, "mount attempt %d at %d kHz: %s; power-cycling the slot, next %d kHz",
+                 attempt, host.max_freq_khz, esp_err_to_name(err), next_khz);
+        host.max_freq_khz = next_khz;
         slot_power_cycle();
     }
 #endif
@@ -251,9 +258,12 @@ bool sdcard_mount(void)
         s_card = NULL;
         goto fail_power;
     }
-    ESP_LOGI(TAG, "mounted %s (%llu MB, %llu MB free)", SDCARD_MOUNT_POINT,
+    ESP_LOGI(TAG, "mounted %s (%llu MB, %llu MB free) %s %.*s @ %d kHz",
+             SDCARD_MOUNT_POINT,
              ((uint64_t)s_card->csd.capacity * s_card->csd.sector_size) >> 20,
-             sdcard_free_bytes() >> 20);
+             sdcard_free_bytes() >> 20,
+             s_card->is_mmc ? "MMC" : (s_card->ocr & (1u << 30)) ? "SDHC/SDXC" : "SDSC",
+             (int)sizeof s_card->cid.name, s_card->cid.name, s_card->max_freq_khz);
     return true;
 
 fail_power:

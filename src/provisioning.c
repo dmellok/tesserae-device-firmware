@@ -1,4 +1,5 @@
 #include "provisioning.h"
+#include "panel/busy_sleep.h"
 #include "app_config.h"
 #include "ble_setup.h"   /* -> TESSERAE_BLE_SETUP_AVAILABLE */
 #include "buttons.h"
@@ -765,6 +766,7 @@ static void do_wifi_scan(void)
     esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
     if (err != ESP_OK) { ESP_LOGW(TAG, "scan set_mode: %s", esp_err_to_name(err)); return; }
     err = esp_wifi_start();
+    epd_light_sleep_set_wifi(true);
     if (err != ESP_OK) { ESP_LOGW(TAG, "scan wifi_start: %s", esp_err_to_name(err)); return; }
 
     /* esp_wifi_start() is asynchronous: the STA is not scannable until the
@@ -790,6 +792,7 @@ static void do_wifi_scan(void)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "scan_start: %s", esp_err_to_name(err));
         esp_wifi_stop();
+        epd_light_sleep_set_wifi(false);
         return;
     }
 
@@ -816,6 +819,7 @@ static void do_wifi_scan(void)
     ESP_LOGI(TAG, "scan: %d unique nearby networks", s_scan_count);
 
     esp_wifi_stop();
+    epd_light_sleep_set_wifi(false);
 }
 
 static void start_ap(void)
@@ -837,6 +841,7 @@ static void start_ap(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
+    epd_light_sleep_set_wifi(true);
 
     /* Log the passphrase too. It is a fixed compile-time value that is already
      * public, so this leaks nothing, and anyone with a serial console is
@@ -998,6 +1003,7 @@ provisioning_result_t provisioning_serve(void)
     if (s_dns_sock >= 0) { close(s_dns_sock); s_dns_sock = -1; }
     if (s_httpd)    { httpd_stop(s_httpd);     s_httpd = NULL; }
     esp_wifi_stop();
+    epd_light_sleep_set_wifi(false);
 
     provisioning_result_t result = PROVISIONING_RESULT_TIMEOUT;
     if (bits & BIT_CREDS_SAVED) result = PROVISIONING_RESULT_SAVED;

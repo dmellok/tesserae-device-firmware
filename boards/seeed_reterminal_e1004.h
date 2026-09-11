@@ -88,6 +88,37 @@
 #define BOARD_SHT4X_I2C_HZ         100000
 #define BOARD_SHT4X_I2C_ADDR       0x44
 
+/* PCF8563 real-time clock with a CR1220 backup, on the sensor bus. Address and
+ * register map per Seeed's examples/base/RTC_PCF8563/RTC_PCF8563.ino, which
+ * names SDA 19 / SCL 20 for every E1001-E1004. Holds UTC (rtc_pcf8563.h). */
+#define BOARD_HAS_PCF8563          1
+#define BOARD_PCF8563_I2C_PORT     0
+#define BOARD_PCF8563_I2C_SDA      19
+#define BOARD_PCF8563_I2C_SCL      20
+#define BOARD_PCF8563_I2C_HZ       400000
+#define BOARD_PCF8563_I2C_ADDR     0x51
+
+/* SY6974 charger, status read only (sy6974.h never writes it). Shares the
+ * sensor bus here, unlike the E1001/E1002: SenseCraft
+ * src/boards/reterminal_e1004/config.h maps PMIC_I2C_SDA/SCL to ESP32_SDA/SCL
+ * (19/20). */
+#define BOARD_HAS_SY6974           1
+#define BOARD_SY6974_I2C_PORT      0
+#define BOARD_SY6974_I2C_SDA       19
+#define BOARD_SY6974_I2C_SCL       20
+#define BOARD_SY6974_I2C_HZ        400000
+#define BOARD_SY6974_I2C_ADDR      0x6B
+
+/* Green status LED on GPIO48. Polarity is DISPUTED in Seeed's own sources:
+ * examples/base/LED_Control/LED_Control.ino drives it LOW = on ("inverted
+ * logic"), while SenseCraft src/boards/reterminal_e1004/reterminal_e1004.cpp
+ * constructs Led(GREENLED_PIN, HIGH). Active-low is taken here to match the
+ * Arduino example; if the LED is off during boot on a real E1004, flip
+ * BOARD_LED_ACTIVE_LOW to 0. BENCH MUST CONFIRM. GPIO48 is free on this board
+ * (it is TP_RST on the E1003 only). */
+#define BOARD_LED_PIN              48
+#define BOARD_LED_ACTIVE_LOW       1
+
 /* Front buttons -- VERIFIED on E1004 hardware by button icon (serial log,
  * 2026-07-03): the keys are plain active-low GPIOs (ext1 wakes fire), NOT a
  * capacitive/touch controller as feared. The pin->key wiring DIFFERS from the

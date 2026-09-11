@@ -13,6 +13,12 @@
  * bit 1 = white. Every wake re-runs init() (full reset + init) before
  * display(), which is the "re-init before refresh" behaviour these
  * UC8179-class panels need, so no separate workaround is required.
+ *
+ * Beyond that full refresh the 1bpp build also carries bb_epaper's FAST
+ * (no-flash) tables, selected at runtime with mono_spi_set_refresh_mode(), and
+ * -- behind EPD_MONO_PARTIAL -- its PARTIAL path (old frame to DTM1, new to
+ * DTM2, PTOU + DRF under register LUTs). Both are off unless asked for, and
+ * the full-refresh bytes are untouched. See "1bpp refresh modes" below.
  */
 #include "app_config.h"          /* board.h -> PANEL_DRIVER_* selection */
 
@@ -20,15 +26,20 @@
 
 #include "drivers/mono_spi.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#if defined(EPD_GRAY4)
+#if !defined(EPD_BWR)
 /* Bit-banging SCLK/MOSI for the OTP probe means detaching them from the SPI
- * peripheral and putting them back afterwards, which is GPIO-matrix work. */
+ * peripheral and putting them back afterwards, which is GPIO-matrix work.
+ * The probe is compiled for every E1001-glass build (4-gray AND 1bpp: the
+ * fast/partial tables need the same answer); only the BWR panel, which is
+ * different glass with no such OTP record, leaves it out. */
 #include "esp_rom_gpio.h"
 #include "esp_rom_sys.h"
 #include "soc/gpio_sig_map.h"
@@ -39,6 +50,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "panel/busy_sleep.h"
+
 static const char *TAG = "epd_mono";
 
 /* UC8179 opcodes */
@@ -47,11 +60,22 @@ static const char *TAG = "epd_mono";
 #define POF   0x02
 #define PON   0x04
 #define DSLP  0x07
+#define DTM1  0x10   /* data start transmission 1 (the "old" plane) */
 #define DTM2  0x13   /* data start transmission 2 (the B/W image) */
 #define DRF   0x12   /* display refresh */
 #define CDI   0x50
 #define TCON  0x60
 #define TRES  0x61
+#define BTST  0x06   /* booster soft start */
+#define PTOU  0x92   /* partial out: the next DRF covers the whole panel */
+#define CCSET 0xe0   /* cascade setting; 0x02 = TSFIX, use the TSSET value */
+#define TSSET 0xe5   /* temperature-sensor value, selects an OTP waveform */
+#define LUTC  0x20   /* register LUTs: VCOM, WW, BW (KW), WB (WK), BB (KK), border */
+#define LUTWW 0x21
+#define LUTBW 0x22
+#define LUTWB 0x23
+#define LUTBB 0x24
+#define LUTBD 0x25
 
 static spi_device_handle_t s_spi;
 static bool s_port_inited = false;
@@ -132,8 +156,14 @@ static bool wait_idle(void)
     bool warned = false;
     while (high < BUSY_IDLE_STABLE_SAMPLES) {
         high = (gpio_get_level(EPD_PIN_BUSY) == 0) ? 0 : high + 1;
-        vTaskDelay(pdMS_TO_TICKS(10));
-        waited += 10;
+        /* While the panel is busy, light-sleep the SoC until BUSY reads high
+         * (ready_level 1: this pin is active-LOW) or 10 ms pass. Once it has
+         * read high the remaining stable samples keep their 10 ms spacing:
+         * epd_busy_sleep() returns at once when the pin is already at the
+         * ready level, which would collapse the glitch filter above into
+         * three back-to-back reads. */
+        if (high) { vTaskDelay(pdMS_TO_TICKS(10)); waited += 10; }
+        else      waited += epd_busy_sleep(EPD_PIN_BUSY, 1, 10);   /* real ms */
         if (!warned && waited >= 10000) {
             ESP_LOGW(TAG, "BUSY still low after 10 s; panel may be slow or stuck");
             warned = true;
@@ -161,9 +191,12 @@ static bool wait_idle(void)
  * the event instead of assuming a bound on it. */
 static bool wait_busy_asserted(void)
 {
-    for (int waited = 0; waited < BUSY_ASSERT_TIMEOUT_MS; waited += 2) {
+    uint32_t waited = 0;
+    while (waited < BUSY_ASSERT_TIMEOUT_MS) {
         if (gpio_get_level(EPD_PIN_BUSY) == 0) return true;
-        vTaskDelay(pdMS_TO_TICKS(2));
+        /* Here the event we wait for is BUSY going LOW, so the wake level is
+         * 0 -- the opposite of wait_idle(). */
+        waited += epd_busy_sleep(EPD_PIN_BUSY, 0, 2);
     }
     return false;
 }
@@ -175,9 +208,14 @@ static void hw_reset(void)
     gpio_set_level(EPD_PIN_RST, 1); vTaskDelay(pdMS_TO_TICKS(20));
 }
 
-#ifdef EPD_GRAY4
+#ifndef EPD_BWR
 /* ------------------------------------------------------------------ */
 /* Which 4-gray waveform this glass wants -- asked of the panel itself.
+ *
+ * (The 1bpp build compiles this too, since bb_epaper's fast and partial
+ * tables differ between the two glass batches in exactly the same way. There
+ * the probe runs LAZILY, the first time a non-FULL refresh is asked for, so a
+ * device that never leaves FULL never runs it -- see mono_glass_probe_once.)
  *
  * Two batches of E1001 glass are in the field. Newer panels carry a BUILT-IN
  * OTP 4-gray waveform, selected with PSR 0x1F plus a fixed temperature reading;
@@ -224,9 +262,20 @@ static void hw_reset(void)
  * Everything else defaults to 1, the pre-probe shipped behaviour, so a probe
  * that cannot run is "no new information" rather than "new behaviour". Note
  * that both directions are the opposite of Seeed, who always fall back to
- * register LUTs; ours follows the field evidence per target instead. */
+ * register LUTs; ours follows the field evidence per target instead.
+ *
+ * The 1bpp build is the exception and defaults to 0: there the answer only
+ * chooses between bb_epaper's fast/partial tables, and the register-LUT ones
+ * drive either batch (TRMNL's default temperature profile uses them on every
+ * OG panel), whereas the OTP tables select a waveform legacy glass does not
+ * have. A probe that cannot answer should land on the set that works
+ * everywhere. */
 #ifndef GRAY4_WAVEFORM_FALLBACK
+#ifdef EPD_GRAY4
 #define GRAY4_WAVEFORM_FALLBACK 1
+#else
+#define GRAY4_WAVEFORM_FALLBACK 0
+#endif
 #endif
 
 /* What the panel said, seeded with the fallback above. */
@@ -499,7 +548,7 @@ static void gray_probe_waveform(void)
              s_gray_use_otp ? "built-in OTP waveform" : "register LUTs");
 #endif
 }
-#endif /* EPD_GRAY4 */
+#endif /* !EPD_BWR */
 
 /* ---------- driver entry points ---------- */
 
@@ -581,6 +630,294 @@ static const uint8_t TRES_V[] = {0x03, 0x20, 0x01, 0xe0};   /* 0x0320=800 x 0x01
 static const uint8_t DSPI_V[] = {0x00};                     /* cmd 0x15: dual-SPI off */
 static const uint8_t CDI_V[]  = {0x21, 0x07};
 static const uint8_t TCON_V[] = {0x22};
+
+/* ------------------------------------------------------------------ */
+/* 1bpp refresh modes: FULL, FAST and (behind EPD_MONO_PARTIAL) PARTIAL.
+ *
+ * All three are bb_epaper's tables for this panel, byte for byte, with their
+ * source lines noted so they can be diffed against the library later:
+ *
+ *   FULL     epd75_init_sequence_full      (bb_ep.inl 3532-3541) -- the
+ *            shipped sequence above; unchanged.
+ *   FAST     epd75_init_fast_gen2          (826-835)  on glass with the OTP
+ *            tables (the batch TRMNL calls EP75_800x480_GEN2, temperature
+ *            profile "a"), or
+ *            epd75_init_sequence_fast      (763-824)  register LUTs, legacy.
+ *   PARTIAL  epd75_init_partial_gen2       (837-899)  OTP-batch glass, or
+ *            epd75_init_sequence_partial   (702-761)  register LUTs, legacy.
+ *
+ * Which batch is fitted comes from the same OTP probe the 4-gray build runs
+ * (gray_probe_waveform, cached in NVS), taken lazily on first use here.
+ *
+ * bb_epaper re-sends the mode's init table before EVERY refresh (bbepRefresh,
+ * 4365ff), and the UC8179 needs PON again after each POF anyway, so the driver
+ * tracks what the controller was last set up for and re-runs the matching init
+ * (after a reset, as bb_epaper's partial table does with EPD_RESET) whenever
+ * a paint asks for something else or arrives after a power-off. In the normal
+ * wake -- init(), one display(), sleep() -- that check is a no-op and the wire
+ * traffic is exactly what it was. */
+#if !defined(EPD_GRAY4) && !defined(EPD_BWR)
+#define MONO_1BPP 1
+#else
+#define MONO_1BPP 0
+#endif
+
+static int s_refresh_mode = MONO_SPI_REFRESH_FULL;
+
+void mono_spi_set_refresh_mode(int mode)
+{
+#if MONO_1BPP
+    if (mode != MONO_SPI_REFRESH_FULL && mode != MONO_SPI_REFRESH_FAST) {
+        ESP_LOGW(TAG, "refresh mode %d unknown; keeping %s", mode,
+                 s_refresh_mode == MONO_SPI_REFRESH_FAST ? "FAST" : "FULL");
+        return;
+    }
+    if (mode != s_refresh_mode)
+        ESP_LOGI(TAG, "refresh mode -> %s",
+                 mode == MONO_SPI_REFRESH_FAST ? "FAST (no flash)" : "FULL");
+    s_refresh_mode = mode;
+#else
+    /* The 4-gray and BWR waveforms are single-mode; there is no fast table. */
+    if (mode != MONO_SPI_REFRESH_FULL)
+        ESP_LOGW(TAG, "refresh mode %d ignored: only 1bpp builds have a fast "
+                      "waveform", mode);
+#endif
+}
+
+int mono_spi_get_refresh_mode(void)
+{
+    return s_refresh_mode;
+}
+
+#if MONO_1BPP
+typedef enum {
+    PANEL_UNINIT = 0,   /* reset / asleep: nothing configured */
+    PANEL_FULL,         /* epd75_init_sequence_full */
+    PANEL_FAST,         /* fast tables (OTP or register LUT) */
+    PANEL_PARTIAL,      /* partial tables (register LUT, PSR 0x3F) */
+} panel_mode_t;
+
+static panel_mode_t s_panel_mode    = PANEL_UNINIT;  /* what the last init set up */
+static bool         s_panel_powered = false;         /* PON sent, no POF since */
+
+static const char *panel_mode_name(panel_mode_t m)
+{
+    switch (m) {
+    case PANEL_FULL:    return "FULL";
+    case PANEL_FAST:    return "FAST";
+    case PANEL_PARTIAL: return "PARTIAL";
+    default:            return "none";
+    }
+}
+
+/* The glass probe, once per boot and only when a non-FULL mode is first used.
+ * The 4-gray build runs it eagerly in mono_port_init() instead; here the
+ * default path never touches it, so an E1001 that stays on FULL sees no new
+ * boot-time behaviour (no bit-banged read, no NVS write). */
+static void mono_glass_probe_once(void)
+{
+    static bool done = false;
+    if (done) return;
+    done = true;
+    gray_probe_waveform();
+}
+
+/* Send one register LUT: `head_len` bytes of populated phase groups, zero-
+ * padded to `total` (42 for the UC8179's 7 groups of 6; bb_epaper's GEN2
+ * partial table sends 44 for VCOM and is copied as-is). Every bb_epaper mono
+ * LUT for this panel is one or two populated groups followed by zeros, which
+ * is why the tables below are written as heads. */
+static void send_lut(uint8_t cmd, const uint8_t *head, size_t head_len, size_t total)
+{
+    uint8_t buf[44];
+    if (total > sizeof buf) total = sizeof buf;
+    if (head_len > total) head_len = total;
+    memset(buf, 0, sizeof buf);
+    memcpy(buf, head, head_len);
+    cmd_data(cmd, buf, total);
+}
+
+/* Shared parameter bytes for the register-LUT modes. */
+static const uint8_t PSR_REG_V[]     = {0x3f};        /* KW, LUTs from registers */
+static const uint8_t CDI_LEGACY_FP[] = {0x29, 0x07};  /* legacy fast + partial */
+static const uint8_t CDI_GEN2_PART[] = {0xa9, 0x07};  /* GEN2 partial */
+static const uint8_t BTST_GEN2[]     = {0x27, 0x27, 0x18, 0x17};
+static const uint8_t CCSET_TSFIX[]   = {0x02};
+static const uint8_t TSSET_FAST[]    = {0x5a};        /* the OTP fast waveform */
+
+/* epd75_init_sequence_fast LUT heads (bb_ep.inl 772-823): two populated
+ * groups each, 34+1 / 34+1 frames then 34+1 / 0. */
+static const uint8_t LUT_FAST_VCOM[12] = {0x00, 34, 1, 34, 1, 0x01,  0x00, 34, 1, 0, 0, 0x01};
+static const uint8_t LUT_FAST_WW[12]   = {0x04, 34, 1, 34, 1, 0x01,  0x80, 34, 1, 0, 0, 0x01};
+static const uint8_t LUT_FAST_BW[12]   = {0x04, 34, 1, 34, 1, 0x01,  0x80, 34, 1, 0, 0, 0x01};
+static const uint8_t LUT_FAST_WB[12]   = {0x84, 34, 1, 34, 1, 0x01,  0x00, 34, 1, 0, 0, 0x01};
+static const uint8_t LUT_FAST_BB[12]   = {0x84, 34, 1, 34, 1, 0x01,  0x00, 34, 1, 0, 0, 0x01};
+static const uint8_t LUT_FAST_BD[12]   = {0x00, 34, 1, 34, 1, 0x01,  0x00, 34, 1, 0, 0, 0x01};
+
+/* epd75_init_sequence_partial LUT heads (702-760): one populated group,
+ * 30+1 / 30+1 frames. WW and BB are all zero -- a true differential update,
+ * only pixels whose old and new bits differ are driven. */
+static const uint8_t LUT_PART_VCOM[6] = {0x00, 30, 1, 30, 1, 0x01};
+static const uint8_t LUT_PART_WW[6]   = {0x00, 30, 1, 30, 1, 0x01};
+static const uint8_t LUT_PART_BW[6]   = {0x80, 30, 1, 30, 1, 0x01};
+static const uint8_t LUT_PART_WB[6]   = {0x04, 30, 1, 30, 1, 0x01};
+static const uint8_t LUT_PART_BB[6]   = {0x00, 30, 1, 30, 1, 0x01};
+static const uint8_t LUT_PART_BD[6]   = {0x00, 30, 1, 30, 1, 0x01};
+
+/* epd75_init_partial_gen2 LUT heads (851-898): one group of 30+1 frames.
+ * WW == BW and WB == BB, so every pixel is driven toward its new value
+ * regardless of the old plane (no inversion, hence no flash). VCOM is sent as
+ * 44 bytes in the library's table; kept. */
+static const uint8_t LUT_G2P_VCOM[6] = {0x00, 30, 1, 0, 0, 0x01};
+static const uint8_t LUT_G2P_WW[6]   = {0x80, 30, 1, 0, 0, 0x01};
+static const uint8_t LUT_G2P_BW[6]   = {0x80, 30, 1, 0, 0, 0x01};
+static const uint8_t LUT_G2P_WB[6]   = {0x40, 30, 1, 0, 0, 0x01};
+static const uint8_t LUT_G2P_BB[6]   = {0x40, 30, 1, 0, 0, 0x01};
+static const uint8_t LUT_G2P_BD[6]   = {0x00, 30, 1, 0, 0, 0x01};
+
+/* FULL: the shipped sequence, moved here verbatim from mono_init(). */
+static void mono_init_full(void)
+{
+    cmd_data(PWR, PWR_V, sizeof PWR_V);
+    cmd_data(PON, NULL, 0);            /* power on */
+    wait_idle();
+    cmd_data(PSR,  PSR_V,  sizeof PSR_V);
+    cmd_data(TRES, TRES_V, sizeof TRES_V);
+    cmd_data(0x15, DSPI_V, sizeof DSPI_V);
+    cmd_data(CDI,  CDI_V,  sizeof CDI_V);
+    cmd_data(TCON, TCON_V, sizeof TCON_V);
+
+    ESP_LOGI(TAG, "init complete");
+}
+
+/* FAST on OTP-batch glass: epd75_init_fast_gen2 (826-835) in order. No PWR,
+ * no LUTs: PSR stays 0x1F and TSSET 0x5A picks the built-in fast waveform,
+ * the same TSFIX trick the 4-gray OTP init uses with 0x5F. TRES + dual-SPI-
+ * off are appended after the library's bytes, as the field-verified 4-gray
+ * OTP init does; both are the values the full init sends and the panel's
+ * native geometry, so they change nothing bb_epaper relies on the OTP
+ * defaults for. */
+static void mono_init_fast_otp(void)
+{
+    cmd_data(PSR,   PSR_V,       sizeof PSR_V);
+    cmd_data(CDI,   CDI_V,       sizeof CDI_V);
+    cmd_data(PON,   NULL, 0);
+    wait_idle();
+    cmd_data(BTST,  BTST_GEN2,   sizeof BTST_GEN2);
+    cmd_data(CCSET, CCSET_TSFIX, sizeof CCSET_TSFIX);
+    cmd_data(TSSET, TSSET_FAST,  sizeof TSSET_FAST);
+    cmd_data(TRES,  TRES_V,      sizeof TRES_V);
+    cmd_data(0x15,  DSPI_V,      sizeof DSPI_V);
+    ESP_LOGI(TAG, "init complete (fast, built-in OTP waveform)");
+}
+
+/* FAST on legacy glass: epd75_init_sequence_fast (763-824) in order. */
+static void mono_init_fast_legacy(void)
+{
+    cmd_data(PWR,  PWR_V,         sizeof PWR_V);
+    cmd_data(PON,  NULL, 0);
+    wait_idle();
+    cmd_data(PSR,  PSR_REG_V,     sizeof PSR_REG_V);
+    cmd_data(TRES, TRES_V,        sizeof TRES_V);
+    cmd_data(CDI,  CDI_LEGACY_FP, sizeof CDI_LEGACY_FP);
+    cmd_data(0x15, DSPI_V,        sizeof DSPI_V);
+    cmd_data(TCON, TCON_V,        sizeof TCON_V);
+    send_lut(LUTC,  LUT_FAST_VCOM, sizeof LUT_FAST_VCOM, 42);
+    send_lut(LUTWW, LUT_FAST_WW,   sizeof LUT_FAST_WW,   42);
+    send_lut(LUTBW, LUT_FAST_BW,   sizeof LUT_FAST_BW,   42);
+    send_lut(LUTWB, LUT_FAST_WB,   sizeof LUT_FAST_WB,   42);
+    send_lut(LUTBB, LUT_FAST_BB,   sizeof LUT_FAST_BB,   42);
+    send_lut(LUTBD, LUT_FAST_BD,   sizeof LUT_FAST_BD,   42);
+    wait_idle();                                     /* table ends BUSY_WAIT */
+    ESP_LOGI(TAG, "init complete (fast, register LUTs)");
+}
+
+/* PARTIAL on OTP-batch glass: epd75_init_partial_gen2 (837-899). The
+ * library's table begins with EPD_RESET; mono_ensure() does that reset. */
+static void mono_init_partial_otp(void)
+{
+    cmd_data(PWR,  PWR_V,         sizeof PWR_V);
+    cmd_data(BTST, BTST_GEN2,     sizeof BTST_GEN2);
+    cmd_data(PON,  NULL, 0);
+    wait_idle();
+    cmd_data(PSR,  PSR_REG_V,     sizeof PSR_REG_V);
+    cmd_data(TRES, TRES_V,        sizeof TRES_V);
+    cmd_data(0x15, DSPI_V,        sizeof DSPI_V);
+    cmd_data(CDI,  CDI_GEN2_PART, sizeof CDI_GEN2_PART);
+    send_lut(LUTC,  LUT_G2P_VCOM, sizeof LUT_G2P_VCOM, 44);
+    send_lut(LUTWW, LUT_G2P_WW,   sizeof LUT_G2P_WW,   42);
+    send_lut(LUTBW, LUT_G2P_BW,   sizeof LUT_G2P_BW,   42);
+    send_lut(LUTWB, LUT_G2P_WB,   sizeof LUT_G2P_WB,   42);
+    send_lut(LUTBB, LUT_G2P_BB,   sizeof LUT_G2P_BB,   42);
+    send_lut(LUTBD, LUT_G2P_BD,   sizeof LUT_G2P_BD,   42);
+    wait_idle();
+    ESP_LOGI(TAG, "init complete (partial, GEN2 register LUTs)");
+}
+
+/* PARTIAL on legacy glass: epd75_init_sequence_partial (702-761). */
+static void mono_init_partial_legacy(void)
+{
+    cmd_data(PWR,  PWR_V,         sizeof PWR_V);
+    cmd_data(PON,  NULL, 0);
+    wait_idle();
+    cmd_data(PSR,  PSR_REG_V,     sizeof PSR_REG_V);
+    cmd_data(TRES, TRES_V,        sizeof TRES_V);
+    cmd_data(0x15, DSPI_V,        sizeof DSPI_V);
+    cmd_data(CDI,  CDI_LEGACY_FP, sizeof CDI_LEGACY_FP);
+    cmd_data(TCON, TCON_V,        sizeof TCON_V);
+    send_lut(LUTC,  LUT_PART_VCOM, sizeof LUT_PART_VCOM, 42);
+    send_lut(LUTWW, LUT_PART_WW,   sizeof LUT_PART_WW,   42);
+    send_lut(LUTBW, LUT_PART_BW,   sizeof LUT_PART_BW,   42);
+    send_lut(LUTWB, LUT_PART_WB,   sizeof LUT_PART_WB,   42);
+    send_lut(LUTBB, LUT_PART_BB,   sizeof LUT_PART_BB,   42);
+    send_lut(LUTBD, LUT_PART_BD,   sizeof LUT_PART_BD,   42);
+    wait_idle();
+    ESP_LOGI(TAG, "init complete (partial, legacy register LUTs)");
+}
+
+/* Run the init for `want` on a panel that has just been reset. */
+static void mono_init_mode(panel_mode_t want)
+{
+    switch (want) {
+    case PANEL_FAST:
+        mono_glass_probe_once();
+        if (s_gray_use_otp) mono_init_fast_otp();
+        else                mono_init_fast_legacy();
+        break;
+    case PANEL_PARTIAL:
+        mono_glass_probe_once();
+        if (s_gray_use_otp) mono_init_partial_otp();
+        else                mono_init_partial_legacy();
+        break;
+    default:
+        want = PANEL_FULL;
+        mono_init_full();
+        break;
+    }
+    s_panel_mode    = want;
+    s_panel_powered = true;
+}
+
+/* What a full-frame paint should use right now. */
+static panel_mode_t mono_display_mode(void)
+{
+    return (s_refresh_mode == MONO_SPI_REFRESH_FAST) ? PANEL_FAST : PANEL_FULL;
+}
+
+/* Make sure the controller is configured for `want` and powered. A no-op
+ * straight after mono_init() in the same mode; otherwise a reset + re-init,
+ * which is also how a second paint in one wake gets its PON back after the
+ * previous refresh's POF. */
+static void mono_ensure(panel_mode_t want)
+{
+    if (s_panel_mode == want && s_panel_powered) return;
+    ESP_LOGI(TAG, "re-init for %s (panel was %s, %s)", panel_mode_name(want),
+             panel_mode_name(s_panel_mode),
+             s_panel_powered ? "powered" : "powered off");
+    hw_reset();
+    mono_init_mode(want);
+}
+#endif /* MONO_1BPP */
 
 #ifdef EPD_GRAY4
 /* ------------------------------------------------------------------ */
@@ -780,12 +1117,19 @@ void epd_gray_set_vcom(int vdcs)
  * encoding has to be too. The two paths genuinely differ:
  *
  * Built-in OTP waveform -- mapped EMPIRICALLY on a production E1001 (bench
- * 2026-07-23) and corroborated by Seeed's own GxEPD2_reTerminal_E1001_Gray4
- * example, which inverts the level (gray = 3 - g) before splitting it:
+ * 2026-07-23). That bench result is the only evidence for this row:
  *
  *        white  light-gray  dark-gray  black         (g = 3    2    1    0)
  *   0x10:  0        1           0        1           (bit = (g & 1) ^ 1)
  *   0x13:  0        0           1        1           (bit = ((g >> 1) & 1) ^ 1)
+ *
+ * An earlier version of this comment cited Seeed's GxEPD2_reTerminal_E1001_
+ * Gray4 example as corroboration. It is not one: that example is a REGISTER-
+ * LUT program (it uploads LUTC/LUTWW/LUTKW/LUTWK/LUTKK with PSR 0x3F and never
+ * sends CCSET or TSSET), so it says nothing about the OTP path. What it does
+ * show is the inverted split for register LUTs -- gray = 3 - g before taking
+ * the bits, so white -> (0,0) and black -> (1,1) on (0x10,0x13). That is the
+ * COMPLEMENT of our register-LUT row below.
  *
  * Register LUTs -- Seeed_GFX's EPD_PUSH_NEW_GRAY_COLORS, which pairs with the
  * LUT tables uploaded below. It is self-consistent with the LUT names, and that
@@ -796,6 +1140,12 @@ void epd_gray_set_vcom(int vdcs)
  *   0x10:  1        0           1        0           (bit = g & 1)
  *   0x13:  1        1           0        0           (bit = (g >> 1) & 1)
  *   LUT:   WW       KW          WK       KK
+ *
+ * This polarity is FIELD-verified (a user's legacy panel, 2026-08-20) against
+ * Seeed_GFX's LUTs, not bench-compared with the GxEPD2 example's inverted
+ * planes -- the two examples pair different LUT sets with opposite plane
+ * polarities, and each is only meaningful next to its own waveform. Do not
+ * "fix" one to match the other without glass in hand.
  *
  * The register-LUT row replaces a table derived on hardware against the
  * GoodDisplay LUTs. Those LUTs are gone, and an encoding is only meaningful
@@ -1028,16 +1378,9 @@ static void mono_init(void)
                  lut_gain);
     }
 #else
-    cmd_data(PWR, PWR_V, sizeof PWR_V);
-    cmd_data(PON, NULL, 0);            /* power on */
-    wait_idle();
-    cmd_data(PSR,  PSR_V,  sizeof PSR_V);
-    cmd_data(TRES, TRES_V, sizeof TRES_V);
-    cmd_data(0x15, DSPI_V, sizeof DSPI_V);
-    cmd_data(CDI,  CDI_V,  sizeof CDI_V);
-    cmd_data(TCON, TCON_V, sizeof TCON_V);
-
-    ESP_LOGI(TAG, "init complete");
+    /* FULL unless a caller selected FAST (mono_spi_set_refresh_mode); the
+     * FULL bytes live in mono_init_full(), unchanged. */
+    mono_init_mode(mono_display_mode());
 #endif
 }
 
@@ -1070,11 +1413,75 @@ static void trigger_refresh(void)
     wait_idle();
     cmd_data(POF, NULL, 0);
     wait_idle();
+#if MONO_1BPP
+    s_panel_powered = false;   /* the next paint in this wake must PON again */
+#endif
     /* Duration is the tell if this ever regresses: a real full refresh is
      * seconds. Sub-second means the panel was powered down early. */
     ESP_LOGI(TAG, "refresh done (%lld ms)",
              (long long)((esp_timer_get_time() - t0) / 1000));
 }
+
+#if MONO_1BPP
+/* ---------- 1bpp paint path (full / fast), plus the partial shadow ---------- */
+
+#ifdef EPD_MONO_PARTIAL
+/* The last frame this driver put on the glass, in wire layout. The partial
+ * path writes it to DTM1 as the "old" plane so the differential LUTs (legacy
+ * glass drives only pixels whose old and new bits differ) see the truth. Every
+ * full/fast paint, clear and diagnostic pattern refreshes it. */
+static uint8_t *s_shadow;
+static bool     s_shadow_valid;
+static int      s_partials_since_full;
+
+/* TRMNL's hygiene: a flashing full refresh after this many partials
+ * (display.cpp 1712-1715, "force full refresh every 8 partials"). */
+#define MONO_PARTIALS_BEFORE_FULL 8
+
+static bool shadow_alloc(void)
+{
+    if (s_shadow) return true;
+    s_shadow = heap_caps_malloc(EPD_BUF_BYTES, TESSERAE_FB_CAPS);
+    if (!s_shadow) ESP_LOGW(TAG, "no memory for the partial shadow");
+    return s_shadow != NULL;
+}
+
+static void shadow_set(const uint8_t *image)
+{
+    if (!shadow_alloc()) return;
+    memcpy(s_shadow, image, EPD_BUF_BYTES);
+    s_shadow_valid = true;
+}
+
+/* Fill rows [y0, y0+n) of the shadow with one byte value (solid patterns). */
+static void shadow_fill_rows(int y0, int n, uint8_t fill)
+{
+    if (!shadow_alloc()) return;
+    memset(s_shadow + (size_t)y0 * (EPD_WIDTH / 8), fill, (size_t)n * (EPD_WIDTH / 8));
+    if (y0 == 0 && n == EPD_HEIGHT) s_shadow_valid = true;
+}
+#define SHADOW_SET(img)             shadow_set(img)
+#define SHADOW_FILL_ROWS(y0, n, v)  shadow_fill_rows(y0, n, v)
+#define PARTIALS_RESET()            (s_partials_since_full = 0)
+#else
+#define SHADOW_SET(img)             ((void)0)
+#define SHADOW_FILL_ROWS(y0, n, v)  ((void)0)
+#define PARTIALS_RESET()            ((void)0)
+#endif /* EPD_MONO_PARTIAL */
+
+/* One 1bpp frame to DTM2 and a refresh in `mode` (FULL or FAST). */
+static void mono_paint(const uint8_t *image, panel_mode_t mode)
+{
+    mono_ensure(mode);
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(DTM2);
+    send_data(image, EPD_BUF_BYTES);
+    gpio_set_level(EPD_PIN_CS, 1);
+    trigger_refresh();
+    SHADOW_SET(image);
+    PARTIALS_RESET();
+}
+#endif /* MONO_1BPP */
 
 static void mono_display(const uint8_t *image)
 {
@@ -1089,13 +1496,168 @@ static void mono_display(const uint8_t *image)
     gray_send_plane(DTM2, image, 2);   /* DTM2, per GRAY_P2_BIT */
     trigger_refresh();
 #else
+    mono_paint(image, mono_display_mode());
+#endif
+}
+
+#if MONO_1BPP && defined(EPD_MONO_PARTIAL)
+/* ---------- partial refresh (overlay feature; EPD_MONO_PARTIAL builds) ----------
+ *
+ * bb_epaper's mono partial for this panel, as the official TRMNL firmware
+ * drives it: the partial init table (register LUTs, PSR 0x3F; CDI 0xA9 0x07 on
+ * OTP-batch glass, 0x29 0x07 on legacy), the old frame to DTM1 and the new
+ * frame to DTM2, then PTOU (0x92) + DRF (bb_ep.inl 4414-4415: "partial out,
+ * update the entire panel, not just the last memory window"). The rect is
+ * therefore informational: the whole panel is refreshed under the partial
+ * waveform, and on legacy glass only pixels that changed are driven at all
+ * (WW and BB are zero LUTs); on OTP-batch glass every pixel is driven toward
+ * its new value without inversion, which is what makes it flash-free.
+ *
+ * "Old" is the driver's shadow of the last frame it painted (s_shadow). TRMNL
+ * instead writes the INVERTED new frame to DTM1 on GEN2 glass
+ * (PLANE_FALSE_DIFF, display.cpp 1557-1565) so that every pixel counts as
+ * changed; EPD_MONO_PARTIAL_FALSE_DIFF=1 reproduces that for a bench A/B.
+ * With the GEN2 LUTs the two are equivalent unless the controller skips
+ * pixels whose planes match; with the legacy LUTs only the true old frame
+ * gives a correct result, so the default is the shadow on both.
+ *
+ * After MONO_PARTIALS_BEFORE_FULL partials the next one is promoted to a
+ * flashing FULL paint of the same frame (TRMNL's hygiene), and any caller
+ * asking for full quality (fast=false / GC16) gets that directly. Every
+ * partial leaves the panel powered off in PARTIAL mode; the next full or fast
+ * paint sees that in mono_ensure() and resets + re-inits for its own mode, so
+ * no explicit restore step is needed here beyond bookkeeping.
+ *
+ * WHY THIS IS GATED: the overlay feature advertises itself to the server on
+ * any board whose driver provides display_partial (overlay_run.c checks
+ * epd_supports_partial()). Registering it unconditionally would flip every
+ * shipped E1001 from "no overlay" to "overlay-capable" on the next OTA, on a
+ * path that has not been seen on either glass batch yet. -DEPD_MONO_PARTIAL
+ * (the -partialtest env) opts a bench unit in; once both batches are
+ * confirmed the gate can move to the board header. */
+#ifndef EPD_MONO_PARTIAL_FALSE_DIFF
+#define EPD_MONO_PARTIAL_FALSE_DIFF 0
+#endif
+
+static void mono_partial(const uint8_t *image, int x, int y, int w, int h)
+{
+    /* Clamp to the frame (informational only, see above). */
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > EPD_WIDTH)  w = EPD_WIDTH - x;
+    if (y + h > EPD_HEIGHT) h = EPD_HEIGHT - y;
+    if (w <= 0 || h <= 0) return;
+
+    if (!s_shadow_valid || !s_shadow) {
+        ESP_LOGW(TAG, "partial without a shadow; full repaint");
+        mono_paint(image, mono_display_mode());
+        return;
+    }
+    if (s_partials_since_full >= MONO_PARTIALS_BEFORE_FULL) {
+        ESP_LOGI(TAG, "%d partials since the last full: forcing a full refresh",
+                 s_partials_since_full);
+        mono_paint(image, PANEL_FULL);
+        return;
+    }
+
+    int64_t t0 = esp_timer_get_time();
+    mono_ensure(PANEL_PARTIAL);
+
+    /* Old plane -> DTM1. */
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(DTM1);
+#if EPD_MONO_PARTIAL_FALSE_DIFF
+    for (int yy = 0; yy < EPD_HEIGHT; yy++) {
+        uint8_t row[EPD_WIDTH / 8];
+        const uint8_t *src = image + (size_t)yy * sizeof row;
+        for (size_t i = 0; i < sizeof row; i++) row[i] = (uint8_t)~src[i];
+        send_data(row, sizeof row);
+    }
+#else
+    send_data(s_shadow, EPD_BUF_BYTES);
+#endif
+    gpio_set_level(EPD_PIN_CS, 1);
+
+    /* New plane -> DTM2. */
     gpio_set_level(EPD_PIN_CS, 0);
     send_cmd(DTM2);
     send_data(image, EPD_BUF_BYTES);
     gpio_set_level(EPD_PIN_CS, 1);
-    trigger_refresh();
-#endif
+
+    cmd_data(PTOU, NULL, 0);
+    trigger_refresh();                 /* DRF, wait, POF */
+
+    memcpy(s_shadow, image, EPD_BUF_BYTES);
+    s_partials_since_full++;
+    ESP_LOGI(TAG, "partial (%d,%d %dx%d) #%d in %lld ms (%s LUTs)", x, y, w, h,
+             s_partials_since_full,
+             (long long)((esp_timer_get_time() - t0) / 1000),
+             s_gray_use_otp ? "GEN2" : "legacy");
 }
+
+static void mono_display_partial(const uint8_t *image, int x, int y, int w,
+                                 int h, bool fast)
+{
+    /* Full quality on this glass is the flashing full refresh. */
+    if (fast) mono_partial(image, x, y, w, h);
+    else      mono_paint(image, PANEL_FULL);
+}
+
+static void mono_display_partial_mode(const uint8_t *image, int x, int y,
+                                      int w, int h, epd_refresh_t mode)
+{
+    if (mode == EPD_RF_A2 || mode == EPD_RF_DU)
+        mono_partial(image, x, y, w, h);
+    else
+        mono_paint(image, PANEL_FULL);
+}
+
+#ifdef EPD_SELFTEST
+/* Bench exercise for the -partialtest env, run by mono_show_color_bars() after
+ * its bars are on the glass (main.c's EPD_SELFTEST path only paints bars):
+ * flip one band via a partial, then flip a second band with a FAST full
+ * refresh, logging each. What to look for is in the env comment. */
+static void mono_partial_selftest(void)
+{
+    const int BAND_H = EPD_HEIGHT / 8, STRIDE = EPD_WIDTH / 8;
+    uint8_t *frame = heap_caps_malloc(EPD_BUF_BYTES, TESSERAE_FB_CAPS);
+    if (!frame || !s_shadow_valid) {
+        ESP_LOGW(TAG, "SELFTEST partial: no frame buffer / shadow; skipped");
+        free(frame);
+        return;
+    }
+    memcpy(frame, s_shadow, EPD_BUF_BYTES);
+    vTaskDelay(pdMS_TO_TICKS(1500));
+
+    /* Band 3 (rows 180-239, white after the bars) -> black, via PARTIAL. */
+    for (int yy = 3 * BAND_H; yy < 4 * BAND_H; yy++)
+        for (int i = 0; i < STRIDE; i++) frame[yy * STRIDE + i] ^= 0xFF;
+    ESP_LOGW(TAG, "SELFTEST partial: flipping band 3 (rows %d-%d)",
+             3 * BAND_H, 4 * BAND_H - 1);
+    int64_t t0 = esp_timer_get_time();
+    mono_partial(frame, 0, 3 * BAND_H, EPD_WIDTH, BAND_H);
+    ESP_LOGW(TAG, "SELFTEST partial: done in %lld ms; expect NO flash, band 3 "
+                  "now black, other bands untouched",
+             (long long)((esp_timer_get_time() - t0) / 1000));
+    vTaskDelay(pdMS_TO_TICKS(1500));
+
+    /* Band 4 (rows 240-299, black after the bars) -> white, via FAST full. */
+    for (int yy = 4 * BAND_H; yy < 5 * BAND_H; yy++)
+        for (int i = 0; i < STRIDE; i++) frame[yy * STRIDE + i] ^= 0xFF;
+    const int saved = s_refresh_mode;
+    mono_spi_set_refresh_mode(MONO_SPI_REFRESH_FAST);
+    ESP_LOGW(TAG, "SELFTEST fast: flipping band 4 (rows %d-%d) with a FAST full",
+             4 * BAND_H, 5 * BAND_H - 1);
+    t0 = esp_timer_get_time();
+    mono_display(frame);
+    ESP_LOGW(TAG, "SELFTEST fast: done in %lld ms; expect ~1.5 s, no black "
+                  "flash, band 4 now white",
+             (long long)((esp_timer_get_time() - t0) / 1000));
+    mono_spi_set_refresh_mode(saved);
+    free(frame);
+}
+#endif /* EPD_SELFTEST */
+#endif /* MONO_1BPP && EPD_MONO_PARTIAL */
 
 static void mono_clear(uint8_t color)
 {
@@ -1133,11 +1695,14 @@ static void mono_clear(uint8_t color)
     uint8_t row[EPD_WIDTH / 8];
     memset(row, fill, sizeof row);
 
+    mono_ensure(mono_display_mode());
     gpio_set_level(EPD_PIN_CS, 0);
     send_cmd(DTM2);
     for (int y = 0; y < EPD_HEIGHT; y++) send_data(row, sizeof row);
     gpio_set_level(EPD_PIN_CS, 1);
     trigger_refresh();
+    SHADOW_FILL_ROWS(0, EPD_HEIGHT, fill);
+    PARTIALS_RESET();
 #endif
 }
 
@@ -1196,14 +1761,21 @@ static void mono_show_color_bars(void)
     const int BAND_H = EPD_HEIGHT / 8;   /* 60 rows/band */
     uint8_t row[EPD_WIDTH / 8];
 
+    mono_ensure(mono_display_mode());
     gpio_set_level(EPD_PIN_CS, 0);
     send_cmd(DTM2);
     for (int b = 0; b < 8; b++) {
-        memset(row, (b & 1) ? 0x00 : 0xFF, sizeof row);   /* white, black, ... */
+        const uint8_t fill = (b & 1) ? 0x00 : 0xFF;         /* white, black, ... */
+        memset(row, fill, sizeof row);
         for (int y = 0; y < BAND_H; y++) send_data(row, sizeof row);
+        SHADOW_FILL_ROWS(b * BAND_H, BAND_H, fill);
     }
     gpio_set_level(EPD_PIN_CS, 1);
     trigger_refresh();
+    PARTIALS_RESET();
+#if defined(EPD_SELFTEST) && defined(EPD_MONO_PARTIAL)
+    mono_partial_selftest();
+#endif
 }
 #endif /* EPD_GRAY4 */
 
@@ -1223,12 +1795,18 @@ static void mono_show_palette_sweep(void)
     send_cmd(0x10);
     for (int y = 0; y < EPD_HEIGHT; y++) send_data(row, sizeof row);
     gpio_set_level(EPD_PIN_CS, 1);
+#else
+    mono_ensure(mono_display_mode());
 #endif
     gpio_set_level(EPD_PIN_CS, 0);
     send_cmd(DTM2);
     for (int y = 0; y < EPD_HEIGHT; y++) send_data(row, sizeof row);
     gpio_set_level(EPD_PIN_CS, 1);
     trigger_refresh();
+#if MONO_1BPP
+    SHADOW_FILL_ROWS(0, EPD_HEIGHT, 0xAA);
+    PARTIALS_RESET();
+#endif
 }
 
 static void mono_sleep(void)
@@ -1249,6 +1827,17 @@ static void mono_sleep(void)
      * it is confirmed good on this glass and there is nothing to fix. */
     static const uint8_t CDI_FLOAT[] = {0xf7};
     cmd_data(CDI, CDI_FLOAT, sizeof CDI_FLOAT);
+#endif
+#if MONO_1BPP
+    /* The FAST (legacy) and PARTIAL tables leave CDI at 0x29 / 0xA9, whose
+     * VBD field differs from the full path's 0x21. Plain mono is confirmed to
+     * sleep cleanly with 0x21 in place, so put that back before DSLP when
+     * another mode was the last thing set up. Only runs when a caller used
+     * FAST or PARTIAL; the default path's sleep is untouched. */
+    if (s_panel_mode == PANEL_FAST || s_panel_mode == PANEL_PARTIAL)
+        cmd_data(CDI, CDI_V, sizeof CDI_V);
+    s_panel_mode    = PANEL_UNINIT;
+    s_panel_powered = false;
 #endif
     uint8_t magic = 0xA5;
     cmd_data(DSLP, &magic, 1);            /* deep sleep */
@@ -1285,6 +1874,14 @@ const epd_driver_t mono_spi_driver = {
     .show_color_bars    = mono_show_color_bars,
     .show_palette_sweep = mono_show_palette_sweep,
     .sleep              = mono_sleep,
+    /* Partial refresh is opt-in per build: providing display_partial is what
+     * advertises the overlay capability (epd_supports_partial), and shipped
+     * E1001 targets must not gain it on an OTA before both glass batches have
+     * been seen. See the mono_partial() comment. */
+#if MONO_1BPP && defined(EPD_MONO_PARTIAL)
+    .display_partial      = mono_display_partial,
+    .display_partial_mode = mono_display_partial_mode,
+#endif
 };
 
 #endif /* PANEL_DRIVER_MONO_SPI */

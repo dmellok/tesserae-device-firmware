@@ -16,6 +16,7 @@
 #if defined(PANEL_DRIVER_SPECTRA6_SPI_DUAL)
 
 #include "drivers/spectra6_spi_dual.h"
+#include "../busy_sleep.h"
 
 #include <string.h>
 
@@ -145,11 +146,11 @@ static void cmd_with_data(uint8_t cmd, const uint8_t *buf, size_t len)
  * normal refresh time. */
 static void wait_idle(void)
 {
-    int ticks = 0;
+    uint32_t waited_ms = 0;
     bool warned = false;
     while (gpio_get_level(EPD_PIN_BUSY) == 0) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-        if (!warned && ++ticks >= 6000) {
+        waited_ms += epd_busy_sleep(EPD_PIN_BUSY, 1, 10);   /* light-sleep until BUSY high */
+        if (!warned && waited_ms >= 60000) {
             ESP_LOGW(TAG, "BUSY still low after 60 s -- panel may be stuck");
             warned = true;
         }

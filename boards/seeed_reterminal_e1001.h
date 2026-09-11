@@ -74,6 +74,33 @@
 #define BOARD_SHT4X_I2C_HZ         100000
 #define BOARD_SHT4X_I2C_ADDR       0x44
 
+/* PCF8563 real-time clock with a CR1220 backup, on the sensor bus. Address and
+ * register map per Seeed's examples/base/RTC_PCF8563/RTC_PCF8563.ino, which
+ * names SDA 19 / SCL 20 for every E1001-E1004. Holds UTC (rtc_pcf8563.h). */
+#define BOARD_HAS_PCF8563          1
+#define BOARD_PCF8563_I2C_PORT     0
+#define BOARD_PCF8563_I2C_SDA      19
+#define BOARD_PCF8563_I2C_SCL      20
+#define BOARD_PCF8563_I2C_HZ       400000
+#define BOARD_PCF8563_I2C_ADDR     0x51
+
+/* SY6974 charger, status read only (sy6974.h never writes it). On this board
+ * it sits on its OWN bus, I2C port 1 on SDA 39 / SCL 40, not the sensor bus:
+ * SenseCraft src/boards/reterminal_e1001/config.h maps PMIC_I2C_SDA/SCL to
+ * ESP32_SDA1/SCL1 (39/40) for the E1001 and E1002 alike. GPIO39/40 are not
+ * used by anything else in this header. */
+#define BOARD_HAS_SY6974           1
+#define BOARD_SY6974_I2C_PORT      1
+#define BOARD_SY6974_I2C_SDA       39
+#define BOARD_SY6974_I2C_SCL       40
+#define BOARD_SY6974_I2C_HZ        400000
+#define BOARD_SY6974_I2C_ADDR      0x6B
+
+/* Green status LED, active-low (the pin sinks; LOW = on). Seeed's
+ * examples/base/LED_Control/LED_Control.ino: GPIO6 on the E1001/E1002. */
+#define BOARD_LED_PIN              6
+#define BOARD_LED_ACTIVE_LOW       1
+
 /* Front buttons (reTerminal E baseboard). The middle "green" key on GPIO3 is
  * confirmed (Seeed/TRMNL firmware use it as the wake/interrupt pin); the
  * left/right keys on GPIO5/GPIO4 come from Seeed's ESPHome reference and are
@@ -104,6 +131,12 @@
 #define SD_PIN_CS     14
 #define SD_PIN_DET    15
 #define SD_PIN_EN     16
+
+/* Rails the firmware never uses, driven low + held through deep sleep
+ * (main.c sleep_park_rails): GPIO38 enables the PDM microphone's TPS22916
+ * load switch (Seeed MicRecordToSD.ino). Left floating it can leak the mic
+ * rail on for the whole sleep. Bench 2026-09-11: gain unmeasured. */
+#define BOARD_SLEEP_DRIVE_LOW_MASK  (1ULL << 38)
 
 /* MCU tier: ESP32-S3 + PSRAM (assumed octal; verify on hardware). */
 #define MCU_TIER_S3_OCTAL_PSRAM 1

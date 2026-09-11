@@ -27,6 +27,7 @@
 #if defined(PANEL_DRIVER_JD79676_BWRY)
 
 #include "drivers/jd79676_bwry.h"
+#include "../busy_sleep.h"
 
 #include <string.h>
 
@@ -110,8 +111,12 @@ static bool wait_idle(void)
     bool warned = false;
     while (high < BUSY_IDLE_STABLE_SAMPLES) {
         high = (gpio_get_level(EPD_PIN_BUSY) == 0) ? 0 : high + 1;
-        vTaskDelay(pdMS_TO_TICKS(10));
-        waited += 10;
+        /* Light-sleep only while busy: epd_busy_sleep() returns at once when
+         * BUSY already reads high, which would collapse the stable-sample
+         * filter into back-to-back reads, so ready samples keep a plain
+         * 10 ms spacing. */
+        if (high == 0) waited += epd_busy_sleep(EPD_PIN_BUSY, 1, 10);   /* real ms */
+        else         { vTaskDelay(pdMS_TO_TICKS(10)); waited += 10; }
         if (!warned && waited >= 10000) {
             ESP_LOGW(TAG, "BUSY still low after 10 s; panel may be slow or stuck");
             warned = true;
