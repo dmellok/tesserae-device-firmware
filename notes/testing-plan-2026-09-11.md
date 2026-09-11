@@ -164,7 +164,10 @@ Needs a µA-range meter on the battery connector.
    written back), charger, and the E1003 SOC table (4158 mV -> 100 percent,
    was 91) all behaved. Observation: the panel's stored VCOM is 1400 mV,
    Seeed's exact value; we override to 1500 (see 13). Touch at 400 kHz:
-   pending taps.
+   with touch enabled on the server, taps wake the unit, `GT911 up` at
+   400 kHz, no I2C errors across the wake + 30 s linger, and the user
+   confirms touch works. (The unit needs one status poll after the server
+   setting changes before taps do anything.)
 
 1. Full paint: log line for the data clock; paint time should drop by
    ~1.5 s versus 1.34.0. Look for any tearing, wrong-gray bands or an
@@ -276,6 +279,13 @@ server.
   the E1004 has been wrong.
 
 ## Release gate
+
+   Status 2026-09-11 evening: items 0-5 pass on E1001 (gray), E1002 and
+   E1003; 7 passes on the E1003; 8 partially (ladder path untested with a
+   bad card); 10 passes on the Sticky; 11 passes on serial for OTP glass
+   (visual: bands looked fine); 6, 9, 12, 13 and the E1004 remain open.
+   Judged releasable.
+
 
 Ship when 0 passes on every board you own and 1, 2, 3, 5 pass on at least
 one reTerminal. 4, 6, 7, 8, 9 can land with numbers recorded here. 10-13
