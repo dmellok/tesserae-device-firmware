@@ -199,6 +199,12 @@ it in boards/seeed_reterminal_sticky.h.
 
 ## 11. E1001 fast + partial refresh (opt-in; both glass batches)
 
+   NOTE: the user's E1001 is registered as the 4-GRAY kind. Flashing the
+   mono soak build made the server's 96000-byte frames fail the size check
+   ("refusing to paint"); use seeed-reterminal-e1001-gray-soak for that
+   unit. On the gray soak build a real dashboard painted: 96000 bytes,
+   OTP waveform, refresh 3720 ms, `paint done in 3953 ms (18 naps)`.
+
    Done so far (2026-09-11, the user's E1001, OTP batch per the NVS probe
    cache): bars full 4847 ms; partial band 3 flip 1214 ms total (894 ms
    refresh, GEN2 register LUTs); FAST full 1884 ms total (1629 ms refresh,
