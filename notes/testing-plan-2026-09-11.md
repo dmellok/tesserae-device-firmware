@@ -89,6 +89,11 @@ be impossible since naps only happen while waiting).
 
 ## 3. Board RTC (all reTerminals)
 
+   Done so far (2026-09-11): E1002 seeded on the first cold boot (its RTC
+   already held a valid time). E1001 reported VL set (backup had run low),
+   was written back after the first Date discipline, and seeded the next
+   cold boot. So the write-back path and the VL gate both work.
+
 1. Cold boot with the coin cell fitted: expect `clock seeded from the board
    RTC: <UTC>` before Wi-Fi. If instead nothing prints, either the cell is
    flat (VL flag set; Seeed says the chip resets on every power loss without
@@ -104,6 +109,11 @@ be impossible since naps only happen while waiting).
    cold boot during the window should now respect it on the first wake.
 
 ## 4. Charger readout (all reTerminals)
+
+   Done so far (2026-09-11): E1002 answers on GPIO39/40 (vbus=1 charging=1);
+   E1001 the same. A single REG09 read returned a stale latched BAT_FAULT on
+   an E1001 with a healthy cell; the driver now reads it twice (Seeed does
+   too) and reports the live value.
 
 1. E1002 on USB with a cell: status shows `vbus: true, charging: true`
    until full, then `charging: false` with vbus still true. On battery only:
@@ -181,6 +191,12 @@ battery before this change, the latch was never needed; either way record
 it in boards/seeed_reterminal_sticky.h.
 
 ## 11. E1001 fast + partial refresh (opt-in; both glass batches)
+
+   Done so far (2026-09-11, the user's E1001, OTP batch per the NVS probe
+   cache): bars full 4847 ms; partial band 3 flip 1214 ms total (894 ms
+   refresh, GEN2 register LUTs); FAST full 1884 ms total (1629 ms refresh,
+   OTP waveform). Serial side passes; the visual judgement (no flash, no
+   ghost, border) is the user's. Legacy batch still untested.
 
 Build `seeed-reterminal-e1001-partialtest`. Watch the serial log for which
 branch the probe chose (`built-in OTP waveform` vs `register LUTs`; erase

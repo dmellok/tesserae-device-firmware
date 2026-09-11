@@ -1462,10 +1462,13 @@ static void shadow_fill_rows(int y0, int n, uint8_t fill)
 }
 #define SHADOW_SET(img)             shadow_set(img)
 #define SHADOW_FILL_ROWS(y0, n, v)  shadow_fill_rows(y0, n, v)
+/* After a sequence of row fills that together cover the whole panel. */
+#define SHADOW_MARK_VALID()         (s_shadow_valid = (s_shadow != NULL))
 #define PARTIALS_RESET()            (s_partials_since_full = 0)
 #else
 #define SHADOW_SET(img)             ((void)0)
 #define SHADOW_FILL_ROWS(y0, n, v)  ((void)0)
+#define SHADOW_MARK_VALID()         ((void)0)
 #define PARTIALS_RESET()            ((void)0)
 #endif /* EPD_MONO_PARTIAL */
 
@@ -1770,6 +1773,7 @@ static void mono_show_color_bars(void)
         for (int y = 0; y < BAND_H; y++) send_data(row, sizeof row);
         SHADOW_FILL_ROWS(b * BAND_H, BAND_H, fill);
     }
+    SHADOW_MARK_VALID();   /* the eight bands covered every row */
     gpio_set_level(EPD_PIN_CS, 1);
     trigger_refresh();
     PARTIALS_RESET();
