@@ -120,8 +120,15 @@ uint32_t epd_busy_sleep(gpio_num_t pin, int ready_level, uint32_t ms)
      * driver's poll interval the old way so the wait still progresses, and
      * stop trying after a run of rejects rather than paying the entry cost
      * on every poll. */
-    if (s_rejects == 0)
+    /* ESP_ERR_SLEEP_REJECT means the pin reached the ready level between
+     * our check and the sleep entry, i.e. the wait is over: an expected race
+     * on panels that pulse BUSY between phases (SSD1677), not a fault. */
+    if (s_rejects == 0 && r != ESP_ERR_SLEEP_REJECT)
         ESP_LOGW(TAG, "light sleep rejected: %s (falling back to delay)", esp_err_to_name(r));
+    if (r == ESP_ERR_SLEEP_REJECT && gpio_get_level(pin) == ready_level) {
+        s_rejects = 0;                 /* the wait ended, nothing to retry */
+        return since_ms(t0);
+    }
     if (++s_rejects >= EPD_NAP_MAX_REJECTS) {
         ESP_LOGW(TAG, "%d consecutive rejects; light sleep off for this boot", s_rejects);
         s_disabled = true;
