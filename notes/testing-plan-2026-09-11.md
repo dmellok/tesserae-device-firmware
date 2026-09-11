@@ -183,6 +183,13 @@ Needs a µA-range meter on the battery connector.
 
 ## 10. Sticky power latch (Sticky, battery fitted)
 
+   Done 2026-09-11: USB unplugged, power button pressed and released, the
+   unit booted and painted on battery. Latch kept. Also seen on the same
+   bench, and reproduced on a clean v1.34.0 build: exactly one phantom
+   touch wake (ext1, "no point readable") a second into the FIRST deep
+   sleep after a cold boot, never after later sleeps. Pre-existing; not
+   from this batch. Open item for the Sticky touch bring-up.
+
 Unplug USB. Tap the power button and let go. Expect the unit to boot, fetch,
 paint and go through a full sleep/wake cycle on battery. If it dies the
 moment the button is released, the latch pins or the clock edge are wrong
