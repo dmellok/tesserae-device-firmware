@@ -131,6 +131,13 @@
 #define SD_PIN_CS     14
 #define SD_PIN_DET    15
 #define SD_PIN_EN     16
+/* SDSPI data clock. IDF's default is 20 MHz; Seeed's own SD code never runs
+ * this shared bus above 4 MHz, the E1004 already sits at 10, and firmware
+ * #34 showed a card that passes init and then times out on its first data
+ * read (the SD status block, which runs at the full clock). Start at 10 MHz;
+ * the mount retry ladder steps to 4 then 1 MHz. Bench E1002 2026-09-11 was
+ * fine at 20 with a 16 GB SDHC, so this is margin, not a fix for that unit. */
+#define SD_SPI_MAX_KHZ 10000
 
 /* Rails the firmware never uses, driven low + held through deep sleep
  * (main.c sleep_park_rails): GPIO38 enables the PDM microphone's TPS22916

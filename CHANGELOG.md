@@ -75,7 +75,9 @@ on hardware; see notes/testing-plan-2026-09-11.md.
   battery now stays up after the power button is released.*
 - microSD mounts log the card type, name and clock, and the retry ladder now
   also steps the SPI clock down (configured -> 4 MHz -> 1 MHz) between
-  power-cycled attempts.
+  power-cycled attempts. The E1001 and E1002 start at 10 MHz instead of
+  IDF's 20 MHz default, matching the E1004; a card in #34 passed init and
+  then timed out on its first data read, which runs at the full clock.
 
 ### Changed
 
