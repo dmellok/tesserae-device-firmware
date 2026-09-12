@@ -67,6 +67,10 @@ jobs:
           # lineage) and the only esp32 target here besides the Waveshare
           # driver board.
           - { env: m5stack-m5paper,           kind: m5stack_m5paper, chip: esp32 }
+          # PaperMono (Pro and Lite): the Sticky's SSD1677 driver behind an
+          # M5IOE1 expander for the panel rails. Built blind; flagged
+          # unverified in the catalog until a unit confirms it.
+          - { env: m5stack-papermono,         kind: m5stack_papermono, chip: esp32s3 }
           # ESP32-C6 picture frames. The L build has never met its hardware
           # (see boards/paperlesspaper_openpaper_l.h); it ships so a tester
           # can bring it up, and the site lists it as experimental.

@@ -39,6 +39,7 @@ one board (and thus one driver) per PlatformIO environment.
 | [Waveshare **E-Paper ESP32 Driver Board**](https://www.waveshare.com/e-paper-esp32-driver-board.htm) + 7.5" mono (V2) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `waveshare-esp32-driver-75` |
 | [**M5Stack PaperS3**](https://docs.m5stack.com/en/core/PaperS3) | Grayscale (4.7") | none (raw parallel glass) | 960×540, 4bpp gray | `parallel_epd_gray` | `m5stack-papers3` |
 | [**M5Stack M5Paper**](https://docs.m5stack.com/en/core/m5paper) (the original, pre-S3) | Grayscale (4.7") | IT8951 | 960×540, 4bpp gray | `it8951_gray` | `m5stack-m5paper` |
+| [**M5Stack PaperMono**](https://docs.m5stack.com/en/core/PaperMono) (Pro and Lite; unverified) | Grayscale (3.97") | SSD1677 | 480×800 portrait, 2bpp gray | `ssd1677_gray` | `m5stack-papermono` |
 | **Xteink X4** | Mono B/W (4.26") | SSD1677 | 800×480, 1bpp | `ssd1677_gray` (`EPD_MONO`) | `xteink-x4` |
 
 The four reTerminals, the PhotoPainter, the EE02, the TRMNL 7.5" kit, the

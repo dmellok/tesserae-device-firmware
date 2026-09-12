@@ -102,6 +102,34 @@ static const char *TAG = "epd_ssd1677";
 static spi_device_handle_t s_spi;
 static bool s_port_inited = false;
 
+/* Reset and power-enable lines. On most boards they are MCU GPIOs: EPD_PIN_RST
+ * and the optional EPD_PIN_EN. The M5Stack PaperMono routes both through an
+ * M5IOE1 I2C expander instead, so a board may name expander pin indices
+ * (EPD_RST_M5IOE1_PIN, EPD_EN_M5IOE1_PIN) and leave the GPIO macros undefined;
+ * the GPIO masks below then drop out of gpio_config(). */
+#if defined(EPD_RST_M5IOE1_PIN) || defined(EPD_EN_M5IOE1_PIN)
+#include "m5ioe1.h"
+#endif
+#ifdef EPD_RST_M5IOE1_PIN
+#  define RST_SET(level)   m5ioe1_set_output(EPD_RST_M5IOE1_PIN, (level))
+#  define RST_GPIO_MASK    0ULL
+#else
+#  define RST_SET(level)   gpio_set_level(EPD_PIN_RST, (level))
+#  define RST_GPIO_MASK    (1ULL << EPD_PIN_RST)
+#endif
+#if defined(EPD_EN_M5IOE1_PIN)
+#  define EPD_HAVE_EN      1
+#  define EN_SET(level)    m5ioe1_set_output(EPD_EN_M5IOE1_PIN, (level))
+#  define EN_GPIO_MASK     0ULL
+#elif defined(EPD_PIN_EN)
+#  define EPD_HAVE_EN      1
+#  define EN_SET(level)    gpio_set_level(EPD_PIN_EN, (level))
+#  define EN_GPIO_MASK     (1ULL << EPD_PIN_EN)
+#else
+#  define EPD_HAVE_EN      0
+#  define EN_GPIO_MASK     0ULL
+#endif
+
 /* ---------- low-level SPI/GPIO ---------- */
 
 static esp_err_t spi_tx_raw(const uint8_t *data, size_t len)
@@ -174,8 +202,8 @@ static bool wait_idle(void)
 
 static void hw_reset(void)
 {
-    gpio_set_level(EPD_PIN_RST, 0); vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(EPD_PIN_RST, 1); vTaskDelay(pdMS_TO_TICKS(10));
+    RST_SET(0); vTaskDelay(pdMS_TO_TICKS(10));
+    RST_SET(1); vTaskDelay(pdMS_TO_TICKS(10));
 }
 
 /* ---------- 4-gray plane encoding ----------
@@ -355,12 +383,8 @@ static esp_err_t ssd1677_port_init(void)
     gpio_config_t out = {
         .intr_type = GPIO_INTR_DISABLE,
         .mode = GPIO_MODE_OUTPUT,
-        .pin_bit_mask = (1ULL << EPD_PIN_RST) | (1ULL << EPD_PIN_DC) |
-                        (1ULL << EPD_PIN_CS)
-#ifdef EPD_PIN_EN
-                      | (1ULL << EPD_PIN_EN)
-#endif
-        ,
+        .pin_bit_mask = RST_GPIO_MASK | (1ULL << EPD_PIN_DC) |
+                        (1ULL << EPD_PIN_CS) | EN_GPIO_MASK,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
     };
@@ -377,7 +401,7 @@ static esp_err_t ssd1677_port_init(void)
 
     gpio_set_level(EPD_PIN_CS, 1);
     gpio_set_level(EPD_PIN_DC, 0);
-    gpio_set_level(EPD_PIN_RST, 1);
+    RST_SET(1);
 
     spi_bus_config_t bus = {
         .miso_io_num = -1,
@@ -417,8 +441,8 @@ static void shadow_rebuild(const uint8_t *image);
 
 static void ssd1677_init(void)
 {
-#ifdef EPD_PIN_EN
-    gpio_set_level(EPD_PIN_EN, 1);    /* panel power */
+#if EPD_HAVE_EN
+    EN_SET(1);    /* panel power */
     vTaskDelay(pdMS_TO_TICKS(10));
 #endif
     hw_reset();
@@ -760,8 +784,8 @@ static void ssd1677_sleep(void)
     static const uint8_t DEEP[] = {0x01};
     cmd_data(SSD_SLEEP, DEEP, sizeof DEEP);
     vTaskDelay(pdMS_TO_TICKS(100));
-#ifdef EPD_PIN_EN
-    gpio_set_level(EPD_PIN_EN, 0);    /* cut panel power */
+#if EPD_HAVE_EN
+    EN_SET(0);    /* cut panel power */
 #endif
 }
 

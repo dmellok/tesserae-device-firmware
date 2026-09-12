@@ -50,6 +50,8 @@
 #  include "m5stack_papers3.h"
 #elif defined(TESSERAE_BOARD_M5STACK_M5PAPER)
 #  include "m5stack_m5paper.h"
+#elif defined(TESSERAE_BOARD_M5STACK_PAPERMONO)
+#  include "m5stack_papermono.h"
 #elif defined(TESSERAE_BOARD_XTEINK_X4)
 #  include "xteink_x4.h"
 #elif defined(TESSERAE_BOARD_WAVESHARE_ESP32_DRIVER_75)

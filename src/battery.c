@@ -1,6 +1,7 @@
 #include "battery.h"
 #include "app_config.h"   /* pulls board.h -> BOARD_BATTERY_* */
 #include "bq27220.h"
+#include "m5pm1.h"
 #include <stdint.h>
 #include "esp_timer.h"
 
@@ -11,6 +12,10 @@ bool battery_present(void)
      * gauge is certainly fitted, but it NACKs while busy or unconfigured, and
      * publishing 0 mV in that window reads as a flat cell. See bq27220.h. */
     return bq27220_available();
+#elif defined(BOARD_BATTERY_M5PM1)
+    /* Same shape as the gauge: the PMIC is fitted, but a NACKed read is
+     * "unknown", never "flat". See m5pm1.h. */
+    return m5pm1_battery_available();
 #elif defined(BOARD_BATTERY_PMIC) || defined(BOARD_BATTERY_ADC_CHANNEL)
     return true;
 #else
@@ -165,6 +170,17 @@ bool power_can_stay_awake(void)
 int battery_read_mv(void)
 {
     return bq27220_battery_mv();
+}
+
+#elif defined(BOARD_BATTERY_M5PM1)
+
+/* M5PM1 boards (M5Stack PaperMono): the PMIC measures VBAT itself and
+ * publishes millivolts over I2C; no ADC divider exists. battery_pct() maps
+ * the mV through the generic curve as for any board without a table. */
+
+int battery_read_mv(void)
+{
+    return m5pm1_battery_mv();
 }
 
 #elif defined(BOARD_BATTERY_PMIC)

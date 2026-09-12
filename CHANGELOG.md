@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- M5Stack PaperMono and PaperMono Lite (env `m5stack-papermono`, kind
+  `m5stack_papermono`): the 3.97" 480x800 4-level greyscale SSD1677 panel on
+  an ESP32-S3R8, so it reuses the reTerminal Sticky's `ssd1677_gray` driver
+  and the same 96000-byte 2bpp frame. The panel's reset and 3.3 V enable are
+  outputs of an M5IOE1 I2C expander rather than GPIOs, so the driver now
+  accepts `EPD_RST_M5IOE1_PIN` / `EPD_EN_M5IOE1_PIN` in place of
+  `EPD_PIN_RST` / `EPD_PIN_EN`, routed through the new `src/m5ioe1.c`
+  (outputs only). Battery voltage comes from the M5PM1 PMIC over I2C
+  (`src/m5pm1.c`, `BOARD_BATTERY_M5PM1`): the cell reaches no ESP32 ADC pin.
+  Two side keys (rotate prev / next, both ext1 wake) and the buzzer are
+  wired. Not wired: FT6336G touch (a different register map from the GT911
+  driver), the expander-gated microSD slot, the frontlight, the RGB LED.
+  **Built blind, unverified on hardware**: flash `m5stack-papermono-selftest`
+  first and judge the four grey bands.
+
 ## [1.35.0] - 2026-09-11
 
 Review of Seeed's reTerminal firmware hub (Seeed-Projects/OSHW-reTerminal-Series-E-D,
