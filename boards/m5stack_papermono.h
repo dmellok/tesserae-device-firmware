@@ -29,13 +29,16 @@
  * M5PaperMono-PowerDemo m5pm_power.cpp, which pulse the panel reset through
  * the expander exactly as done here). All sources agree pin for pin.
  *
- * UNVERIFIED ON HARDWARE. Nothing here has run on a PaperMono. Flash the
- * -selftest env first: four grey bands, black at the top through white at
- * the bottom, with the serial log showing the expander answering (a "no
- * answer at 0x4f" line means the panel never got power or reset, and nothing
- * else will work). If the bands come out sideways or the ends are swapped,
- * the mount assumptions below are the first thing to revisit; if nothing
- * refreshes at all, suspect the expander rails before the SPI lines.
+ * VERIFIED ON HARDWARE 2026-09-12 (a PaperMono Pro on the bench): the
+ * expander answers and powers/resets the panel, the four-grey selftest ramp
+ * paints with the wedge top-left, the captive portal, discover, register and
+ * a real 480x800 dashboard frame over the v1 REST API (upright, unmirrored,
+ * correct greys), and battery telemetry from the PMIC. Two things the first
+ * pass got wrong, both now board knobs on the driver: the grey OTP waveform
+ * is selected with temperature value 0x5A, not the Sticky's 0x67 (which paints
+ * static here), and the mid-grey planes are the Sticky's swapped. Both side
+ * keys repaint the panel. Not yet exercised: the buzzer, deep sleep on
+ * battery, BLE setup.
  */
 #pragma once
 
@@ -83,6 +86,14 @@
 #define EPD_COL_DARKGRAY   0x1
 #define EPD_COL_LIGHTGRAY  0x2
 #define EPD_COL_WHITE      0x3
+
+/* Grayscale OTP waveform selection, from M5Stack's own OTP demo for this
+ * glass (M5PaperMono-OTP-Demo, init_gray_mode): temperature value 0x5A
+ * selects the 4-gray LUT (the Sticky's 0x67 painted static here on the
+ * bench, 2026-09-12), and the mid greys sit in the opposite planes to the
+ * Sticky's table (light gray = plane1 set, dark gray = plane2 set). */
+#define EPD_SSD1677_GRAY_TEMP       0x5A
+#define EPD_SSD1677_GRAY_MID_SWAP   1
 
 /* ------------------------------------------------------------------ */
 /* System I2C bus: PMIC, IO expander, RTC, IMU, touch, NFC              */

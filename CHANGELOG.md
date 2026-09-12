@@ -20,8 +20,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Two side keys (rotate prev / next, both ext1 wake) and the buzzer are
   wired. Not wired: FT6336G touch (a different register map from the GT911
   driver), the expander-gated microSD slot, the frontlight, the RGB LED.
-  **Built blind, unverified on hardware**: flash `m5stack-papermono-selftest`
-  first and judge the four grey bands.
+  Verified on hardware 2026-09-12: selftest ramp, captive portal, register,
+  a dashboard frame over REST (upright, correct greys), both side keys,
+  PMIC battery.
+- `ssd1677_gray` gained two per-glass knobs the PaperMono needed:
+  `EPD_SSD1677_GRAY_TEMP` (the temperature value that selects the 4-gray OTP
+  waveform; default the Sticky's 0x67, the PaperMono wants 0x5A and paints
+  static with 0x67) and `EPD_SSD1677_GRAY_MID_SWAP` (which plane carries
+  which mid-grey bit; the PaperMono's OTP table is the Sticky's swapped).
+  Sticky behaviour is unchanged.
 
 ## [1.35.0] - 2026-09-11
 

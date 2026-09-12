@@ -219,8 +219,31 @@ static void hw_reset(void)
  * black is (1,1). Kept as macros for the same reason mono_spi does: the clear
  * and the test pattern must derive their fills from the SAME table as the image
  * path, or they drift apart silently. */
+/* Which plane carries which bit is a property of the glass's OTP waveform,
+ * not of the controller. The Sticky's table is above; M5Stack's PaperMono
+ * (DEPG0397BBS770F3HP) documents the mid greys the other way round --
+ * light gray = (1,0), dark gray = (0,1) -- so a board sets
+ * EPD_SSD1677_GRAY_MID_SWAP 1 to exchange the two planes' bits. Black and
+ * white are (1,1) and (0,0) either way. */
+#ifndef EPD_SSD1677_GRAY_MID_SWAP
+#define EPD_SSD1677_GRAY_MID_SWAP 0
+#endif
+#if EPD_SSD1677_GRAY_MID_SWAP
+#define GRAY_P1_BIT(g) (((g) & 1) ^ 1)          /* 0x24 */
+#define GRAY_P2_BIT(g) ((((g) >> 1) & 1) ^ 1)   /* 0x26 */
+#else
 #define GRAY_P1_BIT(g) ((((g) >> 1) & 1) ^ 1)   /* 0x24 */
 #define GRAY_P2_BIT(g) (((g) & 1) ^ 1)          /* 0x26 */
+#endif
+
+/* The temperature value written before a 4-gray refresh is what selects the
+ * grayscale OTP waveform (the controller indexes its LUT table by it). It is
+ * per glass: Seeed's Sticky wants 0x67; M5Stack's PaperMono wants 0x5A (their
+ * OTP demo's init_gray_mode), and with the wrong one the two planes run
+ * through a mono LUT and the panel paints static. */
+#ifndef EPD_SSD1677_GRAY_TEMP
+#define EPD_SSD1677_GRAY_TEMP 0x67
+#endif
 
 #ifdef EPD_MONO
 /* ---------- 1bpp mono encoding ----------
@@ -516,7 +539,7 @@ static void ssd1677_init(void)
      * survives because the gray refresh (0xD7) omits the load-temperature step
      * that the mono clear above performs. Must not be swapped for a live sensor
      * reading, and must not be issued before the clear. */
-    static const uint8_t TWRITE[] = {0x67, 0x00};
+    static const uint8_t TWRITE[] = {EPD_SSD1677_GRAY_TEMP, 0x00};
     cmd_data(SSD_TEMP_WRITE, TWRITE, sizeof TWRITE);
     cmd_data(SSD_RAM_X_ADDR, ZERO2, sizeof ZERO2);
     cmd_data(SSD_RAM_Y_ADDR, ZERO2, sizeof ZERO2);
@@ -605,7 +628,7 @@ static void ssd1677_display(const uint8_t *image)
      * and drive the border oddly, so put the 4-gray selection back first.
      * Cheap, and harmless when nothing changed. */
     {
-        static const uint8_t TW[] = {0x67, 0x00};
+        static const uint8_t TW[] = {EPD_SSD1677_GRAY_TEMP, 0x00};
         static const uint8_t BG[] = {SSD_BORDER_GRAY};
         cmd_data(SSD_BORDER, BG, sizeof BG);
         cmd_data(SSD_TEMP_WRITE, TW, sizeof TW);
