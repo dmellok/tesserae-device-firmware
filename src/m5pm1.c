@@ -100,6 +100,11 @@ static void pm1_refresh(void)
         pm1_wake();
         ok = pm1_read_vbat(&mv);
     }
+    if (ok && (mv < PM1_MV_MIN || mv > PM1_MV_MAX)) {
+        /* One garbage sample right after other PM1 traffic; re-read once. */
+        vTaskDelay(pdMS_TO_TICKS(20));
+        ok = pm1_read_vbat(&mv);
+    }
     if (!ok) {
         ESP_LOGW(TAG, "VBAT read failed%s", s_valid ? "; using last sample" : "");
         return;
@@ -147,6 +152,12 @@ esp_err_t m5pm1_frontlight_set(int pct)
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
     if (!pm1_open()) return ESP_ERR_INVALID_STATE;
+#ifdef BOARD_BATTERY_M5PM1
+    /* Take this boot's VBAT sample BEFORE writing anything: on the bench
+     * (2026-09-12) every VBAT read that followed a PM1 write came back ~120 mV
+     * for the rest of the boot, while boots that only read were fine. */
+    pm1_refresh();
+#endif
 
     /* Same order as M5's PowerDemo set_frontlight(): function "special"
      * (PWM0) on GPIO3, output, no pull, push-pull, then frequency and duty. */
@@ -165,6 +176,10 @@ esp_err_t m5pm1_frontlight_set(int pct)
         ESP_LOGW(TAG, "frontlight %d%%: PMIC write failed", pct);
         return ESP_FAIL;
     }
+    /* The PM1 is a small MCU behind the I2C port; a VBAT read issued straight
+     * after this burst came back garbage on the bench (122 mV). Let it
+     * settle before anyone else on this boot talks to it. */
+    vTaskDelay(pdMS_TO_TICKS(20));
     ESP_LOGI(TAG, "frontlight %d%%", pct);
     return ESP_OK;
 }
@@ -174,6 +189,9 @@ esp_err_t m5pm1_frontlight_set(int pct)
 esp_err_t m5pm1_led_set(bool on)
 {
     if (!pm1_open()) return ESP_ERR_INVALID_STATE;
+#ifdef BOARD_BATTERY_M5PM1
+    pm1_refresh();   /* see m5pm1_frontlight_set */
+#endif
     return pm1_rmw(REG_PWR_CFG, PM1_LED_CTRL_BIT, on ? PM1_LED_CTRL_BIT : 0) ? ESP_OK : ESP_FAIL;
 }
 #endif

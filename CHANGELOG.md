@@ -34,7 +34,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   selftest), the frontlight as server config `frontlight_pct` driven through
   the M5PM1's PWM0 (the PMIC keeps it lit across deep sleep), and the red
   LED as the boot indicator through the PMIC's LED_EN (`BOARD_LED_M5PM1` in
-  led.c).
+  led.c). The live touch path is not yet signed off: with Touch input on,
+  the bench unit fell into a repaint-every-cycle loop that is most likely
+  the touch3 spec restored from SD re-flagging a repaint on every boot (see
+  notes/papermono-bringup-2026-09-12.md); the FT6336 driver now also holds
+  INT high through deep sleep and withholds the touch wake if the line reads
+  low, and the PMIC's battery sample is taken before any PMIC write.
 - `ssd1677_gray` gained two per-glass knobs the PaperMono needed:
   `EPD_SSD1677_GRAY_TEMP` (the temperature value that selects the 4-gray OTP
   waveform; default the Sticky's 0x67, the PaperMono wants 0x5A and paints

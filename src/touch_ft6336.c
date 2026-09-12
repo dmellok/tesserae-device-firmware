@@ -43,6 +43,7 @@
 
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
+#include "driver/rtc_io.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
@@ -95,6 +96,7 @@ static const char *TAG = "touch_ft6336";
 static i2c_master_dev_handle_t s_dev;
 static bool     s_ready;
 static uint32_t s_product_id;
+static bool     s_wake_armable = true;   /* INT idled high at the last prepare_sleep */
 
 static esp_err_t ft_read(uint8_t reg, uint8_t *buf, size_t len)
 {
@@ -330,9 +332,39 @@ void touch_prepare_sleep(void)
      * (monitor) mode; it pulls INT low on the next touch and the caller folds
      * that line into the button ext1 ANY_LOW mask. */
     ft_write(FT_REG_CTRL, 0x01);
+
+    /* INT through deep sleep. The digital pad's pull-up is lost when the pads
+     * isolate, and the FT6336 does not hold the line high on its own, so
+     * the first PaperMono build woke the instant it slept, forced a paint,
+     * slept again, and repainted the same frame every few seconds (bench,
+     * 2026-09-12). The pad is RTC-capable: give it the RTC pull-up, which
+     * survives sleep, and read it back after a short settle. If it still
+     * reads low the touch wake is withheld for this cycle rather than armed
+     * as a guaranteed immediate wake -- the buttons still work, and the next
+     * wake retries. */
+    {
+        const gpio_num_t intp = (gpio_num_t)BOARD_TOUCH_INT_PIN;
+        rtc_gpio_init(intp);
+        rtc_gpio_set_direction(intp, RTC_GPIO_MODE_INPUT_ONLY);
+        rtc_gpio_pulldown_dis(intp);
+        rtc_gpio_pullup_en(intp);
+        int64_t t0 = esp_timer_get_time();
+        while (rtc_gpio_get_level(intp) == 0 &&
+               esp_timer_get_time() - t0 < 300 * 1000) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        int lvl = rtc_gpio_get_level(intp);
+        s_wake_armable = (lvl != 0);
+        if (!s_wake_armable) {
+            ESP_LOGW(TAG, "INT still low before sleep; touch wake withheld this cycle");
+        }
+    }
 }
 
-uint64_t touch_sleep_wake_mask(void) { return TOUCH_INT_WAKE_MASK; }
+uint64_t touch_sleep_wake_mask(void)
+{
+    return s_wake_armable ? TOUCH_INT_WAKE_MASK : 0;
+}
 
 bool touch_woke_by_gesture(void) { return false; }
 
