@@ -999,6 +999,9 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     out->touch_enabled = -1;
     out->touch_linger_s = -1;
 #endif
+#ifdef BOARD_FRONTLIGHT_M5PM1
+    out->frontlight_pct = -1;
+#endif
 #ifdef BOARD_BUZZER_PIN
     out->beep_enabled = -1;
     out->beep_volume  = -1;
@@ -1156,6 +1159,9 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         if (cJSON_IsBool(te))        out->touch_enabled = cJSON_IsTrue(te) ? 1 : 0;
         else if (cJSON_IsNumber(te)) out->touch_enabled = te->valueint ? 1 : 0;
         out->touch_linger_s = json_get_int(cfg, "touch_linger_s", -1);
+#endif
+#ifdef BOARD_FRONTLIGHT_M5PM1
+        out->frontlight_pct = json_get_int(cfg, "frontlight_pct", -1);
 #endif
 #ifdef BOARD_BUZZER_PIN
         cJSON *be = cJSON_GetObjectItemCaseSensitive(cfg, "beep_enabled");

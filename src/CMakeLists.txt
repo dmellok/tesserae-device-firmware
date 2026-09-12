@@ -41,6 +41,7 @@ idf_component_register(
         "i2c_bus.c"
         "touch_coords.c"
         "touch_gt911.c"
+        "touch_ft6336.c"
         "touch_queue.c"
         "touch_wakestub.c"
         "wifi_manager.c"

@@ -2,7 +2,9 @@
 
 #include "touch_gt911.h"
 
-#ifdef BOARD_HAS_TOUCH
+/* A board with a FocalTech controller (BOARD_TOUCH_FT6336) takes
+ * touch_ft6336.c instead; the API in touch_gt911.h is shared. */
+#if defined(BOARD_HAS_TOUCH) && !defined(BOARD_TOUCH_FT6336)
 
 #include "touch_coords.h"
 #include "i2c_bus.h"

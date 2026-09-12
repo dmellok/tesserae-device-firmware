@@ -47,6 +47,7 @@ static const char *TAG = "rest_cfg";
 #ifdef BOARD_BUZZER_PIN
 /* Separate from the touch block on purpose: the mono reTerminals carry the
  * buzzer without a touchscreen, so these keys must exist there too. */
+#define NVS_KEY_FLIGHT     "flight"     /* frontlight percent */
 #define NVS_KEY_BEEP_EN    "beep_en"
 #define NVS_KEY_BEEP_PAT   "beep_pat"
 #define NVS_KEY_BEEP_VOL   "beep_vol"
@@ -81,6 +82,9 @@ void rest_config_load(void)
     memset(&s_cfg, 0, sizeof s_cfg);
     s_cfg.sleep_s = SLEEP_INTERVAL_S;
     s_cfg.awake_poll_s = AWAKE_POLL_DEFAULT_S;
+#ifdef BOARD_FRONTLIGHT_M5PM1
+    s_cfg.frontlight_pct = 0;
+#endif
 #ifdef BOARD_BUZZER_PIN
     /* Silent until an operator asks for sound: a panel that starts beeping
      * after a firmware update, unannounced, is worse than a silent one. The
@@ -114,6 +118,10 @@ void rest_config_load(void)
         if (nvs_get_u8(h, NVS_KEY_TOUCH_EN, &te) == ESP_OK) s_cfg.touch_enabled = (te != 0);
         int32_t tl = 0;
         if (nvs_get_i32(h, NVS_KEY_TOUCH_LIN, &tl) == ESP_OK && tl >= 0) s_cfg.touch_linger_s = tl;
+#endif
+#ifdef BOARD_FRONTLIGHT_M5PM1
+        int32_t fl = 0;
+        if (nvs_get_i32(h, NVS_KEY_FLIGHT, &fl) == ESP_OK && fl >= 0 && fl <= 100) s_cfg.frontlight_pct = fl;
 #endif
 #ifdef BOARD_BUZZER_PIN
         uint8_t be = 0;
@@ -228,6 +236,9 @@ esp_err_t rest_config_save(void)
      * re-learning the beep config every wake -- always after the wake-press
      * beep had already read the unsaved default and stayed silent. The load
      * side has always had the two blocks as siblings. */
+#ifdef BOARD_FRONTLIGHT_M5PM1
+    if (err == ESP_OK) err = nvs_set_i32(h, NVS_KEY_FLIGHT, s_cfg.frontlight_pct);
+#endif
 #ifdef BOARD_BUZZER_PIN
     if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_BEEP_EN, s_cfg.beep_enabled ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_BEEP_PAT, s_cfg.beep_pattern);
@@ -342,6 +353,15 @@ void rest_config_set_beep(bool enabled, const char *pattern, int32_t volume)
     s_cfg.beep_volume  = volume;
     if (pattern && pattern[0])
         set_str(s_cfg.beep_pattern, sizeof s_cfg.beep_pattern, pattern);
+}
+#endif
+
+#ifdef BOARD_FRONTLIGHT_M5PM1
+void rest_config_set_frontlight(int32_t pct)
+{
+    if (pct < 0)   pct = 0;
+    if (pct > 100) pct = 100;
+    s_cfg.frontlight_pct = pct;
 }
 #endif
 

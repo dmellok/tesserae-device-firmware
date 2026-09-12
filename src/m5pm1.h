@@ -17,12 +17,19 @@
  *     #define BOARD_M5PM1_I2C_HZ     100000
  *     #define BOARD_M5PM1_I2C_ADDR   0x6E
  *
+ * Two more of the chip's outputs are wrapped for the PaperMono, each behind
+ * its own board macro (all three share BOARD_M5PM1_I2C_*):
+ *   BOARD_FRONTLIGHT_M5PM1   the panel frontlight, PWM0 on the PMIC's GPIO3
+ *   BOARD_LED_M5PM1          the red channel of the RGB LED, on LED_EN
+ *
  * Register map from m5stack/M5PM1 src/M5PM1.h. Shares the bus through
  * i2c_bus_get() like every other I2C part.
  */
 #pragma once
 
 #include <stdbool.h>
+
+#include "esp_err.h"
 
 /* True once the PMIC has answered a VBAT read on this boot (or a retained
  * reading from an earlier wake exists). Mirrors bq27220_available(): a chip
@@ -32,3 +39,11 @@ bool m5pm1_battery_available(void);
 /* Battery voltage in mV, or 0 when nothing is known. Read once per wake,
  * falling back to the last good sample retained across deep sleep. */
 int m5pm1_battery_mv(void);
+
+/* Frontlight brightness, 0-100 percent (0 = PWM off). Routes GPIO3 to PWM0
+ * at 5 kHz the way M5's PowerDemo does; the PMIC keeps the PWM running on
+ * its own, so the light survives the MCU's deep sleep until set to 0. */
+esp_err_t m5pm1_frontlight_set(int pct);
+
+/* Red status LED (LED_EN): on or off. */
+esp_err_t m5pm1_led_set(bool on);

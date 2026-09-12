@@ -19,6 +19,7 @@
 #define REG_UID_L         0x00
 #define REG_GPIO_MODE_L   0x03   /* 1 = output */
 #define REG_GPIO_OUT_L    0x05   /* 1 = high */
+#define REG_GPIO_IN_L     0x07   /* input levels */
 #define REG_GPIO_PU_L     0x09   /* 1 = pull-up on */
 #define REG_GPIO_PD_L     0x0B   /* 1 = pull-down on */
 #define REG_GPIO_DRV_L    0x13   /* 1 = open-drain, 0 = push-pull */
@@ -33,6 +34,7 @@ static const char *TAG = "m5ioe1";
 static i2c_master_dev_handle_t s_dev;
 static bool     s_ready;
 static uint16_t s_configured;   /* pins already set up as push-pull outputs */
+static uint16_t s_inputs;       /* pins already set up as pulled-up inputs */
 
 static bool rd16(uint8_t reg, uint16_t *out)
 {
@@ -171,6 +173,34 @@ esp_err_t m5ioe1_set_output(int pin_index, int level)
         ESP_LOGW(TAG, "pin %d: write %d failed", pin_index, level);
         return ESP_FAIL;
     }
+    return ESP_OK;
+}
+
+esp_err_t m5ioe1_read_input(int pin_index, int *level)
+{
+    if (pin_index < 0 || pin_index >= IOE_PIN_COUNT || level == NULL) return ESP_ERR_INVALID_ARG;
+
+    esp_err_t err = m5ioe1_init();
+    if (err != ESP_OK) return err;
+
+    const uint16_t bit = (uint16_t)(1u << pin_index);
+    if (!(s_inputs & bit)) {
+        uint16_t mode, pu;
+        bool ok = rd16(REG_GPIO_MODE_L, &mode) && rd16(REG_GPIO_PU_L, &pu);
+        if (ok && (mode & bit)) ok = wr16(REG_GPIO_MODE_L, mode & ~bit);
+        if (ok && !(pu & bit))  ok = wr16(REG_GPIO_PU_L, pu | bit);
+        if (ok) ok = clear_bit(REG_GPIO_PD_L, pin_index);
+        if (!ok) {
+            ESP_LOGW(TAG, "pin %d: input setup failed", pin_index);
+            return ESP_FAIL;
+        }
+        s_inputs |= bit;
+        s_configured &= ~bit;
+    }
+
+    uint16_t in;
+    if (!rd16(REG_GPIO_IN_L, &in)) return ESP_FAIL;
+    *level = (in & bit) ? 1 : 0;
     return ESP_OK;
 }
 

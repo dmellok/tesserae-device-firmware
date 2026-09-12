@@ -37,8 +37,9 @@
  * pass got wrong, both now board knobs on the driver: the grey OTP waveform
  * is selected with temperature value 0x5A, not the Sticky's 0x67 (which paints
  * static here), and the mid-grey planes are the Sticky's swapped. Both side
- * keys repaint the panel. Not yet exercised: the buzzer, deep sleep on
- * battery, BLE setup.
+ * keys repaint the panel. Touch, the microSD deck cache, the frontlight, the
+ * red status LED and partial refresh were wired after that first pass; see
+ * their sections for what each has been seen doing.
  */
 #pragma once
 
@@ -141,39 +142,72 @@
 #define BOARD_BUZZER_PIN       42
 
 /* ------------------------------------------------------------------ */
-/* Touch -- FT6336G, present, NOT enabled                                */
+/* Touch -- FocalTech FT6336G on the system I2C bus                        */
 /* ------------------------------------------------------------------ */
-/* A FocalTech FT6336G at 0x38 on the system bus, INT on GPIO4 (an RTC pad,
- * so it could join the ext1 wake mask), reset on expander PYG6 (index 5) and
- * power on expander PYG13 (index 12). It reports in the 480x800 portrait
- * frame directly (M5GFX: x 0..479, y 0..799, offset_rotation 0; M5 quotes an
- * active area of 5..475 x 5..795). Not wired: this firmware's touch path is
- * the Goodix GT911 driver, and the FT6336 has a different register map
- * (touch count at 0x02, first point at 0x03..0x06). A touch_ft6336.c behind
- * the same touch_*() API, plus expander-driven reset/power in its init, is
- * the follow-up; the panel comes first. BOARD_HAS_TOUCH stays undefined so
- * main.c's touch paths compile out. */
+/* Address 0x38, INT on GPIO4 (an RTC pad, so it joins the button ext1
+ * ANY_LOW wake mask), reset on expander PYG6 (index 5) and power on expander
+ * PYG13 (index 12). Driven by touch_ft6336.c (BOARD_TOUCH_FT6336), which
+ * takes the place of the GT911 driver behind the same touch_*() API. The
+ * controller reports in the 480x800 portrait frame directly (M5GFX: x
+ * 0..479, y 0..799, offset_rotation 0), so no swap and no inversion; the
+ * selftest confirmed it (top-left tap -> (34,63), bottom-right -> (458,762);
+ * chip 0x64, vendor 0x11, fw 0x13). Both expander lines keep their
+ * state through the MCU's deep sleep, so the digitiser stays powered and a
+ * touch pulls INT low to wake the board; the controller's own monitor mode
+ * is what bounds the standing draw. Enabled at runtime by the server
+ * (touch_enabled), off by default like every touch panel here. */
+#define BOARD_HAS_TOUCH              1
+#define BOARD_TOUCH_FT6336           1
+#define BOARD_TOUCH_I2C_PORT         0
+#define BOARD_TOUCH_I2C_SDA          47
+#define BOARD_TOUCH_I2C_SCL          48
+#define BOARD_TOUCH_I2C_HZ           400000
+#define BOARD_TOUCH_I2C_ADDR         0x38
+#define BOARD_TOUCH_INT_PIN          4
+#define BOARD_TOUCH_RST_M5IOE1_PIN   5     /* PYG6:  TP_RST, active low */
+#define BOARD_TOUCH_EN_M5IOE1_PIN    12    /* PYG13: TP_VDD_EN, active high */
+#define BOARD_TOUCH_FRAME_W          480
+#define BOARD_TOUCH_FRAME_H          800
+#define BOARD_TOUCH_SWAP_XY          0
+#define BOARD_TOUCH_INVERT_X         0
+#define BOARD_TOUCH_INVERT_Y         0
 
 /* ------------------------------------------------------------------ */
-/* microSD -- present, NOT enabled                                       */
+/* microSD -- SDMMC on dedicated pins, rail and detect on the expander     */
 /* ------------------------------------------------------------------ */
-/* Dedicated SDMMC pins (CLK 13, CMD 12, D0 11, D1 10, D2 9, D3 8), so the
- * deck cache would take the SD_USE_SDMMC path with no bus sharing at all.
- * The slot's power (TF_EN, expander PYG14 / index 13) and card detect
- * (TF_DET, PYG1 / index 0) are expander pins, and sdcard.c drives SD_PIN_EN
- * as a GPIO, so enabling it needs an expander-aware rail hook there first.
- * Left off for bring-up; the cache is an optimisation. */
+/* CLK 13 / CMD 12 / D0 11 (D1-D3 on 10/9/8 unused: mounted 1-bit like the
+ * Waveshare boards), so the deck cache shares nothing with the panel. Slot
+ * power (TF_EN, PYG14 / index 13) and card detect (TF_DET, PYG1 / index 0,
+ * active low) are expander pins; sdcard.c drives them through m5ioe1.
+ * Verified 2026-09-12: a 16 GB card mounts at 20 MHz, write + digest +
+ * read-back pass (m5stack-papermono-sdtest). */
+#define TESSERAE_SD_SLOT      1
+#define SD_USE_SDMMC          1
+#define SD_MMC_PIN_CLK        13
+#define SD_MMC_PIN_CMD        12
+#define SD_MMC_PIN_D0         11
+#define SD_EN_M5IOE1_PIN      13
+#define SD_DET_M5IOE1_PIN     0
+
+/* ------------------------------------------------------------------ */
+/* Frontlight and status LED, both through the M5PM1                       */
+/* ------------------------------------------------------------------ */
+/* Frontlight: PWM0 on the PMIC's GPIO3 at 5 kHz (M5's PowerDemo). Server
+ * config `frontlight_pct` (0-100, default 0); the PMIC keeps the PWM running
+ * through the MCU's deep sleep, so a lit panel stays lit until set to 0.
+ * Status LED: the red channel of the RGB LED is the PMIC's LED_EN line, so
+ * led.c gets its boot indicator through m5pm1_led_set(); green and blue sit
+ * on expander PWM channels and stay dark. */
+#define BOARD_FRONTLIGHT_M5PM1   1
+#define BOARD_LED_M5PM1          1
 
 /* ------------------------------------------------------------------ */
 /* Also on the board, unused                                             */
 /* ------------------------------------------------------------------ */
-/* Frontlight: PWM on the PMIC's GPIO3 (M5PM1 PWM0), off unless driven, so
- * the panel behaves like every other unlit e-paper here. RGB LED: red via
- * the PMIC's LED_EN, green/blue via expander PWM channels; led.c wants a GPIO,
- * so no status LED. PDM mic, BMI270, RX8130CE RTC, SX1262 LoRa (SPI on
- * 38/39/40/41, BUSY 21, IRQ 5, Pro only) and ST25R3916 NFC (IRQ 6, Pro only)
- * have no consumer in this firmware. The RX8130CE could seed the clock like
- * the reTerminals' PCF8563 does; different register map, a follow-up. */
+/* PDM mic, BMI270, RX8130CE RTC, SX1262 LoRa (SPI on 38/39/40/41, BUSY 21,
+ * IRQ 5, Pro only) and ST25R3916 NFC (IRQ 6, Pro only) have no consumer in
+ * this firmware. The RX8130CE could seed the clock like the reTerminals'
+ * PCF8563 does; different register map, a follow-up. */
 
 /* Board model -> default device id "PaperMono_<mac-suffix>". Same model for
  * the Pro and Lite variants. */
@@ -202,11 +236,16 @@
  * board needs OPI PSRAM enabled, which sdkconfig.defaults does). */
 #define MCU_TIER_S3_OCTAL_PSRAM 1
 
-/* No BOARD_OVERLAY_PARTIAL yet. The SSD1677's windowed partial waveform is
- * what gives the Sticky its live slots and frame patches, and this is the
- * same controller family, so it should carry over -- but it is enabled only
- * after the full-paint path is seen working on a real unit, and M5 itself
- * advises a full refresh after about ten partials on this glass. */
+/* Local overlay render mode (overlay.h): the SSD1677's windowed partial
+ * waveform, as on the Sticky -- tap echo, touch-v3 primitives, live value
+ * slots and frame patches, with quality repaints falling back to a full
+ * 4-gray paint. M5 advises a full refresh after about ten partials on this
+ * glass, which the driver's hygiene repaint already covers. With
+ * BOARD_HAS_TOUCH above this also enables touch v3. Verified 2026-09-12
+ * (m5stack-papermono-overlaytest): tiles invert and a digit slot counts
+ * cleanly at ~0.78 s a window against 3.9 s for a full paint, with the
+ * rest of the page undisturbed. */
+#define BOARD_OVERLAY_PARTIAL 1
 
 /* Selected panel driver: Family E, SSD1677 grayscale over SPI. */
 #define PANEL_DRIVER_SSD1677_GRAY 1

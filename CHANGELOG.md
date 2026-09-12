@@ -23,6 +23,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Verified on hardware 2026-09-12: selftest ramp, captive portal, register,
   a dashboard frame over REST (upright, correct greys), both side keys,
   PMIC battery.
+- PaperMono, second pass the same day: FT6336G touch (new
+  `src/touch_ft6336.c` behind the shared touch API, selected by
+  `BOARD_TOUCH_FT6336`; reset and power on the expander, INT on GPIO4 in the
+  ext1 wake mask, corner taps land on the frame's corners), the microSD deck
+  cache over SDMMC with the slot rail and card detect on the expander
+  (`SD_EN_M5IOE1_PIN` / `SD_DET_M5IOE1_PIN` in sdcard.c; a 16 GB card mounts
+  at 20 MHz and passes the write/read selftest), partial refresh
+  (`BOARD_OVERLAY_PARTIAL`, ~0.78 s a window, verified with the overlay
+  selftest), the frontlight as server config `frontlight_pct` driven through
+  the M5PM1's PWM0 (the PMIC keeps it lit across deep sleep), and the red
+  LED as the boot indicator through the PMIC's LED_EN (`BOARD_LED_M5PM1` in
+  led.c).
 - `ssd1677_gray` gained two per-glass knobs the PaperMono needed:
   `EPD_SSD1677_GRAY_TEMP` (the temperature value that selects the 4-gray OTP
   waveform; default the Sticky's 0x67, the PaperMono wants 0x5A and paints

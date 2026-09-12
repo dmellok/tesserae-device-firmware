@@ -86,6 +86,9 @@ typedef struct {
     int      touch_enabled;     /* config.touch_enabled: -1 absent, else 0/1 */
     int32_t  touch_linger_s;    /* config.touch_linger_s: -1 absent */
 #endif
+#ifdef BOARD_FRONTLIGHT_M5PM1
+    int32_t  frontlight_pct;    /* config.frontlight_pct: -1 absent */
+#endif
 #ifdef BOARD_BUZZER_PIN
     int      beep_enabled;      /* config.beep_enabled: -1 absent, else 0/1 */
     int32_t  beep_volume;       /* config.beep_volume: -1 absent */

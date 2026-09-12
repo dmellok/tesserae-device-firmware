@@ -51,6 +51,7 @@
 #include "sdmmc_cmd.h"      /* raw-sector benchmark in DECK_SD_SELFTEST */
 #include "esp_heap_caps.h"
 #include "touch_gt911.h"    /* GT911 touch wake (guarded by BOARD_HAS_TOUCH) */
+#include "m5pm1.h"          /* PaperMono frontlight (BOARD_FRONTLIGHT_M5PM1) */
 #include "panel/epd_panel.h" /* epd_active_driver()->info.bpp (selftests) */
 #include "touch_queue.h"    /* RTC replay queue for unsent touches (guarded) */
 #include "touch_wakestub.h" /* RTC wake-stub early touch capture (guarded) */
@@ -1349,6 +1350,12 @@ void app_main(void)
     if (nvs_early != ESP_OK)
         ESP_LOGW(TAG, "early nvs init: %s (config reads defaults until wifi init)",
                  esp_err_to_name(nvs_early));
+
+#ifdef BOARD_FRONTLIGHT_M5PM1
+    /* Re-assert the saved frontlight level: the PMIC keeps its PWM across our
+     * deep sleep, but a power cycle or a PMIC reset clears it. Cheap. */
+    m5pm1_frontlight_set(rest_config_get()->frontlight_pct);
+#endif
 
     esp_reset_reason_t reset_reason = esp_reset_reason();
     bool settings_mode = detect_settings_mode(reset_reason);
@@ -2735,6 +2742,19 @@ void app_main(void)
                              en, rest_config_get()->beep_pattern,
                              (long)rest_config_get()->beep_volume);
                 }
+            }
+#endif
+#ifdef BOARD_FRONTLIGHT_M5PM1
+            /* Frontlight percent, same channel and absent-means-keep rule. The
+             * PMIC runs the PWM itself, so applying it once here is enough:
+             * it stays lit through our deep sleep until set back to 0. */
+            if (so.frontlight_pct >= 0 &&
+                so.frontlight_pct != rest_config_get()->frontlight_pct) {
+                rest_config_set_frontlight(so.frontlight_pct);
+                cfg_dirty = true;
+                m5pm1_frontlight_set(rest_config_get()->frontlight_pct);
+                ESP_LOGI(TAG, "frontlight config: %ld%%",
+                         (long)rest_config_get()->frontlight_pct);
             }
 #endif
 #if BOARD_OVERLAY_PARTIAL

@@ -21,6 +21,23 @@
 
 static const char *TAG = "sdcard";
 
+/* Slot power and card detect. Usually GPIOs (SD_PIN_EN / SD_PIN_DET); the
+ * M5Stack PaperMono has both on its M5IOE1 expander instead
+ * (SD_EN_M5IOE1_PIN / SD_DET_M5IOE1_PIN, expander pin indices). */
+#if defined(SD_EN_M5IOE1_PIN) || defined(SD_DET_M5IOE1_PIN)
+#include "m5ioe1.h"
+#endif
+#if defined(SD_EN_M5IOE1_PIN)
+#  define SD_HAVE_EN 1
+#  define SD_RAIL_SET(on) ((void)m5ioe1_set_output(SD_EN_M5IOE1_PIN, (on)))
+#elif defined(SD_PIN_EN)
+#  define SD_HAVE_EN 1
+#  define SD_RAIL_SET(on) gpio_set_level((gpio_num_t)SD_PIN_EN, (on))
+#else
+#  define SD_HAVE_EN 0
+#  define SD_RAIL_SET(on) ((void)0)
+#endif
+
 static sdmmc_card_t *s_card;
 
 bool sdcard_mounted(void) { return s_card != NULL; }
@@ -34,7 +51,10 @@ bool sdcard_mounted(void) { return s_card != NULL; }
  * refresh whenever its card failed to mount (firmware #34). */
 static void park_lines(void)
 {
-#if !defined(SD_USE_SDMMC)
+#if defined(SD_USE_SDMMC)
+    /* Dedicated pins: nothing shares them, so parking is just the rail. */
+    SD_RAIL_SET(0);
+#else
     gpio_config_t out = {
         .pin_bit_mask = (1ULL << SD_PIN_CS)
 #ifdef SD_PIN_EN
@@ -75,10 +95,10 @@ void sdcard_quiesce(void)
 
 static void slot_power_cycle(void)
 {
-#ifdef SD_PIN_EN
-    gpio_set_level((gpio_num_t)SD_PIN_EN, 0);
+#if SD_HAVE_EN
+    SD_RAIL_SET(0);
     vTaskDelay(pdMS_TO_TICKS(SD_RETRY_OFF_MS));
-    gpio_set_level((gpio_num_t)SD_PIN_EN, 1);
+    SD_RAIL_SET(1);
     vTaskDelay(pdMS_TO_TICKS(SD_RAIL_SETTLE_MS));
 #else
     vTaskDelay(pdMS_TO_TICKS(SD_RETRY_OFF_MS));
@@ -98,7 +118,18 @@ bool sdcard_mount(void)
     vTaskDelay(pdMS_TO_TICKS(10));   /* rail settle before the probe */
 #endif
 
-#ifdef SD_PIN_DET
+#if defined(SD_DET_M5IOE1_PIN)
+    /* Card-detect on the expander, active low like the GPIO flavour below. A
+     * failed expander read falls through to the mount attempt rather than
+     * declaring the slot empty. */
+    {
+        int lvl = 0;
+        if (m5ioe1_read_input(SD_DET_M5IOE1_PIN, &lvl) == ESP_OK && lvl != 0) {
+            ESP_LOGD(TAG, "no card detected");
+            return false;
+        }
+    }
+#elif defined(SD_PIN_DET)
     /* Card-detect is active low. No card -> skip the whole probe (fast path
      * for cardless devices on every wake). */
     gpio_config_t det = {
@@ -112,14 +143,16 @@ bool sdcard_mount(void)
         return false;
     }
 #endif
-#ifdef SD_PIN_EN
+#if SD_HAVE_EN
     /* Slot power gate (active high). Give the card a moment on the rail. */
+#ifdef SD_PIN_EN
     gpio_config_t en = {
         .pin_bit_mask = 1ULL << SD_PIN_EN,
         .mode = GPIO_MODE_OUTPUT,
     };
     gpio_config(&en);
-    gpio_set_level((gpio_num_t)SD_PIN_EN, 1);
+#endif
+    SD_RAIL_SET(1);
     vTaskDelay(pdMS_TO_TICKS(SD_RAIL_SETTLE_MS));
 #endif
 

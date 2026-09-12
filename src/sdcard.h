@@ -19,6 +19,11 @@
  *     #define SD_PIN_DET   <gpio>         // optional: card-detect, active low
  *     #define SD_PIN_EN    <gpio>         // optional: slot power, active high
  *
+ *   Either flavour may put the rail and card-detect on an M5IOE1 expander
+ *   instead of GPIOs (M5Stack PaperMono):
+ *     #define SD_EN_M5IOE1_PIN   <index>   // slot power, active high
+ *     #define SD_DET_M5IOE1_PIN  <index>   // card-detect, active low
+ *
  * Everything is RUNTIME gated: no card / no slot / mount failure all degrade
  * to "capability absent" and the wake loop behaves exactly as before. Boards
  * without TESSERAE_SD_SLOT compile this to no-op stubs.

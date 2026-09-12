@@ -33,6 +33,9 @@ typedef struct {
     bool    touch_enabled;        /* server config: arm GT911 touch wake (default false) */
     int32_t touch_linger_s;       /* server config: stay awake N s after a touch (0-60) */
 #endif
+#ifdef BOARD_FRONTLIGHT_M5PM1
+    int32_t frontlight_pct;       /* server config: panel frontlight, 0-100 (0 = off) */
+#endif
 #ifdef BOARD_BUZZER_PIN
     /* Buzzer feedback (#258). The server sends the notes, not a tone name:
      * "freq:ms" steps, comma separated, 0 Hz meaning a rest. Sized for the
@@ -170,6 +173,11 @@ void rest_config_set_touch(bool enabled, int32_t linger_s);
 /* Buzzer feedback (#258). An empty/NULL pattern leaves the stored one alone,
  * so a config block that omits it cannot blank the tone. */
 void rest_config_set_beep(bool enabled, const char *pattern, int32_t volume);
+#endif
+#ifdef BOARD_FRONTLIGHT_M5PM1
+/* Frontlight brightness from server config, clamped to 0-100. Cache mutator;
+ * persist with rest_config_save(). Applying it to the PMIC is the caller's. */
+void rest_config_set_frontlight(int32_t pct);
 #endif
 
 /* Deck nav state mutators (NULL leaves a field unchanged; "" clears). RAM

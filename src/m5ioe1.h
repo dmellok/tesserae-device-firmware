@@ -43,3 +43,7 @@ bool m5ioe1_available(void);
  * touched, then drive it to `level` (0 or 1). The expander keeps its output
  * registers while the MCU deep-sleeps, so a rail left high stays high. */
 esp_err_t m5ioe1_set_output(int pin_index, int level);
+
+/* Configure `pin_index` as an input with the pull-up on (first touch only)
+ * and read its level into *level. For the PaperMono's card-detect switch. */
+esp_err_t m5ioe1_read_input(int pin_index, int *level);

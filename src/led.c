@@ -2,7 +2,7 @@
 
 #include "led.h"
 
-#ifdef BOARD_LED_PIN
+#if defined(BOARD_LED_PIN) || defined(BOARD_LED_M5PM1)
 
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -20,10 +20,15 @@ static uint64_t s_off_us;
 static bool     s_lit;          /* current blink phase */
 static bool     s_ready;        /* led_init() ran */
 
+#ifdef BOARD_LED_M5PM1
+#include "m5pm1.h"
+static inline void led_drive(bool on) { (void)m5pm1_led_set(on); }
+#else
 static inline void led_drive(bool on)
 {
     gpio_set_level((gpio_num_t)BOARD_LED_PIN, BOARD_LED_ACTIVE_LOW ? !on : on);
 }
+#endif
 
 /* One-shot timer re-armed each phase, so on and off can differ in length
  * without a second timer. */
@@ -43,7 +48,11 @@ static void led_blink_stop(void)
 void led_init(void)
 {
     if (s_ready) return;
-
+#ifdef BOARD_LED_M5PM1
+    s_ready = true;
+    led_drive(true);
+    return;
+#else
     const gpio_config_t io = {
         .pin_bit_mask = 1ULL << BOARD_LED_PIN,
         .mode         = GPIO_MODE_OUTPUT,
@@ -60,6 +69,7 @@ void led_init(void)
     }
     s_ready = true;
     led_drive(true);
+#endif
 }
 
 void led_set(bool on)
@@ -112,7 +122,9 @@ void led_prepare_sleep(void)
     if (!s_ready) return;
     led_drive(false);
 
-#if BOARD_LED_ACTIVE_LOW
+#if defined(BOARD_LED_M5PM1)
+    /* The PMIC holds the LED_EN level itself; off is off. */
+#elif BOARD_LED_ACTIVE_LOW
     /* Active-low: the LED hangs between 3V3 and the pin, so an input with no
      * pulls sinks nothing and is off. That draws exactly as much as a held-high
      * output (zero) without needing gpio_deep_sleep_hold_en(), which is global
@@ -134,4 +146,4 @@ void led_prepare_sleep(void)
     s_ready = false;   /* led_init() reconfigures on the next boot / wake */
 }
 
-#endif /* BOARD_LED_PIN */
+#endif /* BOARD_LED_PIN || BOARD_LED_M5PM1 */

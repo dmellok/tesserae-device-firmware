@@ -13,6 +13,9 @@
  *   BOARD_LED_ACTIVE_LOW   1 when the LED is wired pin -> 3V3 and lights on a
  *                          low output (all reTerminals per Seeed's
  *                          examples/base/LED_Control/LED_Control.ino)
+ *   BOARD_LED_M5PM1        instead of a GPIO: the red channel of the M5Stack
+ *                          PaperMono's RGB LED, driven through the PMIC
+ *                          (m5pm1_led_set). Same on/blink/sleep contract.
  */
 #pragma once
 
@@ -21,7 +24,7 @@
 
 #include "app_config.h"   /* boards/board.h: BOARD_LED_PIN */
 
-#ifdef BOARD_LED_PIN
+#if defined(BOARD_LED_PIN) || defined(BOARD_LED_M5PM1)
 
 /* Configure the pin as an output and light the LED (boot indicator). */
 void led_init(void);
