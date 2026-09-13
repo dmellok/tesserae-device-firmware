@@ -72,3 +72,43 @@ Fixes landed but NOT yet bench-verified:
    same way, so if silent suspect volume/duty or the enabled flag not
    reaching the device), stay-awake under console.
 4. Board is currently on `m5stack-papermono-selftest` (halts after the ramp).
+
+## 2026-09-13: what the "loop" actually was, and fixes
+
+Under console, the repaint-every-cycle symptom decomposed into three things:
+
+1. **Main-task stack overflow -> panic (reset reason 4) on every cycle with the
+   card fitted.** `sdkconfig.usbjtag.defaults` (PaperMono, PaperS3) gave the
+   main task 8 KB where every other fragment gives 16 KB; the SD-backed
+   deck/proto2/touch3 paths after the status post blew it. Fixed by raising
+   the fragment to 16 KB (regenerate `sdkconfig.m5stack-*`).
+2. **Occasional power-on resets (reset reason 1) mid-cycle**, cold boot logo
+   each time. Never seen again after two changes made together: PMIC
+   read-modify-writes are now paced (500 us gaps like M5's library), require
+   two matching reads, refuse a PWR_CFG value that says our rails are off,
+   and skip redundant PWM writes; and the SD slot rail is raised once and
+   never cut (`SD_RAIL_KEEP`). Which of the two mattered is not proven.
+3. **VBAT reading ~120 mV**: the register's high byte is a full byte, not a
+   nibble; masking to 4 bits chopped every reading above 4096 mV. Fixed.
+
+Also found and fixed today:
+- Frontlight: the LED string is fed from the panel's 3.3 V rail (expander
+  EPD_3V3_EN); it lit only during refreshes until the driver stopped cutting
+  that rail while a frontlight level is set (`m5pm1_frontlight_active()`).
+  Register writes now match M5GFX's backlight class exactly (GPIO3 left as
+  input, PWM function, 5 kHz, duty|EN). Verified lit at 30%.
+- Deck cache frame writes failed every cycle: the 32 KB DMA bounce buffer
+  cannot be allocated once Wi-Fi/TLS/touch buffers are up. Now steps down to
+  smaller chunks; failures log the step and errno.
+- Touch in the always-on loop missed short taps: the FT6336 releases INT the
+  moment the finger lifts (~140 ms for a tap, measured), unlike the GT911.
+  A falling-edge ISR now latches INT; `touch_int_asserted()` reports it once.
+  Verified: taps beep and dispatch in always-on; corner mapping 1:1.
+- The bench unit also woke once from deep sleep on a touch with no point
+  readable (spurious or racy); the RTC pull-up + withhold guard from
+  yesterday stays. Deep-sleep touch wake on battery still to be watched.
+
+Verified today: battery 4.15-4.22 V read correctly, frontlight lit, both
+keys in always-on (beep + repaint), taps in always-on (beep), stable cycles
+with the card in, no panics, no power-on resets across ~20 min of logging.
+Still open: buzzer via a deep-sleep touch wake on battery, long soak.

@@ -11,6 +11,7 @@
 #include "driver/i2c_master.h"
 #include "esp_attr.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "i2c_bus.h"
@@ -62,12 +63,35 @@ static bool pm1_open(void)
     return i2c_master_bus_add_device(bus, &cfg, &s_dev) == ESP_OK;
 }
 
+/* The PM1 is a small MCU serving I2C in firmware; M5's own library pads every
+ * transaction with 500 us before and after (M5PM1_i2c_compat.h). Without the
+ * gap, a burst of read-modify-writes returned garbage on the bench. */
+#define PM1_GAP_US 500
+
+static bool pm1_xfer_rd(uint8_t reg, uint8_t *rx, size_t n)
+{
+    esp_rom_delay_us(PM1_GAP_US);
+    esp_err_t err = i2c_master_transmit_receive(s_dev, &reg, 1, rx, n, PM1_TIMEOUT_MS);
+    esp_rom_delay_us(PM1_GAP_US);
+    return err == ESP_OK;
+}
+
+static bool pm1_xfer_wr(const uint8_t *tx, size_t n)
+{
+    esp_rom_delay_us(PM1_GAP_US);
+    esp_err_t err = i2c_master_transmit(s_dev, tx, n, PM1_TIMEOUT_MS);
+    esp_rom_delay_us(PM1_GAP_US);
+    return err == ESP_OK;
+}
+
 static bool pm1_read_vbat(uint16_t *mv)
 {
-    uint8_t reg = REG_VBAT_L, rx[2];
-    if (i2c_master_transmit_receive(s_dev, &reg, 1, rx, sizeof rx, PM1_TIMEOUT_MS) != ESP_OK)
-        return false;
-    *mv = (uint16_t)rx[0] | ((uint16_t)(rx[1] & 0x0f) << 8);
+    uint8_t rx[2];
+    if (!pm1_xfer_rd(REG_VBAT_L, rx, sizeof rx)) return false;
+    /* Full 16 bits. M5's header calls 0x23 "high 4 bits", but a full cell on
+     * USB reads 0x1078 (4216 mV): the high byte carries bit 12 too, and a
+     * nibble mask turned every reading above 4096 mV into ~120 mV. */
+    *mv = (uint16_t)rx[0] | ((uint16_t)rx[1] << 8);
     return true;
 }
 
@@ -75,14 +99,36 @@ static bool pm1_read_vbat(uint16_t *mv)
  * NACKs the first transaction that follows. M5's reference code wakes it by
  * writing the idle timeout to 0 twice (the first write can be swallowed on
  * the way out of sleep); do the same before retrying. */
+static bool pm1_rd8(uint8_t reg, uint8_t *v);
+static bool pm1_wr8(uint8_t reg, uint8_t v);
+
 static void pm1_wake(void)
 {
     uint8_t tx[2] = { REG_I2C_CFG, 0x00 };
     for (int i = 0; i < 2; i++) {
-        (void)i2c_master_transmit(s_dev, tx, sizeof tx, PM1_TIMEOUT_MS);
+        (void)pm1_xfer_wr(tx, sizeof tx);
         vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
+
+#ifdef M5PM1_DEBUG_DUMP
+/* Bring-up aid: every register the firmware touches or reads, plus the
+ * chip identity, once per boot. Enable with -DM5PM1_DEBUG_DUMP. */
+static void pm1_debug_dump(const char *when)
+{
+    static const uint8_t regs[] = { 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
+                                    0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x48, 0x49, 0x4A,
+                                    0x10, 0x12, 0x13, 0x16, 0x22, 0x23, 0x24, 0x25 };
+    char line[200]; int n = 0;
+    for (size_t i = 0; i < sizeof regs; i++) {
+        uint8_t v = 0xEE;
+        bool ok = pm1_rd8(regs[i], &v);
+        n += snprintf(line + n, sizeof line - (size_t)n, " %02x=%s%02x",
+                      regs[i], ok ? "" : "!", v);
+        if (n > 150 || i + 1 == sizeof regs) { ESP_LOGW(TAG, "dump %s:%s", when, line); n = 0; }
+    }
+}
+#endif
 
 static void pm1_refresh(void)
 {
@@ -93,6 +139,19 @@ static void pm1_refresh(void)
         ESP_LOGW(TAG, "I2C bus unavailable");
         return;
     }
+    {
+        uint8_t pc = 0;
+        if (pm1_rd8(REG_PWR_CFG, &pc)) ESP_LOGI(TAG, "PWR_CFG 0x%02x", pc);
+    }
+#ifdef M5PM1_DEBUG_DUMP
+    pm1_debug_dump("boot");
+    /* Clear the wake-source flags and the three IRQ status registers so the
+     * NEXT boot's dump shows why the PMIC brought us up, not history. */
+    (void)pm1_wr8(0x05, 0x00);
+    (void)pm1_wr8(0x40, 0x00);
+    (void)pm1_wr8(0x41, 0x00);
+    (void)pm1_wr8(0x42, 0x00);
+#endif
 
     uint16_t mv = 0;
     bool ok = pm1_read_vbat(&mv);
@@ -120,7 +179,7 @@ static void pm1_refresh(void)
 
 static bool pm1_rd8(uint8_t reg, uint8_t *v)
 {
-    return i2c_master_transmit_receive(s_dev, &reg, 1, v, 1, PM1_TIMEOUT_MS) == ESP_OK;
+    return pm1_xfer_rd(reg, v, 1);
 }
 
 static bool pm1_wr(uint8_t reg, const uint8_t *data, size_t n)
@@ -128,29 +187,53 @@ static bool pm1_wr(uint8_t reg, const uint8_t *data, size_t n)
     uint8_t tx[4] = { reg };
     if (n > 3) return false;
     memcpy(tx + 1, data, n);
-    return i2c_master_transmit(s_dev, tx, n + 1, PM1_TIMEOUT_MS) == ESP_OK;
+    return pm1_xfer_wr(tx, n + 1);
 }
 
 static bool pm1_wr8(uint8_t reg, uint8_t v) { return pm1_wr(reg, &v, 1); }
 
-/* Read-modify-write one register; a NACK gets one wake-and-retry. */
+/* Read-modify-write one register, defensively. A PM1 read that returns
+ * garbage and is written straight back can clear DCDC_EN / LDO_EN in
+ * PWR_CFG, which cuts our own power: the bench unit came back from a
+ * power-on reset mid-cycle more than once (2026-09-13) with the LED write at
+ * the end of the cycle as the prime suspect. So: two reads must agree, a
+ * PWR_CFG value that says our rails are off is rejected as a misread (we are
+ * running, so they are on), and the result is read back. */
 static bool pm1_rmw(uint8_t reg, uint8_t mask, uint8_t value)
 {
-    uint8_t cur = 0;
-    if (!pm1_rd8(reg, &cur)) {
+    uint8_t a = 0, b = 0xFF;
+    if (!pm1_rd8(reg, &a)) {
         pm1_wake();
-        if (!pm1_rd8(reg, &cur)) return false;
+        if (!pm1_rd8(reg, &a)) return false;
     }
-    uint8_t want = (uint8_t)((cur & ~mask) | (value & mask));
-    if (want == cur) return true;
-    return pm1_wr8(reg, want);
+    if (!pm1_rd8(reg, &b) || a != b) {
+        ESP_LOGW(TAG, "reg 0x%02x read unstable (%02x/%02x); write skipped", reg, a, b);
+        return false;
+    }
+    if (reg == REG_PWR_CFG && (a & 0x06) != 0x06) {
+        ESP_LOGW(TAG, "PWR_CFG reads %02x with DCDC/LDO off while running; write skipped", a);
+        return false;
+    }
+    uint8_t want = (uint8_t)((a & ~mask) | (value & mask));
+    if (want == a) return true;
+    if (!pm1_wr8(reg, want)) return false;
+    uint8_t chk = 0;
+    if (pm1_rd8(reg, &chk) && chk != want) {
+        ESP_LOGW(TAG, "reg 0x%02x wrote %02x, reads back %02x", reg, want, chk);
+    }
+    return true;
 }
 
 #ifdef BOARD_FRONTLIGHT_M5PM1
+static int s_frontlight_pct;
+
+bool m5pm1_frontlight_active(void) { return s_frontlight_pct > 0; }
+
 esp_err_t m5pm1_frontlight_set(int pct)
 {
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
+    s_frontlight_pct = pct;
     if (!pm1_open()) return ESP_ERR_INVALID_STATE;
 #ifdef BOARD_BATTERY_M5PM1
     /* Take this boot's VBAT sample BEFORE writing anything: on the bench
@@ -161,17 +244,31 @@ esp_err_t m5pm1_frontlight_set(int pct)
 
     /* Same order as M5's PowerDemo set_frontlight(): function "special"
      * (PWM0) on GPIO3, output, no pull, push-pull, then frequency and duty. */
+    /* Exactly what M5GFX's Light_M5PaperMono writes, and nothing more: drive
+     * push-pull (0x13 bit3 off), function PWM (0x16 bits 7:6 on), frequency,
+     * duty. It leaves GPIO_MODE at its input default; M5's PowerDemo sets
+     * output as well, and with output set the bench unit's light stayed dark
+     * (2026-09-13), so the direction bit is cleared here on purpose. */
     const uint8_t shift = PM1_FRONTLIGHT_GPIO * 2;
-    bool ok = pm1_rmw(REG_GPIO_FUNC0, (uint8_t)(0x03 << shift), (uint8_t)(0x03 << shift))
-           && pm1_rmw(REG_GPIO_MODE, (uint8_t)(1u << PM1_FRONTLIGHT_GPIO), (uint8_t)(1u << PM1_FRONTLIGHT_GPIO))
-           && pm1_rmw(REG_GPIO_PUPD0, (uint8_t)(0x03 << shift), 0)
-           && pm1_rmw(REG_GPIO_DRV, (uint8_t)(1u << PM1_FRONTLIGHT_GPIO), 0);
+    bool ok = pm1_rmw(REG_GPIO_DRV, (uint8_t)(1u << PM1_FRONTLIGHT_GPIO), 0)
+           && pm1_rmw(REG_GPIO_FUNC0, (uint8_t)(0x03 << shift), (uint8_t)(0x03 << shift))
+           && pm1_rmw(REG_GPIO_MODE, (uint8_t)(1u << PM1_FRONTLIGHT_GPIO), 0)
+           && pm1_rmw(REG_GPIO_PUPD0, (uint8_t)(0x03 << shift), 0);
     const uint8_t freq[2] = { PM1_PWM_HZ & 0xff, PM1_PWM_HZ >> 8 };
-    ok = ok && pm1_wr(REG_PWM_FREQ_L, freq, 2);
     const uint16_t duty12 = (uint16_t)((pct * 0x0FFF) / 100);
     const uint8_t duty[2] = { (uint8_t)(duty12 & 0xff),
                               (uint8_t)(((duty12 >> 8) & 0x0f) | (pct ? 0x10 : 0x00)) };
-    ok = ok && pm1_wr(REG_PWM0_L, duty, 2);
+    /* Only touch the PWM registers when they do not already hold the target:
+     * the PMIC keeps them across our restarts, and every write is a chance
+     * for a misread to land somewhere else. */
+    uint8_t cur[2] = {0}, curf[2] = {0};
+    bool same = pm1_xfer_rd(REG_PWM0_L, cur, 2) && pm1_xfer_rd(REG_PWM_FREQ_L, curf, 2) &&
+                cur[0] == duty[0] && (cur[1] & 0x3f) == duty[1] &&
+                curf[0] == freq[0] && curf[1] == freq[1];
+    if (!same) {
+        ok = ok && pm1_wr(REG_PWM_FREQ_L, freq, 2);
+        ok = ok && pm1_wr(REG_PWM0_L, duty, 2);
+    }
     if (!ok) {
         ESP_LOGW(TAG, "frontlight %d%%: PMIC write failed", pct);
         return ESP_FAIL;

@@ -1417,11 +1417,20 @@ void app_main(void)
     if (touch_init() == ESP_OK) {
         ESP_LOGW(TAG, "EPD_SELFTEST: GT911 id=0x%08x; touch the panel (raw -> frame)",
                  (unsigned)touch_product_id());
+        /* Also log every change of the INT line, so the wake path's premise
+         * (INT low while touched, high idle) is checked on the same glass. */
+        bool last_int = touch_int_asserted();
+        ESP_LOGW(TAG, "EPD_SELFTEST: INT asserted=%d at start", (int)last_int);
         while (1) {
             int rx = 0, ry = 0, fx = 0, fy = 0; bool pressed = false;
+            bool now_int = touch_int_asserted();
+            if (now_int != last_int) {
+                ESP_LOGI(TAG, "touch INT %s", now_int ? "ASSERTED (low)" : "released (high)");
+                last_int = now_int;
+            }
             if (touch_read_raw(&rx, &ry, &pressed) == ESP_OK && pressed) {
                 touch_translate_raw(rx, ry, &fx, &fy);   /* same point, no re-read */
-                ESP_LOGI(TAG, "touch raw=(%d,%d) -> frame=(%d,%d)", rx, ry, fx, fy);
+                ESP_LOGI(TAG, "touch raw=(%d,%d) -> frame=(%d,%d) int=%d", rx, ry, fx, fy, (int)now_int);
             }
             vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
         }

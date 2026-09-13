@@ -110,6 +110,9 @@ static bool s_port_inited = false;
 #if defined(EPD_RST_M5IOE1_PIN) || defined(EPD_EN_M5IOE1_PIN)
 #include "m5ioe1.h"
 #endif
+#ifdef BOARD_FRONTLIGHT_M5PM1
+#include "m5pm1.h"
+#endif
 #ifdef EPD_RST_M5IOE1_PIN
 #  define RST_SET(level)   m5ioe1_set_output(EPD_RST_M5IOE1_PIN, (level))
 #  define RST_GPIO_MASK    0ULL
@@ -808,7 +811,15 @@ static void ssd1677_sleep(void)
     cmd_data(SSD_SLEEP, DEEP, sizeof DEEP);
     vTaskDelay(pdMS_TO_TICKS(100));
 #if EPD_HAVE_EN
+#  ifdef BOARD_FRONTLIGHT_M5PM1
+    /* The PaperMono's frontlight LEDs hang off this same rail: keep it up
+     * while a light level is set, or the light only ever shows during a
+     * refresh. The controller is already in deep sleep mode 1 by now, so
+     * the rail carries only the LEDs and the controller's sleep current. */
+    if (!m5pm1_frontlight_active()) EN_SET(0);
+#  else
     EN_SET(0);    /* cut panel power */
+#  endif
 #endif
 }
 

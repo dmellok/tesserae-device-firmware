@@ -188,6 +188,11 @@
 #define SD_MMC_PIN_D0         11
 #define SD_EN_M5IOE1_PIN      13
 #define SD_DET_M5IOE1_PIN     0
+/* Never cut the slot rail once it is up. With the rail switched off after
+ * every cycle the bench unit power-cycled (reset reason POWERON) with a card
+ * fitted and ran clean without one (2026-09-13); M5's own firmware raises
+ * TF_EN once at boot and leaves it. Costs the card's idle current. */
+#define SD_RAIL_KEEP          1
 
 /* ------------------------------------------------------------------ */
 /* Frontlight and status LED, both through the M5PM1                       */

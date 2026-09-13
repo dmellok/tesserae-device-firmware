@@ -23,6 +23,7 @@
  *   instead of GPIOs (M5Stack PaperMono):
  *     #define SD_EN_M5IOE1_PIN   <index>   // slot power, active high
  *     #define SD_DET_M5IOE1_PIN  <index>   // card-detect, active low
+ *     #define SD_RAIL_KEEP       1         // optional: raise the rail once, never cut it
  *
  * Everything is RUNTIME gated: no card / no slot / mount failure all degrade
  * to "capability absent" and the wake loop behaves exactly as before. Boards

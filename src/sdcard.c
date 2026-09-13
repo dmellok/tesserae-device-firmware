@@ -52,8 +52,11 @@ bool sdcard_mounted(void) { return s_card != NULL; }
 static void park_lines(void)
 {
 #if defined(SD_USE_SDMMC)
-    /* Dedicated pins: nothing shares them, so parking is just the rail. */
+    /* Dedicated pins: nothing shares them, so parking is just the rail --
+     * unless the board asks for it to stay up (SD_RAIL_KEEP). */
+#if !defined(SD_RAIL_KEEP)
     SD_RAIL_SET(0);
+#endif
 #else
     gpio_config_t out = {
         .pin_bit_mask = (1ULL << SD_PIN_CS)
@@ -95,7 +98,7 @@ void sdcard_quiesce(void)
 
 static void slot_power_cycle(void)
 {
-#if SD_HAVE_EN
+#if SD_HAVE_EN && !defined(SD_RAIL_KEEP)
     SD_RAIL_SET(0);
     vTaskDelay(pdMS_TO_TICKS(SD_RETRY_OFF_MS));
     SD_RAIL_SET(1);

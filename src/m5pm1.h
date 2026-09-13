@@ -45,5 +45,12 @@ int m5pm1_battery_mv(void);
  * its own, so the light survives the MCU's deep sleep until set to 0. */
 esp_err_t m5pm1_frontlight_set(int pct);
 
+/* True while a non-zero frontlight level is set. On the PaperMono the light's
+ * LED string is fed from the panel's 3.3 V rail (the expander's EPD_3V3_EN):
+ * the bench unit lit only while the panel was powered for a refresh and went
+ * dark the moment the driver cut the rail after the paint. The panel driver
+ * asks this before dropping the rail at sleep. */
+bool m5pm1_frontlight_active(void);
+
 /* Red status LED (LED_EN): on or off. */
 esp_err_t m5pm1_led_set(bool on);

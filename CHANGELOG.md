@@ -40,6 +40,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   notes/papermono-bringup-2026-09-12.md); the FT6336 driver now also holds
   INT high through deep sleep and withholds the touch wake if the line reads
   low, and the PMIC's battery sample is taken before any PMIC write.
+  Second-day fixes (2026-09-13): `sdkconfig.usbjtag.defaults` now gives the
+  main task 16 KB like every other fragment (8 KB overflowed on the SD-backed
+  paths after the status post: a panic every cycle with a card fitted, on
+  the PaperMono and potentially the PaperS3); PMIC transactions are paced
+  and read-modify-writes are defensive; VBAT decodes all 16 bits (readings
+  above 4096 mV were chopped to ~120 mV); the frontlight keeps the panel
+  rail up because its LEDs sit on it; the SD slot rail is raised once and
+  kept (`SD_RAIL_KEEP`); the FT6336 driver latches INT on a falling edge so
+  the always-on loop catches short taps.
+- `deck_cache` steps its DMA bounce buffer down from 32 KB when a contiguous
+  block is not available (after Wi-Fi, TLS and touch buffers are up) instead
+  of failing every frame write, and logs which step failed with errno.
 - `ssd1677_gray` gained two per-glass knobs the PaperMono needed:
   `EPD_SSD1677_GRAY_TEMP` (the temperature value that selects the 4-gray OTP
   waveform; default the Sticky's 0x67, the PaperMono wants 0x5A and paints

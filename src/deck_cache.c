@@ -162,15 +162,34 @@ bool deck_cache_read_frame(const char *deck_id, const char *digest,
  * ~123 ms single-sector transfers (bench: a 1.3 MB fread took 210 s AFTER the
  * write path was fixed). read()/write() pass the full DMA-capable chunk down
  * to FATFS -> multi-sector -> ~150-200 KB/s. */
+/* The bounce chunk must be DMA-capable internal RAM. After Wi-Fi, TLS and the
+ * touch/overlay buffers are up, a contiguous SD_BOUNCE_BYTES block is not
+ * guaranteed (the PaperMono failed every frame write this way while the
+ * boot-time sdtest passed, 2026-09-13), so step down to smaller chunks
+ * before giving up, and say why when it fails. */
+static uint8_t *bounce_alloc(size_t *cap)
+{
+    for (size_t n = SD_BOUNCE_BYTES; n >= 512; n /= 2) {
+        uint8_t *p = heap_caps_malloc(n, MALLOC_CAP_DMA);
+        if (p) { *cap = n; return p; }
+    }
+    ESP_LOGW(TAG, "no DMA-capable bounce buffer (largest free %u)",
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
+    return NULL;
+}
+
 static bool bounce_write_fd(int fd, const uint8_t *src, size_t len)
 {
-    uint8_t *chunk = heap_caps_malloc(SD_BOUNCE_BYTES, MALLOC_CAP_DMA);
+    size_t cap = 0;
+    uint8_t *chunk = bounce_alloc(&cap);
     if (!chunk) return false;
     bool ok = true;
-    for (size_t off = 0; ok && off < len; off += SD_BOUNCE_BYTES) {
-        size_t n = len - off > SD_BOUNCE_BYTES ? SD_BOUNCE_BYTES : len - off;
+    for (size_t off = 0; ok && off < len; off += cap) {
+        size_t n = len - off > cap ? cap : len - off;
         memcpy(chunk, src + off, n);
-        ok = write(fd, chunk, n) == (ssize_t)n;
+        ssize_t w = write(fd, chunk, n);
+        ok = w == (ssize_t)n;
+        if (!ok) ESP_LOGW(TAG, "write returned %d of %u (errno %d)", (int)w, (unsigned)n, errno);
     }
     free(chunk);
     return ok;
@@ -179,12 +198,13 @@ static bool bounce_write_fd(int fd, const uint8_t *src, size_t len)
 static bool bounce_read_fd(int fd, uint8_t *dst, size_t cap, size_t *out_len)
 {
     if (out_len) *out_len = 0;
-    uint8_t *chunk = heap_caps_malloc(SD_BOUNCE_BYTES, MALLOC_CAP_DMA);
+    size_t bcap = 0;
+    uint8_t *chunk = bounce_alloc(&bcap);
     if (!chunk) return false;
     size_t total = 0;
     bool ok = true;
     while (total < cap) {
-        size_t want = cap - total > SD_BOUNCE_BYTES ? SD_BOUNCE_BYTES : cap - total;
+        size_t want = cap - total > bcap ? bcap : cap - total;
         ssize_t n = read(fd, chunk, want);
         if (n > 0) {
             memcpy(dst + total, chunk, (size_t)n);
@@ -216,14 +236,26 @@ bool deck_cache_write_frame(const char *deck_id, const char *digest,
     snprintf(tmp, sizeof tmp, "%s/frame.tmp", dir);
 
     int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) return false;
+    if (fd < 0) {
+        ESP_LOGW(TAG, "frame write: open %s failed (errno %d)", tmp, errno);
+        return false;
+    }
+    const char *step = "write";
     bool ok = bounce_write_fd(fd, data, len);
-    ok = (close(fd) == 0) && ok;
+    int werr = errno;
+    if (ok) { step = "close"; ok = (close(fd) == 0); werr = errno; }
+    else close(fd);
     if (ok) {
         unlink(path);
+        step = "rename";
         ok = rename(tmp, path) == 0;
+        werr = errno;
     }
-    if (!ok) { unlink(tmp); ESP_LOGW(TAG, "frame write failed for %s", digest); }
+    if (!ok) {
+        unlink(tmp);
+        ESP_LOGW(TAG, "frame write failed for %s at %s (errno %d, %s -> %s)",
+                 digest, step, werr, tmp, path);
+    }
     return ok;
 }
 

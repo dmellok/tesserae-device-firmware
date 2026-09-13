@@ -9,6 +9,7 @@
 
 #include "driver/i2c_master.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "i2c_bus.h"
@@ -28,6 +29,8 @@
 #define IOE_TIMEOUT_MS    50
 #define IOE_PROBE_TRIES   3
 #define IOE_PIN_COUNT     14
+/* Same pacing as the PM1: M5's library pads expander transactions too. */
+#define IOE_GAP_US        300
 
 static const char *TAG = "m5ioe1";
 
@@ -39,7 +42,10 @@ static uint16_t s_inputs;       /* pins already set up as pulled-up inputs */
 static bool rd16(uint8_t reg, uint16_t *out)
 {
     uint8_t rx[2];
-    if (i2c_master_transmit_receive(s_dev, &reg, 1, rx, sizeof rx, IOE_TIMEOUT_MS) != ESP_OK)
+    esp_rom_delay_us(IOE_GAP_US);
+    esp_err_t err = i2c_master_transmit_receive(s_dev, &reg, 1, rx, sizeof rx, IOE_TIMEOUT_MS);
+    esp_rom_delay_us(IOE_GAP_US);
+    if (err != ESP_OK)
         return false;
     *out = (uint16_t)rx[0] | ((uint16_t)rx[1] << 8);
     return true;
@@ -48,7 +54,10 @@ static bool rd16(uint8_t reg, uint16_t *out)
 static bool wr16(uint8_t reg, uint16_t v)
 {
     uint8_t tx[3] = { reg, (uint8_t)(v & 0xff), (uint8_t)(v >> 8) };
-    return i2c_master_transmit(s_dev, tx, sizeof tx, IOE_TIMEOUT_MS) == ESP_OK;
+    esp_rom_delay_us(IOE_GAP_US);
+    esp_err_t err = i2c_master_transmit(s_dev, tx, sizeof tx, IOE_TIMEOUT_MS);
+    esp_rom_delay_us(IOE_GAP_US);
+    return err == ESP_OK;
 }
 
 static bool rd8(uint8_t reg, uint8_t *out)

@@ -44,6 +44,7 @@
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "driver/rtc_io.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
@@ -97,6 +98,20 @@ static i2c_master_dev_handle_t s_dev;
 static bool     s_ready;
 static uint32_t s_product_id;
 static bool     s_wake_armable = true;   /* INT idled high at the last prepare_sleep */
+
+/* Falling-edge latch on INT. The FT6336 holds INT low only while a finger is
+ * on the glass (a short tap: ~140 ms on the bench), unlike the GT911, which
+ * keeps it low until the host reads the status register. A loop that polls
+ * the level every few hundred milliseconds therefore misses quick taps. The
+ * ISR records the edge; touch_int_asserted() reports it once. */
+static volatile bool s_int_latched;
+static bool          s_isr_installed;
+
+static void IRAM_ATTR int_isr(void *arg)
+{
+    (void)arg;
+    s_int_latched = true;
+}
 
 static esp_err_t ft_read(uint8_t reg, uint8_t *buf, size_t len)
 {
@@ -205,9 +220,18 @@ esp_err_t touch_init(void)
         .mode         = GPIO_MODE_INPUT,
         .pull_up_en   = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type    = GPIO_INTR_DISABLE,
+        .intr_type    = GPIO_INTR_NEGEDGE,
     };
     gpio_config(&io);
+    if (!s_isr_installed) {
+        esp_err_t ie = gpio_install_isr_service(0);
+        if (ie == ESP_OK || ie == ESP_ERR_INVALID_STATE) {   /* already installed elsewhere */
+            if (gpio_isr_handler_add((gpio_num_t)BOARD_TOUCH_INT_PIN, int_isr, NULL) == ESP_OK)
+                s_isr_installed = true;
+        }
+        if (!s_isr_installed) ESP_LOGW(TAG, "INT edge latch unavailable; level polling only");
+    }
+    s_int_latched = false;
 
     s_ready = true;
     ESP_LOGI(TAG, "FT6336 up: chip=0x%02x vendor=0x%02x fw=0x%02x int=%d",
@@ -263,7 +287,12 @@ esp_err_t touch_read_frame(int *fx, int *fy, bool *pressed)
 
 bool touch_int_asserted(void)
 {
-    return gpio_get_level(BOARD_TOUCH_INT_PIN) == 0;   /* active low */
+    if (gpio_get_level(BOARD_TOUCH_INT_PIN) == 0) return true;   /* active low */
+    if (s_int_latched) {              /* a tap came and went between polls */
+        s_int_latched = false;
+        return true;
+    }
+    return false;
 }
 
 esp_err_t touch_capture_stroke(touch_stroke_t *out,
