@@ -780,8 +780,11 @@ static void maybe_show_splash(esp_reset_reason_t reset_reason, bool has_creds)
      * this cycle's fetch cannot 304 and leave the logo up until the dashboard
      * next changes (bench 2026-09-14: a RESET press on an EE03 with an
      * unchanged frame stayed on the logo for half an hour). Same treatment as
-     * the BLE maintenance screen; RAM only, the paint stores the new ETag. */
+     * the BLE maintenance screen; RAM only, the paint stores the new ETag.
+     * A relay-only panel dedups on its own relay ETag instead, so drop that
+     * one too (the button-wake path clears both the same way). */
     rest_config_set_frame_etag("");
+    rest_config_set_relay_etag("");
 }
 
 /* ---------- REST onboarding ---------- */

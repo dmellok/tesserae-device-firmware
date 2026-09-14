@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- IT8951 boards can INIT-clear (mode 0, whole panel to white) before every
+  full paint with `EPD_IT8951_INIT_BEFORE_FULL`, not only over a retained
+  reference. Off by default; the EE03 header turns it on, where the extra
+  ~4 s per paint is nothing at its cadence and it removes the retained-
+  reference ghosting class (dmellok/tesserae#274) on the IT8951 side.
+- The IT8951 driver logs the controller's firmware and waveform-LUT
+  version strings, stored VCOM and temperature reading on every init, and
+  the VCOM read-back after any override.
+
+### Changed
+
+- Seeed XIAO EE03: hardware-verified (selftest ramp, registration,
+  dashboard frames over REST). Its IT8951 firmware ignores host VCOM
+  writes, so `EPD_VCOM_MV` is now 0 (keep the stored value), overridable
+  from build flags.
+
+### Fixed
+
+- The cold-boot logo splash could stay on the glass: the held frame ETag
+  survived the splash, so an unchanged dashboard 304'd and the paint was
+  skipped until content changed. The splash now drops the REST frame ETag
+  and the relay ETag so the next poll always repaints.
+
 ## [1.36.0] - 2026-09-13
 
 ### Added
