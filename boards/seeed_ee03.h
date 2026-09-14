@@ -51,10 +51,23 @@
 #define EPD_COL_BLACK   0x0
 #define EPD_COL_WHITE   0xF
 
-/* IT8951 VCOM, in mV (magnitude of the negative VCOM). Same safe default as
- * the E1003 (identical ED103TC2 glass); tune if contrast is off against the
- * value printed on this unit's panel FPC. */
-#define EPD_VCOM_MV     1500
+/* IT8951 VCOM: keep the controller's stored value. Bench 2026-09-14: this
+ * board's IT8951 firmware ("Seeed_v.0.1", LUT "3M29T") stores 2500 mV and
+ * IGNORES host VCOM writes with both sub-commands (0x0001 and 0x0002 read
+ * back 2500 whatever is written), so the E1003's 1500 override was inert
+ * here and there is no per-panel FPC value to apply. The driver logs the
+ * stored value and read-back on every init. Overridable from build flags. */
+#ifndef EPD_VCOM_MV
+#define EPD_VCOM_MV     0
+#endif
+
+/* INIT (mode 0) clear before every full paint. Photographed against paper it
+ * does not change the white level (the ED103TC2's white is at spec, and
+ * brighter than an Inkplate 10's ED097TC2 in the same shot), but it removes
+ * the retained-reference ghosting class (dmellok/tesserae#274) for ~4 s per
+ * paint, which is nothing at this board's hours-long cadence. Operator
+ * preference. */
+#define EPD_IT8951_INIT_BEFORE_FULL 1
 
 /* Battery sense (EE03 schematic, "BAT ADC DETE" block): GPIO1 = ADC1 channel
  * 0, 10K/10K divider (2:1), gated by a TPS22916 load switch on ADC_EN =

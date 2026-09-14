@@ -47,10 +47,12 @@ Waveshare 10.85-inch G, and the M5Stack M5Paper have been verified end-to-end
 on real hardware; the Waveshare 13.3E6 is the seed target and builds green. The EE04 pair builds green but is **not yet hardware-verified**
 (pin map taken from Seeed_GFX; the EE04 takes one panel on either its 24-pin or
 50-pin FPC — flash the env matching the attached panel and set the jumper caps
-accordingly). The **EE03** (10.3" kit) builds green but is **not yet
-hardware-verified** either; it shares the E1003's `it8951_gray` driver (same
-ED103TC2 glass and IT8951 controller), with the pin map cross-checked between
-Seeed_GFX and the EE03 V1.0 schematic. The **Xteink X4** is verified on hardware; note that later X4
+accordingly). The **EE03** (10.3" kit) is verified on hardware (selftest
+ramp, registration, dashboard frames over REST); it shares the E1003's
+`it8951_gray` driver (same ED103TC2 glass and IT8951 controller), with the pin
+map cross-checked between Seeed_GFX and the EE03 V1.0 schematic. Note its
+onboard IT8951 firmware ignores host VCOM writes (both sub-commands read back
+the stored 2500 mV), so the board keeps the stored value. The **Xteink X4** is verified on hardware; note that later X4
 production runs ship a UC8179 or UC8279 in place of the SSD1677 on the same
 board and glass, and `xteink-x4` is the SSD1677 build.
 

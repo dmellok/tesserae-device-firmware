@@ -776,6 +776,12 @@ static void maybe_show_splash(esp_reset_reason_t reset_reason, bool has_creds)
     }
     ESP_LOGI(TAG, "cold boot; showing logo splash");
     splash_show_logo();
+    /* The logo replaced the last frame on the glass. Forget the held ETag so
+     * this cycle's fetch cannot 304 and leave the logo up until the dashboard
+     * next changes (bench 2026-09-14: a RESET press on an EE03 with an
+     * unchanged frame stayed on the logo for half an hour). Same treatment as
+     * the BLE maintenance screen; RAM only, the paint stores the new ETag. */
+    rest_config_set_frame_etag("");
 }
 
 /* ---------- REST onboarding ---------- */

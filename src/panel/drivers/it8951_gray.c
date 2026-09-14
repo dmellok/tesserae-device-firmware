@@ -338,6 +338,29 @@ static esp_err_t it8951_port_init(void)
     return ESP_OK;
 }
 
+/* Log what the controller says about itself: panel geometry, the FW and
+ * waveform-LUT version strings (GET_DEV_INFO words 4..11 and 12..19), the
+ * VCOM it currently holds, and the temperature it would use if not forced.
+ * Diagnostic only, but it is the one place that tells you WHICH waveform
+ * table a given board's IT8951 was flashed with. */
+static void log_dev_diag(const uint16_t *info, const char *path)
+{
+    char fw[17], lut[17];
+    for (int i = 0; i < 8; i++) {
+        fw[2 * i]      = (char)(info[4 + i] >> 8);      /* big-endian words */
+        fw[2 * i + 1]  = (char)(info[4 + i] & 0xFF);
+        lut[2 * i]     = (char)(info[12 + i] >> 8);
+        lut[2 * i + 1] = (char)(info[12 + i] & 0xFF);
+    }
+    fw[16] = lut[16] = 0;
+    uint16_t vcom = 0, temp = 0;
+    write_cmd(VCOM); write_data(0x0000); read_ndata(&vcom, 1);
+    write_cmd(CMD_TEMP); write_data(0x0000); read_ndata(&temp, 1);
+    ESP_LOGI(TAG, "dev (%s): %ux%u fw=\"%s\" lut=\"%s\" stored VCOM=%u mV "
+             "controller temp=%u (0x%04x)", path, info[0], info[1], fw, lut,
+             vcom, temp, temp);
+}
+
 static void it8951_init(void)
 {
     /* Init with verification + one long-off retry: a cold boot can leave the
@@ -360,8 +383,11 @@ static void it8951_init(void)
         if (info[0] == EPD_WIDTH && info[1] == EPD_HEIGHT) {
             s_recovery_sleeps = 0;
             s_img_buf_addr = ((uint32_t)info[3] << 16) | info[2];
+            log_dev_diag(info, "soft attach");
 #if EPD_VCOM_MV > 0
             write_cmd(VCOM); write_data(0x0001); write_data(EPD_VCOM_MV);
+            { uint16_t rb = 0; write_cmd(VCOM); write_data(0x0000); read_ndata(&rb, 1);
+              ESP_LOGI(TAG, "VCOM override %u mV, read-back %u mV", (unsigned)EPD_VCOM_MV, rb); }
 #endif
             write_reg(REG_I80CPCR, 0x0001);
             write_cmd(CMD_TEMP); write_data(0x0001); write_data(EPD_IT8951_FORCE_TEMP_C);
@@ -423,12 +449,15 @@ static void it8951_init(void)
      * temperature. Packed-write is required for the byte-stream image load to be
      * interpreted correctly; the forced temperature selects a waveform LUT (with
      * neither, the panel accepts everything but never develops -- stays blank). */
+    log_dev_diag(info, "hard reset");
     uint16_t vcom_stored = 0;
     write_cmd(VCOM); write_data(0x0000); read_ndata(&vcom_stored, 1);
 #if EPD_VCOM_MV > 0
     ESP_LOGI(TAG, "VCOM: panel stored %u mV, overriding with %u mV, LUT temp %d C",
              vcom_stored, (unsigned)EPD_VCOM_MV, EPD_IT8951_FORCE_TEMP_C);
     write_cmd(VCOM); write_data(0x0001); write_data(EPD_VCOM_MV);
+    { uint16_t rb = 0; write_cmd(VCOM); write_data(0x0000); read_ndata(&rb, 1);
+      ESP_LOGI(TAG, "VCOM read-back after override: %u mV", rb); }
 #else
     ESP_LOGI(TAG, "VCOM: keeping panel stored %u mV, LUT temp %d C",
              vcom_stored, EPD_IT8951_FORCE_TEMP_C);
@@ -519,10 +548,22 @@ static void write_and_refresh(const uint8_t *fb)
     ESP_LOGI(TAG, "refresh done");
 }
 
+/* Board knob: INIT-clear (mode 0, reference-free, whole panel to white)
+ * before EVERY full paint, not only over a retained reference. Waveshare's
+ * IT8951 demo clears with INIT on every start; on a timed-wake battery cycle
+ * that is one extra ~4 s flash per paint. Bench 2026-09-14 on the EE03
+ * (photographed against paper): the white level is the same with 1 or 2 INIT
+ * passes and with none, so this buys ghosting hygiene, not brightness --
+ * which is why it is off by default and per-board. */
+#ifndef EPD_IT8951_INIT_BEFORE_FULL
+#define EPD_IT8951_INIT_BEFORE_FULL 0
+#endif
+
 static void it8951_display(const uint8_t *image)
 {
-    if (s_reference_stale) {
-        ESP_LOGI(TAG, "full paint over a retained reference: INIT clear first");
+    if (s_reference_stale || EPD_IT8951_INIT_BEFORE_FULL) {
+        ESP_LOGI(TAG, "full paint: INIT clear first (%s)",
+                 s_reference_stale ? "retained reference" : "board policy");
         fill_and_refresh(0x0F, EPD_IT8951_INIT_MODE);
     }
     write_and_refresh(image);
