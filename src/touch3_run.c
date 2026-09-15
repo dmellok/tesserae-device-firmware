@@ -660,7 +660,9 @@ static void reconcile(t3_prim_t *p, const rest_interact_out_t *cf)
     if (!cf->have_state && !cf->have_value) return;
 
     bool changed = false;
-    if (cf->have_state && p->type == T3_SWITCH && p->state != cf->state) {
+    bool holds_state = p->type == T3_SWITCH ||
+                       (p->type == T3_BUTTON && p->value_key[0]);
+    if (cf->have_state && holds_state && p->state != cf->state) {
         p->state = cf->state;
         changed = true;
     }
@@ -888,7 +890,8 @@ bool touch3_try_touch(int x0, int y0, int x1, int y1, uint32_t ms,
 /* Apply one value string to one primitive. True when the drawn state moved. */
 static bool apply_value(t3_prim_t *p, const char *val)
 {
-    if (p->type == T3_SWITCH) {
+    /* Switches and state-bound buttons (value_key set) both hold an on/off. */
+    if (p->type == T3_SWITCH || (p->type == T3_BUTTON && p->value_key[0])) {
         bool on = strcasecmp(val, "on") == 0 || strcasecmp(val, "true") == 0 ||
                   strcmp(val, "1") == 0 || strcasecmp(val, "open") == 0 ||
                   strcasecmp(val, "home") == 0;
@@ -905,7 +908,7 @@ static bool apply_value(t3_prim_t *p, const char *val)
         p->value = nv;
         return true;
     }
-    return false;                                 /* buttons hold no state */
+    return false;                                 /* unbound buttons hold no state */
 }
 
 void touch3_ingest_values(const char *json, size_t len)

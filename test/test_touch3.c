@@ -488,6 +488,25 @@ static void test_draw_primitives(void)
     CHECK(fb_at(34, 24) == 0xF);            /* interior is paper, not ink */
     CHECK(fb_at(3, 4) == 0x7);              /* nothing outside the rect */
 
+    /* button bound to an entity and on: the whole rect inverts, so the
+     * interior goes ink and the outline goes paper; outside stays untouched. */
+    t3_prim_t lit = s.prims[0];
+    strcpy(lit.value_key, "ha:light.desk");
+    lit.state = true;
+    CHECK(t3_button_lit(&lit));
+    fb_clear(0x7);
+    t3_draw_primitive(g_fb, FW, FH, 4, &s, &lit);
+    CHECK(fb_at(34, 5) == 0xF);             /* outline now paper */
+    CHECK(fb_at(34, 24) == 0x0);            /* interior now ink */
+    CHECK(fb_at(3, 4) == 0x7);              /* nothing outside the rect */
+    /* state without a binding is ignored: plain chrome. */
+    t3_prim_t unbound = s.prims[0];
+    unbound.state = true;
+    CHECK(!t3_button_lit(&unbound));
+    fb_clear(0x7);
+    t3_draw_primitive(g_fb, FW, FH, 4, &s, &unbound);
+    CHECK(fb_at(34, 24) == 0xF);
+
     /* switch, off: thumb parked left inside the track. */
     fb_clear(0x7);
     t3_draw_primitive(g_fb, FW, FH, 4, &s, &s.prims[1]);

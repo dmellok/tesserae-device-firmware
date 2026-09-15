@@ -293,6 +293,13 @@ static bool parse_primitive(const cJSON *o, int panel_w, int panel_h,
         const char *st = jstr(o, "state");
         p->state = st && strcmp(st, "on") == 0;
     }
+    if (p->type == T3_BUTTON && p->value_key[0]) {
+        /* A state-bound button (server >= 0.419): value_key + state ride along
+         * so the button is drawn filled while its entity is on. The tap is
+         * still momentary; only the values stream / reconcile moves state. */
+        const char *st = jstr(o, "state");
+        p->state = st && strcmp(st, "on") == 0;
+    }
 
     if (p->type == T3_SLIDER || p->type == T3_STEPPER) {
         bool has_min = false, has_max = false;
@@ -855,6 +862,42 @@ static const t3_atlas_t *ref_atlas(const t3_spec_t *s, const t3_text_ref_t *r)
     return a->bits ? a : NULL;
 }
 
+/* Invert every pixel of a rect in place, on the panel's own scale (4bpp
+ * nibble, 2bpp pair, 1bpp bit). Used for the "lit" look of a state-bound
+ * button: draw the plain chrome, then flip the whole rect, which is exactly
+ * the press affordance the runtime already shows, so the two never differ. */
+static void invert_rect_px(uint8_t *fb, int fb_w, int fb_h, int bpp,
+                           int x, int y, int w, int h)
+{
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > fb_w) w = fb_w - x;
+    if (y + h > fb_h) h = fb_h - y;
+    if (w <= 0 || h <= 0) return;
+    for (int r = 0; r < h; r++) {
+        for (int c = 0; c < w; c++) {
+            int px = x + c, py = y + r;
+            if (bpp == 1) {
+                int stride = (fb_w + 7) / 8;
+                uint8_t *b = &fb[(size_t)py * stride + (px >> 3)];
+                *b ^= (uint8_t)(0x80 >> (px & 7));
+            } else if (bpp == 2) {
+                int stride = (fb_w + 3) / 4;
+                uint8_t *b = &fb[(size_t)py * stride + (px >> 2)];
+                *b ^= (uint8_t)(0x3 << ((3 - (px & 3)) * 2));
+            } else {
+                int stride = fb_w / 2;
+                px_set4(fb, stride, px, py, (uint8_t)(0xF - px_get4(fb, stride, px, py)));
+            }
+        }
+    }
+}
+
+bool t3_button_lit(const t3_prim_t *p)
+{
+    return p && p->type == T3_BUTTON && p->value_key[0] && p->state;
+}
+
 static void draw_button(uint8_t *fb, int fb_w, int fb_h, int bpp,
                         const t3_spec_t *s, const t3_prim_t *p)
 {
@@ -891,6 +934,10 @@ static void draw_button(uint8_t *fb, int fb_w, int fb_h, int bpp,
     if (label_w)
         t3_draw_text(fb, fb_w, fb_h, bpp, la, text,
                      cx, R->y, label_w, R->h, T3_ALIGN_LEFT);
+
+    /* Bound + on: the whole control reads filled (ink field, paper content). */
+    if (t3_button_lit(p))
+        invert_rect_px(fb, fb_w, fb_h, bpp, R->x, R->y, R->w, R->h);
 }
 
 static void draw_switch(uint8_t *fb, int fb_w, int fb_h, int bpp,

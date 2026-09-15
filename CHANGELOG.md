@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Touch-v3 buttons that carry a `value_key` (server 0.419.0 and later) hold
+  an on/off state like a switch and are drawn with the whole rect inverted
+  while on. State arrives seeded in the frame spec and moves on the values
+  stream and the interact reconcile; a tap stays momentary and never flips
+  it locally. Buttons without a binding are unchanged.
+
 ## [1.37.0] - 2026-09-14
 
 ### Added

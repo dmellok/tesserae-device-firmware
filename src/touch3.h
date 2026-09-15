@@ -212,7 +212,7 @@ typedef struct {
     float       vmin, vmax, vstep, value;
     char        axis;                    /* 'x' | 'y' (slider) */
 
-    /* switch */
+    /* switch, or a button with value_key (drawn filled while on) */
     bool        state;                   /* true = on */
 
     /* runtime bookkeeping (not parsed) */
@@ -367,6 +367,11 @@ int t3_icon_width(const t3_icon_ref_t *icon);
  * `s` supplies the atlases the primitive's text refs point into. */
 void t3_draw_primitive(uint8_t *fb, int fb_w, int fb_h, int bpp,
                        const t3_spec_t *s, const t3_prim_t *p);
+
+/* A button bound to an entity (value_key) whose entity is on: drawn filled
+ * (the rect inverted after the plain chrome). Buttons without value_key are
+ * never lit, whatever state says. */
+bool t3_button_lit(const t3_prim_t *p);
 
 /* The sub-rect a feedback repaint has to cover for this primitive: the whole
  * rect for button/stepper, the track for a switch, the track band plus the
