@@ -1,6 +1,7 @@
 /* overlay_run.c -- device orchestration for the overlay render mode. */
 
 #include "overlay_run.h"
+#include "touch3_run.h"    /* touch3_ingest_values: v3 controls share the values envelope */
 #include "app_config.h"
 
 #if defined(BOARD_OVERLAY_PARTIAL)
@@ -731,6 +732,12 @@ void overlay_linger_poll(void)
         {   /* proto2 text regions share the same values envelope (§7) */
             extern void proto2_ingest_values(const char *json, size_t len);
             proto2_ingest_values(buf, len);
+            /* touch-v3 controls too: a switch or a bound button reads its
+             * on/off from this same envelope. Without this the linger poll
+             * fetched the value every second and never handed it to v3, so
+             * a tapped button only filled on the NEXT status poll -- the next
+             * tap or heartbeat -- which read as a random delay. */
+            touch3_ingest_values(buf, len);
         }
 #endif
     }

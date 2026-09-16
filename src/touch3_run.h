@@ -112,6 +112,13 @@ void touch3_ingest_values(const char *json, size_t len);
  * prefers the v3 /frame/stream endpoint while a v3 spec is live. */
 const char *touch3_layout_digest(void);
 
+/* True once (consume-on-read) after a tap on a control whose drawn state the
+ * SERVER settles: a switch, or a button bound to an entity. The /interact reply
+ * carries no state, so the new value only arrives on a later values poll; main
+ * uses this to keep the radio up and linger-poll for it even when the
+ * configured touch linger is 0, otherwise the fill waits for the next wake. */
+bool touch3_take_linger(void);
+
 #else /* !touch3 boards */
 
 #define BOARD_TOUCH3 0
@@ -134,5 +141,6 @@ static inline bool touch3_active(void) { return false; }
 static inline void touch3_ingest_values(const char *j, size_t l)
 { (void)j; (void)l; }
 static inline const char *touch3_layout_digest(void) { return ""; }
+static inline bool touch3_take_linger(void) { return false; }
 
 #endif

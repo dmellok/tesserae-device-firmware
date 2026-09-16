@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- The touch-linger values poll (`/frame/data`, ~1 s while awake after a
+  tap) now feeds touch-v3 controls as well as the overlay and protocol-v2
+  layers. A switch or bound button previously only learned its confirmed
+  state from the next status poll, so the fill caught up on the next tap
+  or heartbeat rather than a second or two after the action.
+- A tap on a switch or a bound button keeps the radio up and lingers for
+  at least 10 s even when the configured touch linger is 0, so the
+  confirmed state has time to arrive from integrations that report it
+  after the service call returns.
+
 ## [1.38.0] - 2026-09-16
 
 ### Added

@@ -2886,6 +2886,11 @@ void app_main(void)
 #if BOARD_HAS_TOUCH
     will_linger = woke_by_touch && rest_config_get()->touch_linger_s > 0;
 #endif
+    /* A v3 switch / bound-button tap: its confirmed state only arrives on a
+     * later values poll (the /interact reply carries none), so linger for it
+     * even when the configured window is 0. */
+    bool v3_state_linger = touch3_take_linger();
+    will_linger = will_linger || v3_state_linger;
 #ifdef BOARD_HAS_BUTTONS
     will_linger = will_linger ||
                   (woke_by_button && rest_config_get()->button_wake_s > 0);
@@ -2998,6 +3003,9 @@ void app_main(void)
          * it and the digest never changes to wake us later. */
         if (linger_s < 10) linger_s = 10;
 #endif
+        /* Same floor for a v3 state-bound tap: some integrations report the
+         * new state a few seconds after the service call returns. */
+        if (v3_state_linger && linger_s < 10) linger_s = 10;
         ESP_LOGI(TAG, "touch linger: up to %d s awake for further touches", linger_s);
         int64_t deadline = esp_timer_get_time() + (int64_t)linger_s * 1000000;
         while (esp_timer_get_time() < deadline) {

@@ -94,6 +94,15 @@ const char *touch3_layout_digest(void)
     return s_have_spec ? s_spec.layout_digest : "";
 }
 
+static bool s_want_linger;
+
+bool touch3_take_linger(void)
+{
+    bool w = s_want_linger;
+    s_want_linger = false;
+    return w;
+}
+
 bool touch3_active(void)
 {
     return s_have_spec && s_spec.n_prims > 0 &&
@@ -873,6 +882,11 @@ bool touch3_try_touch(int x0, int y0, int x1, int y1, uint32_t ms,
     bool nav_like = p->atype == T3_ACT_NAV || p->atype == T3_ACT_REFRESH ||
                     p->atype == T3_ACT_FETCH;
     if (want_frame_poll) *want_frame_poll = (p->tier == 2) || nav_like;
+
+    /* A control whose drawn state the server settles (switch, bound button):
+     * the confirmed value lands on a later values poll, so ask main to linger. */
+    if (p->type == T3_SWITCH || (p->type == T3_BUTTON && p->value_key[0]))
+        s_want_linger = true;
 
     ESP_LOGI(TAG, "%s '%s' (%s) tier %d", t3_interaction_name(g), p->id,
              t3_ptype_name(p->type), p->tier);
