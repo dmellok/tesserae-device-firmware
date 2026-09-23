@@ -57,5 +57,6 @@ bool deck_sync_pending(bool deck_present, const char *version);
  * nav state but keep the cached files. Persists nav/version state itself. */
 void deck_sync_tail(bool deck_present, const char *version);
 
-/* Pre-sleep hook: unmount + power down the card. */
+/* Pre-sleep hook: unmount + power down the card, and latch the slot rail off
+ * for the duration of the sleep (sdcard_prepare_sleep). */
 void deck_pre_sleep(void);

@@ -157,6 +157,21 @@
  * Bench 2026-09-11: gain unmeasured. */
 #define BOARD_SLEEP_DRIVE_LOW_MASK  ((1ULL << 38) | (1ULL << 46))
 
+/* Latch EPD_PIN_EN (GPIO11, the TPS65185 bias rail) and EPD_PIN_VCC_EN
+ * (GPIO21, the IT8951 core) at their off level through deep sleep instead of
+ * letting the pads isolate with everything else. it8951_sleep() already drives
+ * both low; without the latch that lasts microseconds, and the two load-switch
+ * enables then float for the rest of the sleep.
+ *
+ * Opt-in per board rather than on in the driver: the EE03, M5Paper and PaperS3
+ * share it8951_gray.c, their enable lines are wired differently, and none of
+ * them has a sleep-current report open. This board does (server #327).
+ *
+ * The latch is released by it8951_port_init() and by sdcard_mount(), which are
+ * the only two production paths that raise these rails -- a held pad ignores
+ * gpio_set_level(), so missing either one would cost the panel or the card. */
+#define BOARD_EPD_HOLD_RAILS_IN_SLEEP  1
+
 /* IT8951 pixel-data clock for the LD_IMG burst (it8951_gray.c uses a second
  * SPI device for the data phase only; commands and reads stay at EPD_SPI_HZ,
  * which the dev-info reads need). Seeed drives the whole controller at

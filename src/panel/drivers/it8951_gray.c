@@ -279,8 +279,24 @@ static void hw_reset_and_power(void)
 
 /* ---------- driver entry points ---------- */
 
+/* Drop the latch it8951_sleep() puts on the rail enables. A held pad ignores
+ * gpio_config() AND gpio_set_level(), so this has to run before anything tries
+ * to raise the rails -- and it has to run on EVERY entry, not just the first:
+ * a boot paints more than once (overlay partials, a touch linger, the always-on
+ * loop), each paint is bracketed by an it8951_sleep(), and it8951_port_init()
+ * early-returns on the second call. Two register writes; no-op when nothing is
+ * held, which is every board but the one that asks for the latch. */
+static void rails_unlatch(void)
+{
+#ifdef BOARD_EPD_HOLD_RAILS_IN_SLEEP
+    gpio_hold_dis(EPD_PIN_EN);
+    gpio_hold_dis(EPD_PIN_VCC_EN);
+#endif
+}
+
 static esp_err_t it8951_port_init(void)
 {
+    rails_unlatch();
     if (s_port_inited) return ESP_OK;
 
     gpio_config_t out = {
@@ -363,6 +379,8 @@ static void log_dev_diag(const uint16_t *info, const char *path)
 
 static void it8951_init(void)
 {
+    rails_unlatch();   /* belt and braces: every power ladder below drives them */
+
     /* Init with verification + one long-off retry: a cold boot can leave the
      * controller wedged (HRDY stuck; bench 2026-07-24, likely a reset landing
      * mid-SPI-word). GET_DEV_INFO doubles as the health check -- a wedged
@@ -789,6 +807,14 @@ static void it8951_sleep(void)
     write_cmd(SLEEP);
     gpio_set_level(EPD_PIN_EN, 0);
     gpio_set_level(EPD_PIN_VCC_EN, 0);
+#ifdef BOARD_EPD_HOLD_RAILS_IN_SLEEP
+    /* Make the off stick. Both lines are load-switch enables; isolating them
+     * at deep-sleep entry leaves those switches floating for the whole
+     * interval. Released in it8951_port_init() on the next wake. */
+    gpio_hold_en(EPD_PIN_EN);
+    gpio_hold_en(EPD_PIN_VCC_EN);
+    gpio_deep_sleep_hold_en();
+#endif
 }
 
 /* ---------- exported vtable ---------- */

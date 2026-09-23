@@ -662,6 +662,11 @@ static void sleep_forever_or_until_timer(void)
     if (rest_config_get()->touch_enabled) {
         touch_prepare_sleep();
         touch_wake_mask = touch_sleep_wake_mask();   /* 0 when INT is armed as ext0 */
+    } else {
+        /* Touch off is not the same as touch quiet: a digitiser on an ungated
+         * rail keeps scanning through the whole sleep unless it is told to
+         * stop, and until server #327 nothing told it. */
+        touch_park_idle();
     }
     buttons_arm_ext1_with(touch_wake_mask);
 #else

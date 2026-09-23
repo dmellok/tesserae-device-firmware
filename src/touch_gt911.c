@@ -88,6 +88,7 @@ static const char *TAG = "touch";
 #define GT_REG_COMMAND_CHK 0x8046   /* write the same value here first */
 #define GT_REG_GESTURE_ID  0x814b   /* gesture-mode result byte, 0 = none */
 #define GT_CMD_GESTURE     0x08
+#define GT_CMD_SLEEP       0x05   /* stop scanning until reset / host raises INT */
 
 #define GT_TIMEOUT_MS      50
 
@@ -181,6 +182,7 @@ static void gt_reset_select_5d(void)
     const int intp = BOARD_TOUCH_INT_PIN;
 
     gpio_hold_dis(rst);   /* release any latch left from the last deep sleep */
+    gpio_hold_dis(intp);  /* ditto: touch_park_idle() latches INT low */
     touch_power_on();     /* no-op unless the digitiser rail is gated */
 
     gpio_set_direction(rst,  GPIO_MODE_OUTPUT);
@@ -205,6 +207,13 @@ static void gt_reset_select_5d(void)
 esp_err_t touch_init(void)
 {
     if (s_ready) return ESP_OK;
+
+    /* TP_INT may be latched low by a touch_park_idle() from the last sleep (or
+     * from before a reset, since a pad hold outlives one). Release it here, up
+     * front: a held pad ignores every gpio_config() below, so the warm path --
+     * which never runs the reset sequence that does its own release -- would
+     * otherwise read the line through a pad still driving it. */
+    gpio_hold_dis((gpio_num_t)BOARD_TOUCH_INT_PIN);
 
     touch_power_on();
 
@@ -515,6 +524,58 @@ void touch_prepare_sleep(void)
      * (buttons_arm_ext1_with(touch_sleep_wake_mask())); ext0 did not fire on
      * this line, but the button ext1 path wakes reliably on the same hardware. */
 #endif /* TOUCH_GESTURE_SLEEP */
+}
+
+void touch_park_idle(void)
+{
+#ifdef BOARD_TOUCH_EN_PIN
+    /* Gated digitiser rail (Sticky): with touch off, touch_power_on() was never
+     * called, so the controller has no power to spend. Opening the bus here
+     * would RAISE that rail to talk to it -- the exact opposite of the point. */
+#else
+    /* Permanently powered digitiser (E1003). The controller is scanning right
+     * now and will keep scanning through the sleep unless it is told not to.
+     *
+     * touch_init() takes the warm path when it is still awake and the ~120 ms
+     * reset path when the last sleep already parked it (it stops answering its
+     * product id in sleep mode, so !alive -> gt_reset_select_5d()); either way
+     * we end up talking to a controller in coordinate mode and can re-issue the
+     * command. Re-parking every cycle rather than tracking the state in RTC
+     * memory keeps this self-healing after any reset, and the reset is the only
+     * cost -- a fraction of one percent of a five-minute wake cycle. */
+    if (touch_init() != ESP_OK) {
+        ESP_LOGW(TAG, "park_idle: GT911 init failed; left scanning");
+        return;
+    }
+    /* TP_INT low, as an output, BEFORE the command and latched after it. This
+     * is Goodix's own enter-sleep sequence, and the reason for it is that the
+     * controller leaves sleep on a HIGH on this line: an awake GT911 drives INT
+     * push-pull, a sleeping one releases it, and a released line with nothing
+     * holding it is free to drift up and wake the chip again. Letting the pad
+     * isolate at deep-sleep entry would do exactly that, which would leave this
+     * whole function saving nothing while still looking like it worked.
+     *
+     * If the line turns out to carry an external pull-up after all, driving it
+     * low costs that resistor's current for the sleep -- a few hundred uA
+     * against the several mA of a scanning digitiser, so the trade is worth
+     * taking blind. Released by touch_init() on any path that uses touch
+     * again. */
+    const gpio_num_t intp = (gpio_num_t)BOARD_TOUCH_INT_PIN;
+    gpio_set_level(intp, 0);
+    gpio_set_direction(intp, GPIO_MODE_OUTPUT);
+
+    esp_err_t err = gt_write_u8(GT_REG_COMMAND, GT_CMD_SLEEP);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "park_idle: sleep command: %s", esp_err_to_name(err));
+        gpio_set_direction(intp, GPIO_MODE_INPUT);   /* leave the line as found */
+        return;
+    }
+    gpio_hold_en(intp);
+    gpio_deep_sleep_hold_en();
+
+    s_ready = false;   /* the controller is asleep; a later read must re-init */
+    ESP_LOGI(TAG, "touch disabled: GT911 parked in sleep mode");
+#endif
 }
 
 uint64_t touch_sleep_wake_mask(void)

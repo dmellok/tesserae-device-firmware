@@ -42,6 +42,17 @@ static sdmmc_card_t *s_card;
 
 bool sdcard_mounted(void) { return s_card != NULL; }
 
+/* Release a slot-power latch left by sdcard_prepare_sleep(). A held pad
+ * IGNORES gpio_set_level(), so every path that drives SD_PIN_EN has to call
+ * this first or the rail never comes back after the first deep sleep. Cheap
+ * no-op when nothing is held, and on boards whose rail is not a GPIO. */
+static void sd_rail_unlatch(void)
+{
+#if defined(SD_PIN_EN)
+    gpio_hold_dis((gpio_num_t)SD_PIN_EN);
+#endif
+}
+
 /* Park the SD lines: CS driven high (deselected) and the slot rail off.
  * Called at boot (sdcard_quiesce) and again after every failed mount and
  * every unmount, because ESP-IDF's sdspi teardown (deinit_slot) hands CS
@@ -51,6 +62,7 @@ bool sdcard_mounted(void) { return s_card != NULL; }
  * refresh whenever its card failed to mount (firmware #34). */
 static void park_lines(void)
 {
+    sd_rail_unlatch();   /* parking DRIVES the rail low; a latch would block it */
 #if defined(SD_USE_SDMMC)
     /* Dedicated pins: nothing shares them, so parking is just the rail --
      * unless the board asks for it to stay up (SD_RAIL_KEEP). */
@@ -149,6 +161,7 @@ bool sdcard_mount(void)
 #if SD_HAVE_EN
     /* Slot power gate (active high). Give the card a moment on the rail. */
 #ifdef SD_PIN_EN
+    sd_rail_unlatch();   /* or the last sleep's latch swallows SD_RAIL_SET(1) */
     gpio_config_t en = {
         .pin_bit_mask = 1ULL << SD_PIN_EN,
         .mode = GPIO_MODE_OUTPUT,
@@ -208,6 +221,15 @@ bool sdcard_mount(void)
                    | (1ULL << EPD_PIN_RST);
 #endif
         if (park_mask) {
+#if defined(EPD_PIN_VCC_EN) && defined(BOARD_EPD_HOLD_RAILS_IN_SLEEP)
+            /* This function boots the IT8951 itself rather than going through
+             * the panel driver, so it owns the other half of the deep-sleep
+             * rail latch: without these the controller stays dark and every
+             * card access on the shared bus fails against an unpowered chip
+             * (the ESD-clamp failure mode from the 2026-07-24 bench). */
+            gpio_hold_dis((gpio_num_t)EPD_PIN_EN);
+            gpio_hold_dis((gpio_num_t)EPD_PIN_VCC_EN);
+#endif
             gpio_config_t park = {
                 .pin_bit_mask = park_mask,
                 .mode = GPIO_MODE_OUTPUT,
@@ -316,10 +338,38 @@ void sdcard_unmount(void)
         esp_vfs_fat_sdcard_unmount(SDCARD_MOUNT_POINT, s_card);
         s_card = NULL;
     }
-    /* Cut slot power for deep sleep (the pin goes hi-Z in sleep; the board's
-     * default keeps the slot dark without an active driver) and re-park CS,
-     * which the sdspi teardown hands back as a floating input. */
+    /* Cut slot power and re-park CS, which the sdspi teardown hands back as a
+     * floating input. This leaves the rail DRIVEN low, which lasts only until
+     * the pads isolate; sdcard_prepare_sleep() is what makes it last. */
     park_lines();
+}
+
+void sdcard_prepare_sleep(void)
+{
+    sdcard_unmount();   /* drives the rail low via park_lines() */
+
+#if defined(EPD_PIN_VCC_EN) && defined(BOARD_EPD_HOLD_RAILS_IN_SLEEP)
+    /* Hand the IT8951 back the way it8951_sleep() left it. The deck sync runs
+     * AFTER the paint (main.c: epd_sleep() at the paint, deck_sync_tail() well
+     * below it), so on any wake that touched the card, sdcard_mount() has since
+     * unlatched these and driven them high for its own bus reasons -- and
+     * nothing else would put them down again before the sleep. Idempotent on a
+     * cycle that never mounted: the pads are still latched low and the writes
+     * are no-ops. */
+    gpio_set_level((gpio_num_t)EPD_PIN_EN, 0);
+    gpio_set_level((gpio_num_t)EPD_PIN_VCC_EN, 0);
+    gpio_hold_en((gpio_num_t)EPD_PIN_EN);
+    gpio_hold_en((gpio_num_t)EPD_PIN_VCC_EN);
+    gpio_deep_sleep_hold_en();
+#endif
+
+#if defined(SD_PIN_EN) && !defined(SD_RAIL_KEEP)
+    /* Latch that low level through the sleep. Without this the pad isolates
+     * with everything else and the load switch is left with a floating enable
+     * for minutes at a time. */
+    gpio_hold_en((gpio_num_t)SD_PIN_EN);
+    gpio_deep_sleep_hold_en();
+#endif
 }
 
 void *sdcard_handle(void) { return s_card; }

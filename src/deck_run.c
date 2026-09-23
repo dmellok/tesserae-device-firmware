@@ -333,5 +333,5 @@ void deck_sync_tail(bool deck_present, const char *version)
 
 void deck_pre_sleep(void)
 {
-    sdcard_unmount();
+    sdcard_prepare_sleep();
 }

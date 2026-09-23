@@ -129,6 +129,24 @@ bool touch_int_asserted(void);
  * controller back to coordinate mode. */
 void touch_prepare_sleep(void);
 
+/* Park a digitiser the operator has switched OFF, on the deep-sleep path only.
+ * The counterpart to touch_prepare_sleep(): that one keeps the controller alive
+ * so it can wake us, this one shuts it up because nothing is listening.
+ *
+ * It matters on a board that does not gate the digitiser rail
+ * (BOARD_TOUCH_EN_PIN undefined -- the reTerminal E1003): the GT911 comes out
+ * of reset at power-up via its own pull-up and free-runs in normal scan for
+ * the whole sleep at mA-class current, whether or not touch is enabled, with
+ * nothing in the firmware ever opening the bus to tell it otherwise
+ * (server #327). Commanding its sleep mode costs a ~120 ms reset on the next
+ * wake -- the controller stops answering, so touch_init() revives it -- which
+ * is nothing against a multi-minute sleep interval.
+ *
+ * A board WITH a rail gate is already optimal when touch is off: the rail was
+ * never raised, so the controller is unpowered and this is a no-op. Calling it
+ * with touch ENABLED would be a bug; main.c picks one or the other. */
+void touch_park_idle(void);
+
 /* Bits the caller should fold into the button ext1 ANY_LOW mask after
  * touch_prepare_sleep(): TOUCH_INT_WAKE_MASK in the default mode, 0 under
  * TOUCH_GESTURE_SLEEP (ext0 is armed inside touch_prepare_sleep() instead;

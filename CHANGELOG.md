@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.40.0] - 2026-09-28
+
+### Fixed
+
+- reTerminal E1003: the GT911 digitiser is now commanded into its sleep mode
+  before every deep sleep when the operator has touch switched OFF. This board
+  does not gate the digitiser rail, and TP_RST is held high by an external
+  pull-up, so the controller came out of reset at power-up and free-ran in
+  normal scan for the entire sleep -- mA-class current, around the clock,
+  whether or not anything was listening for a touch. Nothing in the firmware
+  ever opened the bus to tell it otherwise: `touch_prepare_sleep()` runs only
+  on the touch-enabled path, and the one low-power mode already implemented
+  (gesture mode) is behind a build flag the shipping target does not set. The
+  new park costs a ~120 ms controller reset on the following wake, since a
+  sleeping GT911 stops answering its product id. TP_INT is driven low and
+  latched for the sleep as part of Goodix's enter-sleep sequence -- the
+  controller wakes on a high there, and a released line with nothing holding it
+  can drift up on its own, which would have left the park looking like it
+  worked while saving nothing. With touch ENABLED nothing changes: the
+  controller still has to scan to wake the panel. Boards that gate the rail
+  (Sticky, PaperMono) were already spending nothing here. Server #327.
+- reTerminal E1001/E1002/E1003/E1004, Sticky: the microSD slot-power enable is
+  latched at its off level through deep sleep rather than isolating with the
+  rest of the pads. It was already driven low before sleeping, but that lasts
+  only until the pads let go, leaving a load-switch enable floating for the
+  whole interval -- a state its datasheet does not define.
+- reTerminal E1003: the IT8951 rail enables (GPIO11, the TPS65185 bias rail;
+  GPIO21, the controller core) are latched off through deep sleep the same way,
+  including on wakes that synced the deck cache -- `sdcard_mount()` boots the
+  controller for its own bus reasons well after the paint has slept it, and
+  until now nothing put it back down before the sleep. Opt-in per board
+  (`BOARD_EPD_HOLD_RAILS_IN_SLEEP`): the EE03, M5Paper and PaperS3 share this
+  driver with different wiring and no open report.
+
+These are correctness fixes against pin states that were undefined during
+sleep, and the GT911 one has a datasheet-level explanation, but the actual
+saving on this hardware is UNMEASURED -- no bench current figure was taken for
+any of the three. The reporter's third-party measurements put the unexplained
+E1003 sleep draw at ~4.95 mA, which is the right order for a scanning GT911.
+Note also that the wake cycle itself is not free on this board (1.3 MB frame
+over Wi-Fi plus a full GC16 paint, 288 times a day at a five-minute interval),
+so a drain figure in percent per day cannot be attributed to sleep current
+alone without separating the two.
+
 ## [1.39.0] - 2026-09-16
 
 ### Fixed

@@ -94,6 +94,21 @@ LVGL panels, plus their browser flasher. Paths below: `oshw/` = that repo,
     difference, not a contradiction of the verified active-low finding. The
     wake stub reads 0x8150; gesture mode reports at 0x814B. Bench current and
     tap-wake latency.
+
+    UPDATE 2026-09-23 (fw 1.40.0, server #327): this only ever mattered for the
+    touch-ENABLED case, and the touch-DISABLED case turned out to be worse. The
+    E1003 does not gate the digitiser rail and TP_RST sits under an external
+    pull-up, so with touch off the GT911 came out of reset at power-up and
+    scanned for ever, while `touch_prepare_sleep()` -- the only code that talks
+    to it before a sleep -- never ran at all. `touch_park_idle()` now commands
+    0x8040 <- 0x05 on that path. The gesture-mode item above is still open and
+    still unmeasured; it is what the touch-ENABLED case needs.
+
+    Still unmeasured on this board, and the reason the #327 fixes ship as
+    correctness rather than as a number: sleep current before and after, the
+    split between standing sleep draw and the per-wake cost (1.3 MB frame plus
+    a GC16 paint, 288x/day at 5 min), and whether the GPIO11/21/39 latches move
+    the needle at all or the GT911 was the whole of it.
 14. **E1003 SPI 10 MHz for image loads.** Seeed runs everything at 10 MHz
     (`GxEPD2_reTerminal_E1003.ino:81`); ours is 4 MHz
     (`seeed_reterminal_e1003.h:33`). A second spi_device at 10 MHz for the

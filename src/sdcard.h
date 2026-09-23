@@ -61,9 +61,19 @@ bool sdcard_mount(void);
 /* True while a card is mounted. */
 bool sdcard_mounted(void);
 
-/* Unmount + power down the slot (where the board gates it). Call before
- * every deep sleep. Safe when not mounted. */
+/* Unmount + power down the slot (where the board gates it). Safe when not
+ * mounted. Use sdcard_prepare_sleep() on the deep-sleep path. */
 void sdcard_unmount(void);
+
+/* sdcard_unmount() plus a LATCH on the slot-power pin, so the rail stays
+ * commanded off for the whole deep sleep instead of going hi-Z with the rest
+ * of the pads. A load-switch enable left floating is undefined by the part's
+ * own datasheet, and this board family has an unexplained sleep draw
+ * (server #327), so the assumption that "hi-Z reads as off" is one worth not
+ * making. gpio_hold_dis() on every path that raises the rail again keeps the
+ * latch from swallowing the next mount. No-op where the rail is an expander
+ * pin (PaperMono) or the board asks to keep it up (SD_RAIL_KEEP). */
+void sdcard_prepare_sleep(void);
 
 /* Free bytes on the mounted filesystem, 0 when unmounted. */
 uint64_t sdcard_free_bytes(void);
@@ -77,6 +87,7 @@ static inline void     sdcard_quiesce(void)    { }
 static inline bool     sdcard_mount(void)      { return false; }
 static inline bool     sdcard_mounted(void)    { return false; }
 static inline void     sdcard_unmount(void)    { }
+static inline void     sdcard_prepare_sleep(void) { }
 static inline uint64_t sdcard_free_bytes(void) { return 0; }
 static inline void    *sdcard_handle(void)     { return 0; }
 

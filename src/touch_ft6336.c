@@ -390,6 +390,16 @@ void touch_prepare_sleep(void)
     }
 }
 
+void touch_park_idle(void)
+{
+    /* PaperMono gates TP_VDD_EN on the M5IOE1 expander
+     * (BOARD_TOUCH_EN_M5IOE1_PIN). With touch off, touch_power_on() is never
+     * called, so the digitiser has no rail to draw from and there is nothing to
+     * park -- the same reason the gated arm of the GT911 flavour is empty. The
+     * E1003's permanently powered GT911 is the case that needs real work; see
+     * touch_gt911.c. */
+}
+
 uint64_t touch_sleep_wake_mask(void)
 {
     return s_wake_armable ? TOUCH_INT_WAKE_MASK : 0;
