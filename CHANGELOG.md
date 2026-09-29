@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.41.0] - 2026-09-29
+
 ### Added
 
 - Device log upload (protocol v1). Every `esp_log` line still goes to the UART
