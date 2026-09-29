@@ -14,6 +14,8 @@
 #include "app_config.h"
 #include "battery.h"
 #include "button_report.h"
+#include "diag_run.h"     /* detected-failure report on /status */
+#include "log_capture.h"  /* logs capability on /status */
 #include "ota_report.h"
 #include "overlay.h"      /* OVERLAY_MAX_TARGETS (advertised capability cap) */
 #include "touch3_run.h"   /* BOARD_TOUCH3 */
@@ -64,6 +66,7 @@ static bool     s_overflow;
 static char     s_etag[80];
 static int      s_retry_after;
 static uint32_t s_server_date;
+static int      s_last_http;     /* status code of the last response, 0 if none */
 
 /* Pending front-button press to report with the next frame/status request.
  * Empty = none. Set by rest_set_button() on a button wake (see buttons.h). */
@@ -335,14 +338,18 @@ static void wait_ip6_if_needed(const char *url)
 
 /* Core request. On REST_OK/304/etc the accumulated body is at s_rx (NUL
  * terminated); *body_out points into it. Captured ETag/Retry-After are exposed
- * via the s_* statics and copied out below. */
-static rest_status_t do_request(esp_http_client_method_t method, const char *url,
-                                const rest_hdr_t *hdrs, int nh, const char *body,
-                                const char **body_out, uint32_t timeout_ms)
+ * via the s_* statics and copied out below. body (body_len bytes, sent as
+ * content_type) may be NULL for a request without one. */
+static rest_status_t do_request_body(esp_http_client_method_t method,
+                                     const char *url,
+                                     const rest_hdr_t *hdrs, int nh,
+                                     const char *body, size_t body_len,
+                                     const char *content_type,
+                                     const char **body_out, uint32_t timeout_ms)
 {
     wait_ip6_if_needed(url);
     s_rx_len = 0; s_overflow = false; s_etag[0] = '\0';
-    s_retry_after = 0; s_server_date = 0;
+    s_retry_after = 0; s_server_date = 0; s_last_http = 0;
     if (body_out) *body_out = NULL;
 
     esp_http_client_config_t cfg = {
@@ -364,13 +371,14 @@ static rest_status_t do_request(esp_http_client_method_t method, const char *url
     for (int i = 0; i < nh; i++)
         esp_http_client_set_header(cli, hdrs[i].name, hdrs[i].value);
     if (body) {
-        esp_http_client_set_header(cli, "Content-Type", "application/json");
-        esp_http_client_set_post_field(cli, body, (int)strlen(body));
+        esp_http_client_set_header(cli, "Content-Type", content_type);
+        esp_http_client_set_post_field(cli, body, (int)body_len);
     }
 
     esp_err_t err = esp_http_client_perform(cli);
     int http = esp_http_client_get_status_code(cli);
     esp_http_client_cleanup(cli);
+    s_last_http = http > 0 ? http : 0;
 
     /* esp_http_client_perform() returns an error for some statuses it tries to
      * auto-handle -- notably a 401 with no WWW-Authenticate header (which a
@@ -410,6 +418,22 @@ static rest_status_t do_request(esp_http_client_method_t method, const char *url
 
     ESP_LOGI(TAG, "<- %d (%u bytes)", http, (unsigned)s_rx_len);
     return map_status(http);
+}
+
+/* The JSON request every endpoint but the log upload makes. */
+static rest_status_t do_request(esp_http_client_method_t method, const char *url,
+                                const rest_hdr_t *hdrs, int nh, const char *body,
+                                const char **body_out, uint32_t timeout_ms)
+{
+    return do_request_body(method, url, hdrs, nh, body, body ? strlen(body) : 0,
+                           "application/json", body_out, timeout_ms);
+}
+
+/* Any 2xx, which map_status() spreads over REST_OK / REST_NO_CONTENT /
+ * REST_HTTP_ERR. The log and diag contracts accept every 2xx as delivered. */
+static bool last_was_2xx(void)
+{
+    return s_last_http >= 200 && s_last_http < 300;
 }
 
 /* ---- small JSON helpers ---- */
@@ -536,6 +560,34 @@ static void add_touch3_capability(cJSON *o)
 }
 #endif /* BOARD_TOUCH3 */
 #endif
+
+/* Device log upload capability (log_capture.h), every beat like ota and
+ * overlay, so the server only offers logs.upload where it works. */
+static void add_logs_capability(cJSON *o)
+{
+    cJSON *lg = cJSON_AddObjectToObject(o, "logs");
+    if (!lg) return;
+    cJSON_AddNumberToObject(lg, "schema", 1);
+    cJSON_AddNumberToObject(lg, "ring_bytes", log_capture_ring_bytes());
+}
+
+/* Detected-failure report (diag_run.h), on every beat until one carrying it is
+ * accepted. Returns true and the id when it was added. */
+static bool add_diag_report(cJSON *o, uint32_t *id_out)
+{
+    diag_report_t rep;
+    if (!diag_run_report(&rep)) return false;
+    cJSON *d = cJSON_AddObjectToObject(o, "diag");
+    if (!d) return false;
+    cJSON_AddNumberToObject(d, "id", (double)rep.id);
+    const char *pe = diag_paint_name(rep.paint);
+    if (pe) cJSON_AddStringToObject(d, "paint_error", pe);
+    const char *rs = diag_reset_name(rep.reset);
+    if (rs) cJSON_AddStringToObject(d, "reset", rs);
+    cJSON_AddNumberToObject(d, "at", (double)rep.at);
+    *id_out = rep.id;
+    return true;
+}
 
 /* Identity body shared by /discover and /register. Caller frees. */
 /* can_stay_awake: may this device be offered always-on mode?
@@ -1128,6 +1180,9 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         cJSON_AddStringToObject(o, "deck_version", s_deck_ver);
     }
     add_collection_report(o);
+    add_logs_capability(o);
+    uint32_t diag_id = 0;
+    bool diag_sent = add_diag_report(o, &diag_id);
     char *body = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     if (!body) return REST_NET_ERR;
@@ -1139,6 +1194,8 @@ rest_status_t rest_post_status(int rssi, const char *ip,
     const char *rbody = NULL;
     rest_status_t st = do_request(HTTP_METHOD_POST, url, hdrs, 1, body, &rbody, timeout_ms);
     free(body);
+    /* Delivered: the server has the report, so stop sending it. */
+    if (diag_sent && last_was_2xx()) diag_run_clear(diag_id);
     if (st == REST_RATELIMIT && s_retry_after > 0) out->retry_after_s = s_retry_after;
     if (st != REST_OK) return st;
 
@@ -1250,6 +1307,12 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         out->deck_present = true;
         json_get_str(deck, "version", out->deck_version, sizeof out->deck_version);
     }
+    /* "logs": {"upload": true} asks for this wake's log batch. Top-level and
+     * one-shot; never part of config, so nothing is persisted. */
+    cJSON *logs = cJSON_GetObjectItemCaseSensitive(r, "logs");
+    if (cJSON_IsObject(logs))
+        out->logs_upload =
+            cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(logs, "upload"));
     cJSON *collection = cJSON_GetObjectItemCaseSensitive(r, "collection");
     if (cJSON_IsObject(collection)) {
         out->collection_present = true;
@@ -1288,4 +1351,20 @@ rest_status_t rest_post_status(int rssi, const char *ip,
 #endif
     cJSON_Delete(r);
     return REST_OK;
+}
+
+rest_status_t rest_post_log(const char *body, size_t len, uint32_t timeout_ms)
+{
+    const rest_config_t *c = rest_config_get();
+    if (!c->server_url[0] || !c->device_token[0]) return REST_HTTP_ERR;
+    char url[256];
+    snprintf(url, sizeof url, "%s/api/v1/device/%s/log", c->server_url,
+             rest_config_device_id());
+    char auth[300];
+    snprintf(auth, sizeof auth, "Bearer %s", c->device_token);
+    rest_hdr_t hdrs[] = { { "Authorization", auth } };
+    rest_status_t st = do_request_body(HTTP_METHOD_POST, url, hdrs, 1, body, len,
+                                       "text/plain; charset=utf-8", NULL,
+                                       timeout_ms);
+    return last_was_2xx() ? REST_OK : st;
 }

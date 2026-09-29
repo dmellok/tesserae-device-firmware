@@ -30,6 +30,7 @@
 
 #include "drivers/spectra6_spi_single.h"
 #include "../busy_sleep.h"
+#include "diag_run.h"           /* BUSY timeouts latch a report for the next status */
 
 #include <string.h>
 
@@ -57,6 +58,7 @@ static bool wait_busy(const char *label)
         waited_ms += epd_busy_sleep(EPD_PIN_BUSY, 1, 10);   /* light-sleep until BUSY high */
         if (waited_ms > 60000) {
             ESP_LOGE(TAG, "%s BUSY timeout", label);
+            diag_note_paint(DIAG_PAINT_READY_TIMEOUT);
             return false;
         }
     }

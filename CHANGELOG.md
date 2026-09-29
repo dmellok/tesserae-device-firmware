@@ -4,6 +4,49 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Device log upload (protocol v1). Every `esp_log` line still goes to the UART
+  unchanged; a copy, with the ANSI colour codes stripped, the query string of
+  every `http://` / `https://` URL replaced by `?<redacted>` and any
+  `Bearer <token>` by `Bearer <redacted>`, is kept in two places: a 3072-byte
+  ring in RTC memory that survives deep sleep, software reset and panic (lost
+  on power-off), and a 32 KB buffer in PSRAM holding the current boot. Each
+  boot starts with a `# tesserae-log v1 fw=... boot=... reset=... wake=...
+  epoch=...` header line. Nothing is sent unless the server asks: a `/status`
+  response carrying `"logs": {"upload": true}` makes the panel POST the batch
+  (`text/plain`) to `/api/v1/device/<id>/log` straight after the status and
+  before Wi-Fi goes down, so a timed wake delivers the previous wake's tail,
+  its paint included, with no extra radio time. The batch is the unsent part
+  of the RTC ring from earlier boots followed by the current boot so far,
+  front-truncated to 64 KB with a `# ... N bytes dropped` line. Bytes a server
+  has accepted (any 2xx) are never sent again; a failed upload is not retried
+  that wake and stays eligible for the next request. The always-on loop does
+  the same on its heartbeat. Every status body advertises the capability as
+  `"logs": {"schema": 1, "ring_bytes": 3072}`. Relay-only panels do not upload
+  yet. Boards without PSRAM keep no wake buffer by default and upload from the
+  RTC ring. Server #342.
+- Detected-failure reports. A latch in RTC memory records the IT8951 failing
+  its init verify once recovery is exhausted (`init_failed`), an HRDY timeout
+  during image load or display commands (`ready_timeout`; a wedge the init
+  ladder recovers from is not reported) and a LUTAFSR timeout
+  (`refresh_timeout`), plus the BUSY timeouts in the mono,
+  JD79676, SSD1677, Spectra 6 single, T133A01 and 10.85" drivers
+  (`ready_timeout`), and a brownout, panic or watchdog as the reason a boot
+  started. The next status carries it as `"diag": {"id", "paint_error",
+  "reset", "at"}` on every beat until one comes back 2xx, so a paint that
+  failed with the radio already down now reaches the server on the following
+  wake, and the server can answer that same status with `logs.upload`. The id
+  starts at a random value on power-on and moves on once per delivered
+  report.
+
+### Fixed
+
+- A relay transport error during pairing no longer writes the pairing code to
+  the log: the poll URL (`/v1/pair/<code>`) is logged with the code replaced.
+
 ## [1.40.0] - 2026-09-28
 
 ### Fixed

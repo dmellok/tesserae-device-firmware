@@ -19,6 +19,11 @@ Frame-cache collection manifest, cache differ, and offline Album playback:
 
     sh tools/test_frame_collection.sh
 
+Device log capture (RTC ring, redaction, upload batch) and the detected-failure
+latch reported as "diag" on /status:
+
+    sh tools/test_log_capture.sh
+
 
 Unit Testing is a software testing method by which individual units of
 source code, sets of one or more MCU program modules together with associated

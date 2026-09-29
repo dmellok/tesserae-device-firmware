@@ -14,6 +14,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "app_config.h"   /* BOARD_HAS_TOUCH gates the touch fields below */
@@ -99,6 +100,8 @@ typedef struct {
     ota_verify_reason_t ota_reason;
     ota_manifest_t ota_manifest; /* populated only when ota_reason == OK */
 #endif
+    bool     logs_upload;       /* "logs": {"upload": true}: upload the log
+                                 * batch this wake (log_capture_upload) */
     bool     deck_present;      /* response carried "deck": {"version"} */
     char     deck_version[DECK_VERSION_CAP];
     bool     collection_present; /* response carried collection id/kind/version */
@@ -182,6 +185,11 @@ rest_status_t rest_post_status(int rssi, const char *ip,
                                int32_t next_sleep_s, uint32_t sleep_until,
                                const char *fw_version,
                                rest_status_out_t *out, uint32_t timeout_ms);
+
+/* POST /api/v1/device/<id>/log with Bearer auth: one text/plain log batch
+ * (log_capture.h). REST_OK on any 2xx (self-hosted answers 200, the cloud may
+ * answer 204). */
+rest_status_t rest_post_log(const char *body, size_t len, uint32_t timeout_ms);
 
 /* ---- deck cache (SD card; see deck.h / deck_cache.h) ---- */
 

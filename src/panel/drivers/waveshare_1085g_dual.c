@@ -13,6 +13,7 @@
 
 #include "drivers/waveshare_1085g_dual.h"
 #include "../busy_sleep.h"
+#include "diag_run.h"           /* BUSY timeouts latch a report for the next status */
 
 #include <stdlib.h>
 #include <string.h>
@@ -89,6 +90,7 @@ static bool ws1085g_wait_idle(void)
         elapsed += epd_busy_sleep(EPD_PIN_BUSY, 1, 10);   /* light-sleep until BUSY high; real ms */
     }
     ESP_LOGE(TAG, "BUSY remained low for 90 seconds");
+    diag_note_paint(DIAG_PAINT_READY_TIMEOUT);
     return false;
 }
 

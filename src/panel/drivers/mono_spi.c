@@ -51,6 +51,7 @@
 #include "freertos/task.h"
 
 #include "panel/busy_sleep.h"
+#include "diag_run.h"           /* BUSY timeouts latch a report for the next status */
 
 static const char *TAG = "epd_mono";
 
@@ -172,6 +173,7 @@ static bool wait_idle(void)
             ESP_LOGE(TAG, "BUSY never cleared in %d ms; powering the panel down "
                           "anyway rather than leaving it driven",
                      BUSY_WAIT_TIMEOUT_MS);
+            diag_note_paint(DIAG_PAINT_READY_TIMEOUT);
             return false;
         }
     }

@@ -23,6 +23,7 @@
 
 #include "drivers/it8951_gray.h"
 #include "../busy_sleep.h"
+#include "diag_run.h"           /* timeouts latch a report for the next status */
 
 #include <string.h>
 
@@ -150,6 +151,11 @@ static void fill_and_refresh(uint8_t color, int wave);
 static uint32_t s_img_buf_addr;
 /* Wedge-recovery deep-sleep budget (see it8951_init); cleared on success. */
 static RTC_DATA_ATTR uint8_t s_recovery_sleeps;
+/* True while it8951_init's attach / power-up / recovery ladder runs. An HRDY
+ * timeout there is a wedge the ladder exists to recover from, not a failed
+ * paint, so wait_ready() does not latch it; only an exhausted ladder reports
+ * (init_failed). Timeouts during image load and display commands still do. */
+static bool s_in_init;
 
 /* ---------- SPI framing (16-bit words, MSB-first) ---------- */
 
@@ -165,7 +171,11 @@ static void wait_ready(void)
     int n = 0;
     while (gpio_get_level(EPD_PIN_BUSY) == 0) {
         vTaskDelay(pdMS_TO_TICKS(1));
-        if (++n > 3000) { ESP_LOGW(TAG, "HRDY timeout"); return; }
+        if (++n > 3000) {
+            ESP_LOGW(TAG, "HRDY timeout");
+            if (!s_in_init) diag_note_paint(DIAG_PAINT_READY_TIMEOUT);
+            return;
+        }
     }
 }
 
@@ -246,7 +256,11 @@ static void wait_display_done(void)
     int n = 0;
     while (read_reg(REG_LUTAFSR) != 0) {
         vTaskDelay(pdMS_TO_TICKS(10));
-        if (++n > 3000) { ESP_LOGW(TAG, "display (LUTAFSR) timeout"); return; }
+        if (++n > 3000) {
+            ESP_LOGW(TAG, "display (LUTAFSR) timeout");
+            diag_note_paint(DIAG_PAINT_REFRESH_TIMEOUT);
+            return;
+        }
     }
 }
 
@@ -377,7 +391,7 @@ static void log_dev_diag(const uint16_t *info, const char *path)
              vcom, temp, temp);
 }
 
-static void it8951_init(void)
+static void it8951_init_ladder(void)
 {
     rails_unlatch();   /* belt and braces: every power ladder below drives them */
 
@@ -460,6 +474,7 @@ static void it8951_init(void)
         }
         ESP_LOGE(TAG, "controller failed init verify (dev %ux%u); paints may fail",
                  info[0], info[1]);
+        diag_note_paint(DIAG_PAINT_INIT_FAILED);
     }
     s_img_buf_addr = ((uint32_t)info[3] << 16) | info[2];
 
@@ -485,6 +500,15 @@ static void it8951_init(void)
 
     ESP_LOGI(TAG, "init complete: dev %ux%u, img_buf=0x%08x",
              info[0], info[1], (unsigned)s_img_buf_addr);
+}
+
+/* The ladder above, with wait_ready()'s latch held off for all of it (both
+ * return paths; the isolation deep sleep never returns and resets the flag). */
+static void it8951_init(void)
+{
+    s_in_init = true;
+    it8951_init_ladder();
+    s_in_init = false;
 }
 
 static void load_img_area_start_rect(int cx, int cy, int cw, int ch)

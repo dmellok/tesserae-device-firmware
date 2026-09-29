@@ -147,7 +147,13 @@ static int relay_json(const char *url, const char *method, const char *body,
     esp_http_client_cleanup(cli);
 
     if (err != ESP_OK && status <= 0) {
-        ESP_LOGW(TAG, "%s %s: %s", method, url, esp_err_to_name(err));
+        /* The pairing poll carries the pairing code in its path
+         * (/v1/pair/<code>), and the code is a credential until pairing
+         * completes: log only the part of the URL before it. */
+        const char *pair = strstr(url, "/v1/pair/");
+        int shown = pair ? (int)(pair - url) + 8 : (int)strlen(url);
+        ESP_LOGW(TAG, "%s %.*s%s: %s", method, shown, url,
+                 pair ? "/<code>" : "", esp_err_to_name(err));
         return -1;
     }
     if (rx.overflow) ESP_LOGW(TAG, "response > %u bytes, truncated",

@@ -12,6 +12,7 @@
 
 #include "drivers/ssd1677_gray.h"
 #include "../busy_sleep.h"
+#include "diag_run.h"           /* BUSY timeouts latch a report for the next status */
 
 #include <stdlib.h>
 #include <string.h>
@@ -197,6 +198,7 @@ static bool wait_idle(void)
         if (waited >= SSD_BUSY_TIMEOUT_MS) {
             ESP_LOGE(TAG, "BUSY never cleared in %d ms; continuing so the panel "
                           "still gets powered down", SSD_BUSY_TIMEOUT_MS);
+            diag_note_paint(DIAG_PAINT_READY_TIMEOUT);
             return false;
         }
     }

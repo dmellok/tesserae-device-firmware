@@ -27,6 +27,7 @@
 
 #include "drivers/spectra6_t133a01_dual.h"
 #include "../busy_sleep.h"
+#include "diag_run.h"           /* BUSY timeouts latch a report for the next status */
 
 #include <string.h>
 
@@ -188,6 +189,7 @@ static bool wait_idle(const char *tag, uint32_t timeout_ms)
             ESP_LOGE(TAG, "%s: BUSY never cleared in %u ms; continuing so the "
                           "panel is still powered down rather than left driven",
                      tag, (unsigned)timeout_ms);
+            diag_note_paint(DIAG_PAINT_READY_TIMEOUT);
             return false;
         }
     }

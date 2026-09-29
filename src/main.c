@@ -60,9 +60,11 @@
 #include "rtc_pcf8563.h"  /* board RTC seed at boot (no-op without one) */
 #include "panel/busy_sleep.h" /* light sleep gate while radios are down */
 #include "ble_setup.h"
+#include "diag_run.h"     /* detected-failure latch, reported on /status */
 #include "epd_driver.h"
 #include "image_decoder.h"
 #include "image_fetcher.h"
+#include "log_capture.h"  /* esp_log tee for server-requested log upload */
 #include "net_rest.h"
 #include "ota_boot.h"
 #include "ota_install.h"
@@ -486,6 +488,7 @@ static void always_on_loop(void)
              * while always_on; the 0 here is just the unused argument. */
             if (rest_post_status(current_rssi(), ip, EPD_WIDTH, EPD_HEIGHT,
                                  0, 0, FW_VERSION, &so, 8000) == REST_OK) {
+                if (so.logs_upload) log_capture_upload();
 #if defined(BOARD_HAS_TOUCH) && defined(BOARD_OVERLAY_PARTIAL)
                 if (so.overlay_values[0]) {
                     overlay_ingest_values(so.overlay_values,
@@ -1345,6 +1348,9 @@ void app_main(void)
      * held, so every line below would be racing the user's thumb. No-op
      * elsewhere. See power_latch.h. */
     power_latch_hold();
+    /* Log capture next, so the uploadable log covers as much of the wake as
+     * it can. UART output is unchanged. */
+    log_capture_init();
     led_init();   /* on: "booting" (off again below unless this is a cold boot) */
 
     /* Park the SD card's chip-select before ANY code touches the shared SPI
@@ -1391,6 +1397,9 @@ void app_main(void)
         ESP_LOGI(TAG, "clock seeded from the board RTC: %04d-%02d-%02d %02d:%02d:%02dZ",
                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
     }
+    /* After the clock seed, so a brownout / panic / watchdog latch carries a
+     * real time where the board has one. */
+    diag_run_boot();
 
     /* Front-button wake (see buttons.h): a press wakes us early via ext1. We tell
      * the REST client which button so the frame/status requests carry it, and we
@@ -2719,6 +2728,10 @@ void app_main(void)
         rest_status_t ss = rest_post_status(current_rssi(), ip, pw, ph,
                                             interval, sleep_until, FW_VERSION, &so, 8000);
         if (ss == REST_OK) {
+            /* The server asked for the log: send it now, over the link we
+             * already have and before the radio goes down for the paint. It
+             * carries the previous wake's tail, paint included. */
+            if (so.logs_upload) log_capture_upload();
             if (so.sleep_interval_s > 0 && so.sleep_interval_s != rest_config_get()->sleep_s) {
                 rest_config_set_sleep_s(so.sleep_interval_s);
                 cfg_dirty = true;
