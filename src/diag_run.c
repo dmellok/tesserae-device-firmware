@@ -16,6 +16,7 @@ static const char *TAG = "diag";
 RTC_NOINIT_ATTR static diag_state_t s_diag;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_booted;
+static uint32_t s_paint_failures;   /* this boot only */
 
 /* Same plausibility window main.c uses for the wall clock. */
 static uint32_t epoch_now(void)
@@ -62,6 +63,7 @@ void diag_run_boot(void)
 void diag_note_paint(diag_paint_t paint)
 {
     if (!s_booted) diag_run_boot();
+    s_paint_failures++;
     uint32_t now = epoch_now();
     portENTER_CRITICAL(&s_mux);
     bool changed = diag_latch_paint(&s_diag, paint, now);
@@ -71,6 +73,8 @@ void diag_note_paint(diag_paint_t paint)
         ESP_LOGW(TAG, "latched %s (report %lu)", diag_paint_name(paint),
                  (unsigned long)id);
 }
+
+uint32_t diag_run_paint_failures(void) { return s_paint_failures; }
 
 bool diag_run_report(diag_report_t *out)
 {

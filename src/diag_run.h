@@ -24,6 +24,10 @@ void diag_run_boot(void);
 /* A panel driver detected a failure. */
 void diag_note_paint(diag_paint_t paint);
 
+/* diag_note_paint() calls since boot, whether or not they changed the latch.
+ * Compare before and after a paint to learn whether that paint failed. */
+uint32_t diag_run_paint_failures(void);
+
 /* The report waiting for delivery, if any. */
 bool diag_run_report(diag_report_t *out);
 

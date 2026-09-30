@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Deep-sleep current on the reTerminal E1003 and the other reTerminals
+  (server #327). The rail latches added in 1.40.0 held their pins low with the
+  ESP32-S3's internal pull-up still enabled, because the pins had been
+  configured with it and a pad hold latches the pull-up along with the level.
+  Each such pin drew roughly 70 uA through its own pull-up for the whole sleep:
+  SD slot power on every reTerminal and the Sticky, the IT8951 and panel-bias
+  enables (GPIO21, GPIO11) and, with touch off, the GT911 INT line on the
+  E1003. The pulls are now switched off before each hold, and the same goes for
+  the unused mic and header rail enables. Seeed's E1003 schematic has 100k
+  pull-downs on all of these enables, so the rails still stay off.
+- A wedged IT8951 no longer keeps the E1003 awake. The first HRDY timeout
+  outside init now makes the rest of that operation skip its waits until the
+  next init attempt. Before, every wait in the paint ran to its own 3 s cap,
+  and the refresh wait repeats register reads up to 3000 times, so one wedge
+  held the SoC at active current for minutes with nothing reaching the glass.
+- A paint the driver reports as failed no longer stores the frame's ETag, so
+  the next wake fetches and paints the frame again instead of getting a 304
+  and leaving the old image up. This happens once per frame, so a driver whose
+  timeout fires on paints that do land cannot cause a repaint on every wake.
+- The first touch-on sleep after a touch-off one could end at once: the GT911
+  had just been reset and could still hold INT low when INT joined the wake
+  mask. The firmware now waits up to 100 ms for INT to go idle, and if it
+  stays asserted the touch wake is skipped for that one sleep (buttons and the
+  timer still wake the panel).
+
+### Added
+
+- With touch off, the E1003 logs whether TP_INT has an external pull-up on the
+  digitiser side (`park_idle: TP_INT with controller asleep reads ...`), read
+  with the controller asleep and only a weak internal pull-down on the line.
+  If one is present, holding INT low through sleep costs that resistor's
+  current, and the log line shows it.
+
 ## [1.41.0] - 2026-09-29
 
 ### Added

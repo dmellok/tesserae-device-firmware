@@ -113,6 +113,20 @@ static int      s_rmax_y = EPD_HEIGHT;
 RTC_DATA_ATTR static uint32_t s_gesture_armed;
 #endif
 
+#ifndef BOARD_TOUCH_EN_PIN
+/* Set by touch_park_idle() once the controller took the sleep command, so the
+ * next park knows INT is released on the controller side and can check the
+ * line for an external pull-up. RTC-retained; cleared on any other path. */
+#define PARKED_MAGIC 0x5041524bu   /* 'PARK' */
+RTC_DATA_ATTR static uint32_t s_parked;
+#endif
+
+#ifndef TOUCH_GESTURE_SLEEP
+/* touch_prepare_sleep() found INT still asserted after clearing the buffer, so
+ * folding it into the ANY_LOW wake mask would wake the SoC at once. */
+static bool s_int_wake_unsafe = false;
+#endif
+
 static esp_err_t gt_read(uint16_t reg, uint8_t *data, size_t len)
 {
     uint8_t a[2] = { (uint8_t)(reg >> 8), (uint8_t)(reg & 0xff) };
@@ -445,9 +459,32 @@ void touch_prepare_sleep(void)
         ESP_LOGW(TAG, "prepare_sleep: GT911 init failed; no touch wake armed");
         return;
     }
+#ifndef BOARD_TOUCH_EN_PIN
+    s_parked = 0;   /* touch_init() just woke or reset it; it is scanning now */
+#endif
     /* Monitor mode: leave the controller scanning (we never command sleep) so it
      * raises INT on a touch. Clear the buffer so a fresh touch triggers. */
     gt_write_u8(GT_REG_STATUS, 0);
+
+#ifndef TOUCH_GESTURE_SLEEP
+    /* INT must be idle (high) before it joins the ANY_LOW mask, or the sleep
+     * ends the moment it starts. The case that bites is the first touch-on
+     * sleep after a touch-off one: touch_init() has just reset a parked
+     * controller, and it can still hold INT low for a report or its own
+     * start-up when we get here. Give it a short window, re-clearing the
+     * buffer, and skip the touch wake for this one sleep rather than take an
+     * immediate spurious wake (buttons and the timer still wake it). */
+    s_int_wake_unsafe = false;
+    for (int i = 0; i < 10 && touch_int_asserted(); i++) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        gt_write_u8(GT_REG_STATUS, 0);
+    }
+    if (touch_int_asserted()) {
+        s_int_wake_unsafe = true;
+        ESP_LOGW(TAG, "prepare_sleep: INT still asserted after 100 ms; "
+                      "touch wake skipped for this sleep");
+    }
+#endif
 
     /* TP_RST: by default do NOT latch it with gpio_deep_sleep_hold_en().
      * Verified on E1003 hardware that enabling it breaks the ext1 touch wake
@@ -543,6 +580,30 @@ void touch_park_idle(void)
      * command. Re-parking every cycle rather than tracking the state in RTC
      * memory keeps this self-healing after any reset, and the reset is the only
      * cost -- a fraction of one percent of a five-minute wake cycle. */
+    const gpio_num_t intp = (gpio_num_t)BOARD_TOUCH_INT_PIN;
+
+    /* Self-check for server #327: with the controller asleep (it released INT
+     * when the last park took), briefly let go of the line with only a weak
+     * internal pull-down on it. A high read means something on the digitiser
+     * side pulls INT up, and holding it low below costs that resistor's
+     * current all sleep. The main board has no INT pull-up (Seeed schematic
+     * sheet 6); the touch FPC is the unknown. Log only: a release that lets
+     * the line rise may wake the controller, which the init below handles. */
+#if !(defined(CONFIG_IDF_TARGET_ESP32) && (BOARD_TOUCH_INT_PIN >= 34))
+    /* (Not on a classic-ESP32 input-only INT pad: it has no internal pulls.) */
+    if (s_parked == PARKED_MAGIC) {
+        gpio_hold_dis(intp);
+        gpio_set_direction(intp, GPIO_MODE_INPUT);
+        gpio_set_pull_mode(intp, GPIO_PULLDOWN_ONLY);
+        esp_rom_delay_us(2000);
+        int lvl = gpio_get_level(intp);
+        gpio_set_pull_mode(intp, GPIO_FLOATING);
+        ESP_LOGI(TAG, "park_idle: TP_INT with controller asleep reads %d (%s)",
+                 lvl, lvl ? "external pull-up present" : "no external pull-up");
+    }
+#endif
+    s_parked = 0;
+
     if (touch_init() != ESP_OK) {
         ESP_LOGW(TAG, "park_idle: GT911 init failed; left scanning");
         return;
@@ -559,8 +620,17 @@ void touch_park_idle(void)
      * low costs that resistor's current for the sleep -- a few hundred uA
      * against the several mA of a scanning digitiser, so the trade is worth
      * taking blind. Released by touch_init() on any path that uses touch
-     * again. */
-    const gpio_num_t intp = (gpio_num_t)BOARD_TOUCH_INT_PIN;
+     * again.
+     *
+     * Our own pulls go off first. touch_init() leaves the pad an input with
+     * the internal pull-up on, and a touch-on sleep arms the RTC pull-up for
+     * the ext1 wake; the hold below would latch either against the low drive,
+     * ~70 uA for the whole sleep (server #327). */
+#if !(defined(CONFIG_IDF_TARGET_ESP32) && (BOARD_TOUCH_INT_PIN >= 34))
+    gpio_set_pull_mode(intp, GPIO_FLOATING);
+    rtc_gpio_pullup_dis(intp);
+    rtc_gpio_pulldown_dis(intp);
+#endif
     gpio_set_level(intp, 0);
     gpio_set_direction(intp, GPIO_MODE_OUTPUT);
 
@@ -573,6 +643,7 @@ void touch_park_idle(void)
     gpio_hold_en(intp);
     gpio_deep_sleep_hold_en();
 
+    s_parked = PARKED_MAGIC;
     s_ready = false;   /* the controller is asleep; a later read must re-init */
     ESP_LOGI(TAG, "touch disabled: GT911 parked in sleep mode");
 #endif
@@ -583,6 +654,7 @@ uint64_t touch_sleep_wake_mask(void)
 #ifdef TOUCH_GESTURE_SLEEP
     return 0;                     /* ext0 armed inside touch_prepare_sleep() */
 #else
+    if (s_int_wake_unsafe) return 0;   /* INT stuck low: see touch_prepare_sleep() */
     return TOUCH_INT_WAKE_MASK;   /* caller folds INT into the ext1 ANY_LOW mask */
 #endif
 }

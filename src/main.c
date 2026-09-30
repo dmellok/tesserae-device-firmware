@@ -567,7 +567,11 @@ static void always_on_loop(void)
  * GPIO38, the E1003 header rail on GPIO46) sit at their reset state through
  * deep sleep. Drive them low and hold them so a floating enable cannot leak
  * a rail on for the whole sleep; Seeed's ~14 uA figure was measured without
- * doing this, so the gain is a bench question, the safety is not. */
+ * doing this, so the gain is a bench question, the safety is not.
+ *
+ * Pulls go off before the hold: a hold latches the pad as it stands, internal
+ * pull-up included, and a pull-up into a pad driven low is ~70 uA each for
+ * the whole sleep (server #327). */
 static void sleep_park_rails(void)
 {
 #ifdef BOARD_SLEEP_DRIVE_LOW_MASK
@@ -576,6 +580,7 @@ static void sleep_park_rails(void)
         if (!(mask & (1ULL << pin))) continue;
         gpio_hold_dis((gpio_num_t)pin);
         gpio_set_direction((gpio_num_t)pin, GPIO_MODE_OUTPUT);
+        gpio_set_pull_mode((gpio_num_t)pin, GPIO_FLOATING);
         gpio_set_level((gpio_num_t)pin, 0);
         gpio_hold_en((gpio_num_t)pin);
     }
@@ -1155,6 +1160,11 @@ static void ota_report_install_failure(const ota_manifest_t *m,
 /* Goodbye-on-screen flag lives in RTC RAM so it survives the hibernate sleeps;
  * a power loss or RESET repaints the goodbye once if the cell is still flat. */
 RTC_DATA_ATTR static uint8_t s_goodbye_on_screen;
+
+/* ETag of the last downloaded frame whose paint the driver reported as failed
+ * and whose ETag was therefore not stored (see the paint in the wake cycle).
+ * RTC-retained so the retry is limited to one per frame. */
+RTC_DATA_ATTR static char s_failed_paint_etag[80];
 
 /* Set when a wake finds the battery recovered while the goodbye is still on
  * the panel: the cycle must drop the cached ETag so the server sends a full
@@ -2939,16 +2949,34 @@ void app_main(void)
         ESP_ERROR_CHECK(epd_port_init());
         epd_init();
         touch3_compose(frame);   /* draw v3 controls into their blank rects */
+        bool paint_failed = false;
         {
             int64_t t0 = esp_timer_get_time();
             uint32_t ls0 = epd_light_sleep_count();
+            uint32_t pf0 = diag_run_paint_failures();
             epd_display(frame);
             epd_sleep();
-            ESP_LOGI(TAG, "paint done in %lld ms (%lu light-sleep naps)",
+            paint_failed = diag_run_paint_failures() != pf0;
+            ESP_LOGI(TAG, "paint done in %lld ms (%lu light-sleep naps)%s",
                      (esp_timer_get_time() - t0) / 1000,
-                     (unsigned long)(epd_light_sleep_count() - ls0));
+                     (unsigned long)(epd_light_sleep_count() - ls0),
+                     paint_failed ? "; driver reported a failure" : "");
         }
-        if (new_etag[0]) { rest_config_set_frame_etag(new_etag); cfg_dirty = true; }
+        /* A paint the driver reported as failed leaves the old image on the
+         * glass. Storing its ETag anyway made the next wake 304 and look
+         * healthy while the panel stayed stale (server #327), so hold it back
+         * once and let the next wake fetch and paint the frame again. Only
+         * once per frame: a driver whose timeout fires on paints that do land
+         * must not turn every wake into a repaint. */
+        bool keep_etag = true;
+        if (paint_failed && new_etag[0] &&
+            strcmp(s_failed_paint_etag, new_etag) != 0) {
+            snprintf(s_failed_paint_etag, sizeof s_failed_paint_etag, "%s", new_etag);
+            ESP_LOGW(TAG, "paint failed; not storing ETag so the next wake repaints %s",
+                     new_etag);
+            keep_etag = false;
+        }
+        if (new_etag[0] && keep_etag) { rest_config_set_frame_etag(new_etag); cfg_dirty = true; }
         rest_config_set_ui_state(UI_CONNECTED);   /* a real frame is up now */
         overlay_after_paint(frame, new_etag);      /* keep base copy + SD patches */
         proto2_frame_painted(new_etag);   /* server-wins: full frame clears the ledger */

@@ -358,6 +358,10 @@ void sdcard_prepare_sleep(void)
      * are no-ops. */
     gpio_set_level((gpio_num_t)EPD_PIN_EN, 0);
     gpio_set_level((gpio_num_t)EPD_PIN_VCC_EN, 0);
+    /* sdcard_mount() parked these with the internal pull-up on; a held-low
+     * pad with its pull-up latched leaks ~70 uA each (server #327). */
+    gpio_set_pull_mode((gpio_num_t)EPD_PIN_EN, GPIO_FLOATING);
+    gpio_set_pull_mode((gpio_num_t)EPD_PIN_VCC_EN, GPIO_FLOATING);
     gpio_hold_en((gpio_num_t)EPD_PIN_EN);
     gpio_hold_en((gpio_num_t)EPD_PIN_VCC_EN);
     gpio_deep_sleep_hold_en();
@@ -366,7 +370,12 @@ void sdcard_prepare_sleep(void)
 #if defined(SD_PIN_EN) && !defined(SD_RAIL_KEEP)
     /* Latch that low level through the sleep. Without this the pad isolates
      * with everything else and the load switch is left with a floating enable
-     * for minutes at a time. */
+     * for minutes at a time.
+     *
+     * park_lines() configured the pin with the internal pull-up on, and the
+     * hold latches that too: a pull-up into a pad held low costs ~70 uA for
+     * the whole sleep (server #327). Pulls off first. */
+    gpio_set_pull_mode((gpio_num_t)SD_PIN_EN, GPIO_FLOATING);
     gpio_hold_en((gpio_num_t)SD_PIN_EN);
     gpio_deep_sleep_hold_en();
 #endif

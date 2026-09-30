@@ -161,6 +161,14 @@ static bool s_in_init;
 
 static inline void cs(int level) { gpio_set_level(EPD_PIN_CS, level); }
 
+/* Set by the first HRDY timeout; every later wait returns at once until the
+ * next init attempt clears it. A controller that stops answering does not come
+ * back mid-operation, and without this each of the hundreds of waits in a
+ * paint burns its own 3 s cap -- wait_display_done() alone does up to 3000
+ * read_reg()s, each several waits deep -- so one wedge kept the SoC awake at
+ * ~120 mA for minutes with nothing reaching the glass (server #327). */
+static bool s_hung;
+
 /* HRDY: wait while BUSY is LOW (controller busy). ~3 s cap. */
 static void wait_ready(void)
 {
@@ -168,12 +176,14 @@ static void wait_ready(void)
      * once per command and per image row, so a light-sleep entry (ms of
      * overhead each) here would slow the load, not save power. The long
      * refresh wait polls LUTAFSR over SPI and cannot nap either. */
+    if (s_hung) return;
     int n = 0;
     while (gpio_get_level(EPD_PIN_BUSY) == 0) {
         vTaskDelay(pdMS_TO_TICKS(1));
         if (++n > 3000) {
-            ESP_LOGW(TAG, "HRDY timeout");
+            ESP_LOGW(TAG, "HRDY timeout; skipping further waits until re-init");
             if (!s_in_init) diag_note_paint(DIAG_PAINT_READY_TIMEOUT);
+            s_hung = true;
             return;
         }
     }
@@ -254,7 +264,7 @@ static uint16_t read_reg(uint16_t addr)
 static void wait_display_done(void)
 {
     int n = 0;
-    while (read_reg(REG_LUTAFSR) != 0) {
+    while (!s_hung && read_reg(REG_LUTAFSR) != 0) {
         vTaskDelay(pdMS_TO_TICKS(10));
         if (++n > 3000) {
             ESP_LOGW(TAG, "display (LUTAFSR) timeout");
@@ -408,6 +418,7 @@ static void it8951_init_ladder(void)
      * parasitically alive through the ESD diodes), so it comes back with a
      * corrupted state machine (bench 2026-07-24). Verify with GET_DEV_INFO;
      * only an unresponsive chip proceeds to the hard power-up ladder. */
+    s_hung = false;   /* each attempt below gets its own timeouts */
     if (gpio_get_level(EPD_PIN_BUSY) == 1) {
         write_cmd(SYS_RUN);
         write_cmd(GET_DEV_INFO);
@@ -440,6 +451,7 @@ static void it8951_init_ladder(void)
             gpio_set_level(EPD_PIN_VCC_EN, 0);
             vTaskDelay(pdMS_TO_TICKS(1500));
         }
+        s_hung = false;
         hw_reset_and_power();
         /* Trust the reset as a blank reference only when nothing was
          * displayed recently enough for the DRAM to have kept it. */
@@ -834,7 +846,14 @@ static void it8951_sleep(void)
 #ifdef BOARD_EPD_HOLD_RAILS_IN_SLEEP
     /* Make the off stick. Both lines are load-switch enables; isolating them
      * at deep-sleep entry leaves those switches floating for the whole
-     * interval. Released in it8951_port_init() on the next wake. */
+     * interval. Released in it8951_port_init() on the next wake.
+     *
+     * it8951_port_init() and the SD layer configure these pins with the
+     * internal pull-up on, and the hold latches it: a pull-up into a pad held
+     * low is ~70 uA per pin for the whole sleep (server #327). The E1003 has
+     * 100k pull-downs on both enables (R44, R15), so floating pulls are safe. */
+    gpio_set_pull_mode(EPD_PIN_EN, GPIO_FLOATING);
+    gpio_set_pull_mode(EPD_PIN_VCC_EN, GPIO_FLOATING);
     gpio_hold_en(EPD_PIN_EN);
     gpio_hold_en(EPD_PIN_VCC_EN);
     gpio_deep_sleep_hold_en();
