@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.43.0] - 2026-10-03
+
 ### Added
 
 - Setup over USB. The console port now answers a small newline-delimited JSON
