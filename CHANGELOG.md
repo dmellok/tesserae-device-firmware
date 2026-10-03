@@ -26,6 +26,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The hotspot's connection switch has three segments. Cloud takes the cloud
   glyph that Remote used to wear; Relay gets a pair of passing arrows.
+- The M5Paper build keeps the Wi-Fi receive path out of IRAM
+  (`CONFIG_ESP_WIFI_RX_IRAM_OPT=n`). The console UART driver the serial setup
+  installs lives in IRAM, and this board's link had 3.4 KB to spare. A panel
+  fetching one frame per wake should not notice the slower receive path.
 
 ## [1.42.0] - 2026-09-30
 
