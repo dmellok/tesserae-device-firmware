@@ -72,6 +72,7 @@
 #include "ota_report.h"
 #include "ota_verify.h"
 #include "provisioning.h"
+#include "serial_setup.h"
 #include "relay.h"        /* cloud relay: remote panels */
 #include "rest_config.h"
 #include "splash.h"
@@ -1380,6 +1381,10 @@ void app_main(void)
     if (nvs_early != ESP_OK)
         ESP_LOGW(TAG, "early nvs init: %s (config reads defaults until wifi init)",
                  esp_err_to_name(nvs_early));
+    /* Setup over the console port (serial_setup.h): a flasher or the cloud
+     * console can hand the board its Wi-Fi and server right after writing the
+     * firmware, and any time it is plugged in. Needs NVS, hence here. */
+    serial_setup_start();
 
 #ifdef BOARD_FRONTLIGHT_M5PM1
     /* Re-assert the saved frontlight level: the PMIC keeps its PWM across our

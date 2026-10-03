@@ -146,6 +146,10 @@ src/
   net_rest.c / rest_config  Tesserae REST client + NVS-backed config
   image_fetcher / _decoder  HTTP frame download + size-validated copy (no decode)
   provisioning.c            captive-portal setup (AP + DNS + scan + form)
+  setup_fields.c            the setup fields and their rules, shared by the
+                            portal, serial setup and BLE (host-tested)
+  serial_setup.c            setup over the console port (USB) for the web
+                            flasher and the cloud; docs/serial-setup-protocol.md
   splash.c                  on-device procedural splashes (logo, portal QR,
                             connect-status messages), bpp-aware
   battery.c                 board-gated Li-Po telemetry (ADC or PMIC gauge)

@@ -281,13 +281,15 @@ static const char k_form_wifi_fmt[] =
 "</div>"
 "</section>";
 
-/* Local vs Relay switch, in three chunks so the `checked` attributes can be
+/* Local, Cloud or Relay switch, in chunks so the `checked` attributes can be
  * spliced in without a stack buffer (the markup outgrew one, and render_form
  * is already tight on stack -- see the task-stack note below).
  *
  * The glyphs are filled rather than stroked because they render at 14 px, where
  * a 2 px stroke turns to mush. Local is the four-tile mosaic from the brand
- * mark ("these tiles, right here"); remote is a cloud. */
+ * mark ("these tiles, right here"), Cloud is a cloud, and Relay is a pair of
+ * arrows passing each other: a panel that reaches its server through
+ * something in the middle. */
 static const char k_form_modes_a[] =
 "<div class=\"modes\" role=\"radiogroup\" aria-label=\"Connection\">"
 "<input type=\"radio\" id=\"mode-local\" name=\"mode\" value=\"local\"";
@@ -301,14 +303,22 @@ static const char k_form_modes_b[] =
 "<rect x=\"1\" y=\"9\" width=\"6\" height=\"6\" rx=\"1.4\"/>"
 "<rect x=\"9\" y=\"9\" width=\"6\" height=\"6\" rx=\"1.4\"/>"
 "</svg>Local</label>"
-"<input type=\"radio\" id=\"mode-relay\" name=\"mode\" value=\"relay\"";
+"<input type=\"radio\" id=\"mode-cloud\" name=\"mode\" value=\"cloud\"";
 
 static const char k_form_modes_c[] =
 ">"
-"<label for=\"mode-relay\">"
+"<label for=\"mode-cloud\">"
 "<svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\">"
 "<path d=\"M6.8 19.5h10.7a4.6 4.6 0 0 0 .5-9.17A6.6 6.6 0 0 0 6 8.2a5.65 5.65 0 0 0 .8 11.3Z\"/>"
-"</svg>Remote</label>"
+"</svg>Cloud</label>"
+"<input type=\"radio\" id=\"mode-relay\" name=\"mode\" value=\"relay\"";
+
+static const char k_form_modes_d[] =
+">"
+"<label for=\"mode-relay\">"
+"<svg viewBox=\"0 0 16 16\" fill=\"currentColor\" aria-hidden=\"true\">"
+"<path d=\"M2 4.5h7.2V2l4.3 3.5-4.3 3.5V6.5H2zM14 11.5H6.8V14l-4.3-3.5L6.8 7v2.5H14z\"/>"
+"</svg>Relay</label>"
 "</div>";
 
 /* Tesserae server card; %s x1 = (server_url) */
@@ -352,7 +362,24 @@ static const char k_form_relay_fmt[] =
 "<p class=\"hint\">From <code>Settings &rarr; Cloud relay &rarr; Add a remote "
 "panel</code>. Codes are single-use and expire in about 10 minutes. %s</p>"
 "</div>"
-"</section>"
+"</section>";
+
+/* Tesserae Cloud card; %s x1 = (status line). The address is fixed, so the
+ * only thing to type is the claim code the console shows. */
+static const char k_form_cloud_fmt[] =
+"<section class=\"card\" id=\"card-cloud\"><h2>Tesserae Cloud</h2>"
+"<p class=\"hint\">Pairs this panel with your account at "
+"<code>" SETUP_CLOUD_URL "</code>. Nothing to host.</p>"
+"<div class=\"field\">"
+"<label for=\"cloud_code\">Claim code *</label>"
+"<input id=\"cloud_code\" name=\"cloud_code\" maxlength=\"15\" inputmode=\"numeric\" "
+"autocomplete=\"off\" placeholder=\"1234 5678\">"
+"<p class=\"hint\">Eight digits from <code>Settings &rarr; Panels &rarr; Add a "
+"panel</code> in Tesserae Cloud. Good for an hour; one panel per code. %s</p>"
+"</div>"
+"</section>";
+
+static const char k_form_end[] =
 "<button class=\"submit\" type=\"submit\">Save &amp; restart</button>"
 "</form>";
 
@@ -373,17 +400,18 @@ static const char k_tail[] =
 "if(e.target.value){document.getElementById('ssid').value=e.target.value;"
 "document.getElementById('wifi-pw').focus();}"
 "});}"
-/* Local vs Relay: show one card, and move the `required` attribute onto the
-   field that mode actually needs. Without this the browser refused to submit a
+/* Local, Cloud or Relay: show one card, and move the `required` attribute onto
+   the field that mode actually needs. Without this the browser refused to submit a
    relay-only setup because the server URL was permanently required. */
 "function tessMode(){"
-"var relay=document.getElementById('mode-relay').checked;"
-"var L=document.getElementById('card-local'),R=document.getElementById('card-relay');"
-"if(L)L.style.display=relay?'none':'';"
-"if(R)R.style.display=relay?'':'none';"
-"var s=document.getElementById('server_url'),c=document.getElementById('relay_code');"
-"if(s){s.required=!relay;}"
-"if(c){c.required=relay;}"
+"var on=document.querySelector('.modes input:checked');var m=on?on.value:'local';"
+"['local','cloud','relay'].forEach(function(k){var c=document.getElementById('card-'+k);"
+"if(c)c.style.display=m===k?'':'none';});"
+"var s=document.getElementById('server_url'),c=document.getElementById('relay_code'),"
+"k=document.getElementById('cloud_code');"
+"if(s){s.required=m==='local';}"
+"if(c){c.required=m==='relay';}"
+"if(k){k.required=m==='cloud';}"
 "}"
 "document.querySelectorAll('.modes input').forEach(function(r){"
 "r.addEventListener('change',tessMode);});"
@@ -583,18 +611,29 @@ static esp_err_t render_form(httpd_req_t *req, const char *error)
     httpd_resp_sendstr_chunk(req, form_wifi);
 
     char form_server[1400];
+    bool cloud_mode = strcmp(cfg->server_url, SETUP_CLOUD_URL) == 0;
     {
         /* Preselect the mode this device is actually in, so the form opens on
-         * the card the operator is most likely to want. */
+         * the card the operator is most likely to want. Local is the default. */
         bool relay_mode = rest_config_relay_ready() || cfg->relay_code[0];
         httpd_resp_sendstr_chunk(req, k_form_modes_a);
-        send_chunk(req, relay_mode ? "" : " checked");
+        send_chunk(req, (relay_mode || cloud_mode) ? "" : " checked");
         httpd_resp_sendstr_chunk(req, k_form_modes_b);
-        send_chunk(req, relay_mode ? " checked" : "");
+        send_chunk(req, (cloud_mode && !relay_mode) ? " checked" : "");
         httpd_resp_sendstr_chunk(req, k_form_modes_c);
+        send_chunk(req, relay_mode ? " checked" : "");
+        httpd_resp_sendstr_chunk(req, k_form_modes_d);
     }
 
-    snprintf(form_server, sizeof form_server, k_form_server_fmt, e_server);
+    /* The local card shows the server typed for a local server; the cloud
+     * address lives on its own card and would only confuse here. */
+    snprintf(form_server, sizeof form_server, k_form_server_fmt, cloud_mode ? "" : e_server);
+    httpd_resp_sendstr_chunk(req, form_server);
+
+    snprintf(form_server, sizeof form_server, k_form_cloud_fmt,
+             (cloud_mode && cfg->device_token[0]) ? "This panel is already paired with the "
+                                                     "cloud; a new code re-pairs it."
+                                                   : "");
     httpd_resp_sendstr_chunk(req, form_server);
 
     {
@@ -611,6 +650,7 @@ static esp_err_t render_form(httpd_req_t *req, const char *error)
         httpd_resp_sendstr_chunk(req, form_server);
     }
 
+    httpd_resp_sendstr_chunk(req, k_form_end);
     httpd_resp_sendstr_chunk(req, k_tail);
     httpd_resp_sendstr_chunk(req, NULL);   /* terminate chunked response */
     return ESP_OK;
@@ -632,97 +672,32 @@ static esp_err_t h_save(httpd_req_t *req)
     }
     body[total] = '\0';
 
-    char ssid[33] = {0}, wpa_pass[65] = {0};
-    char server_url[160] = {0}, pairing[16] = {0};
-    char relay_url[160] = {0}, relay_code[24] = {0};
-
-    bool have_ssid    = form_field(body, "ssid",         ssid,       sizeof ssid)       && ssid[0];
-    bool have_pass    = form_field(body, "pass",         wpa_pass,   sizeof wpa_pass)   && wpa_pass[0];
-    bool have_server  = form_field(body, "server_url",   server_url, sizeof server_url) && server_url[0];
-    bool have_pairing = form_field(body, "pairing_code", pairing,    sizeof pairing)    && pairing[0];
-    bool have_rurl    = form_field(body, "relay_url",    relay_url,  sizeof relay_url)  && relay_url[0];
-    bool have_rcode   = form_field(body, "relay_code",   relay_code, sizeof relay_code) && relay_code[0];
-
-    /* Which form the operator submitted. The switch posts it; default to local
+    setup_fields_t f;
+    memset(&f, 0, sizeof f);
+    form_field(body, "ssid", f.ssid, sizeof f.ssid);
+    /* Blank WiFi password means "keep what's stored", so editing just the
+     * server via the always-on portal doesn't wipe creds. */
+    f.have_pass = form_field(body, "pass", f.pass, sizeof f.pass) && f.pass[0];
+    /* Which card the operator submitted. The switch posts it; default to local
      * so a client with no JS (or an older cached page) behaves as before. */
     char mode[8] = {0};
     form_field(body, "mode", mode, sizeof mode);
-    bool relay_mode = strcmp(mode, "relay") == 0;
+    setup_mode_parse(mode, &f.mode);
+    form_field(body, "server_url",   f.server_url, sizeof f.server_url);
+    form_field(body, "pairing_code", f.pairing,    sizeof f.pairing);
+    if (f.mode == SETUP_MODE_CLOUD) form_field(body, "cloud_code", f.pairing, sizeof f.pairing);
+    form_field(body, "relay_url",    f.relay_url,  sizeof f.relay_url);
+    form_field(body, "relay_code",   f.relay_code, sizeof f.relay_code);
 
-    if (!have_ssid) return render_form(req, "WiFi network name (SSID) is required.");
-    /* Each mode requires only its own field. A relay panel has NO home server
-     * URL -- it only ever talks to the relay -- and a local panel needs no
-     * pairing code. Enforced here as well as by the browser, since the form's
-     * `required` attributes are set by JS and a client without it would
-     * otherwise submit an empty setup. */
-    if (relay_mode) {
-        if (!have_rcode)
-            return render_form(req, "A cloud-relay pairing code is required for "
-                                    "a remote panel. Get one from Settings "
-                                    "&rarr; Cloud relay &rarr; Add a remote panel.");
-    } else if (!have_server) {
-        return render_form(req, "Tesserae server URL is required.");
-    }
-    /* Be forgiving about the scheme: default to http:// when it's omitted
-     * (mirrors the client-side normalization). */
-    if (have_server &&
-        strncmp(server_url, "http://", 7) != 0 && strncmp(server_url, "https://", 8) != 0) {
-        char with_scheme[167];
-        snprintf(with_scheme, sizeof with_scheme, "http://%s", server_url);
-        snprintf(server_url, sizeof server_url, "%s", with_scheme);
-    }
-    /* The relay is public and always TLS; anything else would ship the pairing
-     * handshake in the clear. */
-    if (relay_mode && have_rurl && strncmp(relay_url, "https://", 8) != 0)
-        return render_form(req, "The relay URL must start with https://.");
+    /* Each mode requires only its own field, enforced here as well as by the
+     * browser, since the form's `required` attributes are set by JS and a
+     * client without it would otherwise submit an empty setup. */
+    char err[200];
+    if (!setup_fields_check(&f, RELAY_DEFAULT_URL, err, sizeof err)) return render_form(req, err);
 
-    if (relay_mode)
-        ESP_LOGI(TAG, "saving ssid='%s' relay='%s' (pairing code set)", ssid,
-                 have_rurl ? relay_url : RELAY_DEFAULT_URL);
-    else
-        ESP_LOGI(TAG, "saving ssid='%s' server='%s'%s", ssid, server_url,
-                 have_pairing ? " (with pairing code)" : "");
-
-    /* Blank WiFi password means "keep what's stored" (NULL), so editing just the
-     * server via the always-on portal doesn't wipe creds. */
-    if (wifi_creds_save(ssid, have_pass ? wpa_pass : NULL) != ESP_OK) {
-        return render_form(req, "Failed to write WiFi settings to NVS.");
-    }
-
-    /* Changing the server (or supplying a pairing code) invalidates any token
-     * bound to the old server: clear token + cached ETag so the device
-     * re-onboards cleanly against the new endpoint. */
-    bool server_changed = false;
-    if (relay_mode) {
-        /* A new relay code re-pairs from scratch: the old mailbox identity,
-         * token and frame key are all bound to the previous pairing and would
-         * only produce failed GCM tags against a new one. */
-        rest_config_clear_relay();
-        rest_config_set_relay(have_rurl ? relay_url : RELAY_DEFAULT_URL,
-                              relay_code);
-        /* Drop any home-server binding: a relay panel must not also try to
-         * reach a server it cannot see, or every wake burns a timeout first. */
-        rest_config_set_server("");
-        rest_config_set_device_token("");
-        rest_config_set_frame_etag("");
-        rest_config_set_ui_state(0);
-    } else {
-        server_changed = have_server &&
-                         strcmp(rest_config_get()->server_url, server_url) != 0;
-        if (have_server) rest_config_set_server(server_url);
-        if (have_pairing) rest_config_set_pairing(pairing);
-        /* Leaving relay mode: forget the mailbox so the two transports cannot
-         * both look ready. relay_url survives as operator configuration. */
-        rest_config_clear_relay();
-    }
-    if (server_changed || have_pairing) {
-        rest_config_set_device_token("");
-        rest_config_set_frame_etag("");
-        rest_config_set_ui_state(0);   /* re-onboard -> show "Almost done" again */
-    }
-    if (rest_config_save() != ESP_OK) {
-        return render_form(req, "Failed to write Tesserae settings to NVS.");
-    }
+    esp_err_t saved = provisioning_apply(&f);
+    if (saved == ESP_ERR_INVALID_STATE) return render_form(req, "Failed to write WiFi settings to NVS.");
+    if (saved != ESP_OK) return render_form(req, "Failed to write Tesserae settings to NVS.");
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     /* Never cache the setup page. It is regenerated per request -- current
@@ -735,6 +710,77 @@ static esp_err_t h_save(httpd_req_t *req)
     httpd_resp_send(req, k_thanks_html, HTTPD_RESP_USE_STRLEN);
     xEventGroupSetBits(s_done, BIT_CREDS_SAVED);
     return ESP_OK;
+}
+
+esp_err_t provisioning_apply(const setup_fields_t *f)
+{
+    if (f->mode == SETUP_MODE_RELAY)
+        ESP_LOGI(TAG, "saving ssid='%s' relay='%s' (pairing code set)", f->ssid, f->relay_url);
+    else
+        ESP_LOGI(TAG, "saving ssid='%s' server='%s'%s", f->ssid, f->server_url,
+                 f->pairing[0] ? " (with pairing code)" : "");
+
+    if (wifi_creds_save(f->ssid, f->have_pass ? f->pass : NULL) != ESP_OK) return ESP_ERR_INVALID_STATE;
+
+    /* Changing the server (or supplying a pairing code) invalidates any token
+     * bound to the old server: clear token + cached ETag so the device
+     * re-onboards cleanly against the new endpoint. */
+    bool server_changed = false;
+    if (f->mode == SETUP_MODE_RELAY) {
+        /* A new relay code re-pairs from scratch: the old mailbox identity,
+         * token and frame key are all bound to the previous pairing and would
+         * only produce failed GCM tags against a new one. */
+        rest_config_clear_relay();
+        rest_config_set_relay(f->relay_url, f->relay_code);
+        /* Drop any home-server binding: a relay panel must not also try to
+         * reach a server it cannot see, or every wake burns a timeout first. */
+        rest_config_set_server("");
+        rest_config_set_device_token("");
+        rest_config_set_frame_etag("");
+        rest_config_set_ui_state(0);
+    } else {
+        server_changed = strcmp(rest_config_get()->server_url, f->server_url) != 0;
+        rest_config_set_server(f->server_url);
+        if (f->pairing[0]) rest_config_set_pairing(f->pairing);
+        /* Leaving relay mode: forget the mailbox so the two transports cannot
+         * both look ready. relay_url survives as operator configuration. */
+        rest_config_clear_relay();
+    }
+    if (server_changed || f->pairing[0]) {
+        rest_config_set_device_token("");
+        rest_config_set_frame_etag("");
+        rest_config_set_ui_state(0);   /* re-onboard -> show "Almost done" again */
+    }
+    return rest_config_save();
+}
+
+void provisioning_scan_json(char *out, size_t cap)
+{
+    size_t o = 0;
+    int n = snprintf(out, cap, "[");
+    o = n > 0 ? (size_t)n : 0;
+    for (int i = 0; i < s_scan_count && o < cap; i++) {
+        char e[80];
+        setup_json_escape(s_scan[i].ssid, e, sizeof e);
+        n = snprintf(out + o, cap - o, "%s{\"ssid\":\"%s\",\"rssi\":%d,\"secure\":%s}",
+                     i ? "," : "", e, s_scan[i].rssi, s_scan[i].secure ? "true" : "false");
+        if (n < 0 || (size_t)n >= cap - o) { out[o] = '\0'; break; }
+        o += (size_t)n;
+    }
+    if (o + 2 <= cap) { out[o++] = ']'; out[o] = '\0'; }
+    else if (cap >= 3) snprintf(out, cap, "[]");
+}
+
+bool provisioning_portal_open(void)
+{
+    return s_done != NULL;
+}
+
+bool provisioning_notify_saved(void)
+{
+    if (!s_done) return false;
+    xEventGroupSetBits(s_done, BIT_CREDS_SAVED);
+    return true;
 }
 
 /* Captive-portal catch-all: redirect anything else to "/" so OS probes land

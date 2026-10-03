@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Setup over USB. The console port now answers a small newline-delimited JSON
+  protocol (docs/serial-setup-protocol.md): `get` says what the board is and
+  how it is set up, and `set` saves Wi-Fi and the server the same way the
+  hotspot form does, then restarts. The web flasher at tesserae.ink/flash and
+  the Tesserae Cloud setup page use it to configure a board right after
+  flashing it, with no hotspot step. The listener runs whenever the board is
+  awake, so a plugged-in board can be reconfigured at any time.
+- A Cloud tab on the setup hotspot, beside Local and Relay: the panel pairs
+  with Tesserae Cloud with nothing but a claim code, the address being fixed.
+  Local stays the default. The three ways in share one set of rules
+  (src/setup_fields.c, host-tested).
+
+### Changed
+
+- The hotspot's connection switch has three segments. Cloud takes the cloud
+  glyph that Remote used to wear; Relay gets a pair of passing arrows.
+
 ## [1.42.0] - 2026-09-30
 
 ### Fixed

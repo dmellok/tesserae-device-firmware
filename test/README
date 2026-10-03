@@ -6,6 +6,12 @@ with the system compiler. GT911 touch coordinate translation:
 
     cc -I src test/test_touch_coords.c src/touch_coords.c -o /tmp/tt && /tmp/tt
 
+Setup fields (the portal, serial and BLE share them) and the flat JSON reader
+behind the serial setup. On a Mac whose Command Line Tools SDK is out of step
+with the linker, point cc at Xcode's SDK (DEVELOPER_DIR / SDKROOT):
+
+    cc -std=c11 -Wall -Wextra -Werror -I src test/test_setup_fields.c src/setup_fields.c -o /tmp/tsf && /tmp/tsf
+
 Physical-button frame/status delivery contract:
 
     cc -std=c11 -Wall -Wextra -Werror -I src test/test_button_report.c src/button_report.c -o /tmp/tbr && /tmp/tbr

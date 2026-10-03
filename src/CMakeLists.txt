@@ -48,6 +48,8 @@ idf_component_register(
         "ble_setup_protocol.c"
         "ble_setup.c"
         "provisioning.c"
+        "setup_fields.c"
+        "serial_setup.c"
         "button_report.c"
         "buzzer.c"
         "net_rest.c"
@@ -100,6 +102,8 @@ idf_component_register(
         esp_adc
         esp_driver_i2c
         esp_driver_usb_serial_jtag
+        esp_driver_uart
+        vfs
         esp_event
         esp_http_client
         esp_http_server
