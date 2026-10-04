@@ -350,8 +350,11 @@ esp_err_t touch_capture_stroke_cb(touch_stroke_t *out,
     return ESP_OK;
 }
 
-void touch_prepare_sleep(void)
+void touch_prepare_sleep(bool gesture_mode)
 {
+    /* Gesture-mode sleep is the GT911's low-power scan (touch_gt911.c); the
+     * FT6336 has its own monitor mode and wakes on a tap whatever was asked. */
+    if (gesture_mode) ESP_LOGI(TAG, "prepare_sleep: touch_wake gesture is a GT911 mode; FT6336 wakes on tap");
     if (touch_init() != ESP_OK) {
         ESP_LOGW(TAG, "prepare_sleep: FT6336 init failed; no touch wake armed");
         return;

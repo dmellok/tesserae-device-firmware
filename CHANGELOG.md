@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A third touch setting for the reTerminal E1003 and reTerminal Sticky,
+  "Touch wake": tap (the default, as before) or gesture. With gesture, the
+  GT911 is parked in its gesture mode across deep sleep (the datasheet's
+  "doze" row, 0.78 mA typical) instead of scanning at several mA, and a double
+  tap or a swipe wakes the panel; a first single tap does not, and taps work
+  as usual once it is awake. The server sends it as `touch_wake` in the status
+  config block next to `touch_enabled`; it is stored in NVS, an older server
+  that never sends it leaves the mode alone, and a board whose TP_RST is not
+  wired to the MCU keeps the tap wake. The gesture-mode path that sat behind
+  the `TOUCH_GESTURE_SLEEP` build flag is now this runtime mode and the flag
+  is gone (server #327).
+
 ## [1.43.0] - 2026-10-03
 
 ### Added

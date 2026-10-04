@@ -664,12 +664,14 @@ static void sleep_forever_or_until_timer(void)
      * server action (refresh / rotate) on the next boot. See buttons.h. */
 #if BOARD_HAS_TOUCH
     /* Fold the active-low touch INT into the button ext1 ANY_LOW mask when the
-     * server enabled touch. touch_prepare_sleep() leaves the GT911 scanning and
-     * latches TP_RST across sleep so the controller keeps its address. Off by
+     * server enabled touch. In tap mode touch_prepare_sleep() leaves the GT911
+     * scanning and latches TP_RST across sleep so the controller keeps its
+     * address; with touch_wake "gesture" it parks the controller in gesture
+     * mode and arms ext0 itself, and the mask below stays 0 (#327). Off by
      * default -> touch_wake_mask stays 0 and this is just the buttons. */
     uint64_t touch_wake_mask = 0;
     if (rest_config_get()->touch_enabled) {
-        touch_prepare_sleep();
+        touch_prepare_sleep(rest_config_get()->touch_gesture);
         touch_wake_mask = touch_sleep_wake_mask();   /* 0 when INT is armed as ext0 */
     } else {
         /* Touch off is not the same as touch quiet: a digitiser on an ungated
@@ -2226,7 +2228,7 @@ void app_main(void)
      * wake is an ext1 wake whose status latch shows the TP_INT bit and no button
      * bit (so buttons_which_woke() above returned BTN_NONE for it). */
     bool woke_by_touch = rest_config_get()->touch_enabled &&
-                         (touch_woke_by_gesture() ||   /* ext0, TOUCH_GESTURE_SLEEP builds */
+                         (touch_woke_by_gesture() ||   /* ext0, after a gesture-mode sleep */
                           (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1 &&
                            (esp_sleep_get_ext1_wakeup_status() & TOUCH_INT_WAKE_MASK)));
     /* Kept in function scope so the WiFi-fail path can queue an unsent stroke. */
@@ -2239,6 +2241,15 @@ void app_main(void)
              * fall back to it only if the live read races an already-lifted finger. */
             int  stub_rx = 0, stub_ry = 0;
             bool have_stub = touch_wakestub_take(&stub_rx, &stub_ry);
+            uint8_t gesture_id = touch_wakestub_gesture();
+            if (gesture_id) {
+                /* Gesture-mode wake (touch_wake "gesture"): the controller
+                 * reported which gesture (0xcc double tap, 0xaa/0xbb/0xab/0xba
+                 * swipes) rather than a point. The finger is normally gone by
+                 * now, so this wake usually paints and lingers for the taps
+                 * that follow. */
+                ESP_LOGI(TAG, "gesture wake: GT911 gesture id 0x%02x", gesture_id);
+            }
 #ifdef BOARD_TOUCH_WAKE_STUB
             ESP_LOGI(TAG, "wake stub: runs=%u stage=%u status=0x%02x captured=%d",
                      (unsigned)g_touch_wake_capture.runs,
@@ -2766,14 +2777,16 @@ void app_main(void)
 #if BOARD_HAS_TOUCH
             /* Touch config arrives in the same "config" object as sleep_interval_s.
              * -1 means the field was absent; keep the current value then. */
-            if (so.touch_enabled >= 0 || so.touch_linger_s >= 0) {
+            if (so.touch_enabled >= 0 || so.touch_linger_s >= 0 || so.touch_gesture >= 0) {
                 const rest_config_t *tc = rest_config_get();
                 bool    en  = (so.touch_enabled  >= 0) ? (so.touch_enabled != 0) : tc->touch_enabled;
                 int32_t lin = (so.touch_linger_s >= 0) ? so.touch_linger_s       : tc->touch_linger_s;
-                if (en != tc->touch_enabled || lin != tc->touch_linger_s) {
-                    rest_config_set_touch(en, lin);
+                bool    ges = (so.touch_gesture  >= 0) ? (so.touch_gesture != 0) : tc->touch_gesture;
+                if (en != tc->touch_enabled || lin != tc->touch_linger_s || ges != tc->touch_gesture) {
+                    rest_config_set_touch(en, lin, ges);
                     cfg_dirty = true;
-                    ESP_LOGI(TAG, "touch config: enabled=%d linger=%lds", en, (long)lin);
+                    ESP_LOGI(TAG, "touch config: enabled=%d linger=%lds wake=%s",
+                             en, (long)lin, ges ? "gesture" : "tap");
                 }
             }
 #endif

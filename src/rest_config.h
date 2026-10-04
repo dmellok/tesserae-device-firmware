@@ -32,6 +32,10 @@ typedef struct {
 #if BOARD_HAS_TOUCH
     bool    touch_enabled;        /* server config: arm GT911 touch wake (default false) */
     int32_t touch_linger_s;       /* server config: stay awake N s after a touch (0-60) */
+    bool    touch_gesture;        /* server config touch_wake == "gesture": park the
+                                   * digitiser in gesture mode across sleep (a double
+                                   * tap or swipe wakes it, ~1 mA) instead of the tap
+                                   * wake that keeps it scanning (default false) */
 #endif
 #ifdef BOARD_FRONTLIGHT_M5PM1
     int32_t frontlight_pct;       /* server config: panel frontlight, 0-100 (0 = off) */
@@ -166,8 +170,9 @@ void rest_config_set_button_wake_s(int32_t s);
 
 #if BOARD_HAS_TOUCH
 /* Touch config, delivered in the status response's "config" object (like
- * sleep_interval_s). linger is clamped to 0-60 s. Persist with rest_config_save. */
-void rest_config_set_touch(bool enabled, int32_t linger_s);
+ * sleep_interval_s). linger is clamped to 0-60 s; gesture is touch_wake ==
+ * "gesture". Persist with rest_config_save. */
+void rest_config_set_touch(bool enabled, int32_t linger_s, bool gesture);
 #endif
 #ifdef BOARD_BUZZER_PIN
 /* Buzzer feedback (#258). An empty/NULL pattern leaves the stored one alone,

@@ -244,8 +244,11 @@ NVS to re-probe a unit that ran the gray build before).
 
 ## 12. GT911 gesture sleep (opt-in; E1003 then Sticky)
 
-Build the E1003 env with `-DTOUCH_GESTURE_SLEEP`, touch enabled on the
-server.
+Runtime since the 1.44.0 work (2026-10-05): on the device's panel set Touch
+input on and **Touch wake** to gesture (server 0.443.0+ sends
+`touch_wake: "gesture"` in the status config block; the old
+`-DTOUCH_GESTURE_SLEEP` build flag is gone). Log line on apply:
+`touch config: enabled=1 linger=30s wake=gesture`.
 
 1. Sleep log: `gesture sleep: INT=0 before sleep (idle)`. If it says still
    active, the mode switch did not take and the device will wake at once.

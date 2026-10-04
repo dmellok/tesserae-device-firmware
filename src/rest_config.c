@@ -43,6 +43,7 @@ static const char *TAG = "rest_cfg";
 #if BOARD_HAS_TOUCH
 #define NVS_KEY_TOUCH_EN   "touch_en"
 #define NVS_KEY_TOUCH_LIN  "touch_lin"
+#define NVS_KEY_TOUCH_GEST "touch_gest"  /* touch_wake == "gesture" */
 #endif
 #ifdef BOARD_BUZZER_PIN
 /* Separate from the touch block on purpose: the mono reTerminals carry the
@@ -118,6 +119,8 @@ void rest_config_load(void)
         if (nvs_get_u8(h, NVS_KEY_TOUCH_EN, &te) == ESP_OK) s_cfg.touch_enabled = (te != 0);
         int32_t tl = 0;
         if (nvs_get_i32(h, NVS_KEY_TOUCH_LIN, &tl) == ESP_OK && tl >= 0) s_cfg.touch_linger_s = tl;
+        uint8_t tg = 0;
+        if (nvs_get_u8(h, NVS_KEY_TOUCH_GEST, &tg) == ESP_OK) s_cfg.touch_gesture = (tg != 0);
 #endif
 #ifdef BOARD_FRONTLIGHT_M5PM1
         int32_t fl = 0;
@@ -230,6 +233,7 @@ esp_err_t rest_config_save(void)
 #if BOARD_HAS_TOUCH
     if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_TOUCH_EN, s_cfg.touch_enabled ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_i32(h, NVS_KEY_TOUCH_LIN, s_cfg.touch_linger_s);
+    if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_TOUCH_GEST, s_cfg.touch_gesture ? 1 : 0);
 #endif
     /* A sibling of the touch block, not nested in it: a button-only board
      * (E1001/E1002) has a buzzer and no digitizer, and nesting these left it
@@ -335,12 +339,13 @@ void rest_config_set_button_wake_s(int32_t s)
 }
 
 #if BOARD_HAS_TOUCH
-void rest_config_set_touch(bool enabled, int32_t linger_s)
+void rest_config_set_touch(bool enabled, int32_t linger_s, bool gesture)
 {
     if (linger_s < 0)  linger_s = 0;
     if (linger_s > 60) linger_s = 60;
     s_cfg.touch_enabled  = enabled;
     s_cfg.touch_linger_s = linger_s;
+    s_cfg.touch_gesture  = gesture;
 }
 #endif
 

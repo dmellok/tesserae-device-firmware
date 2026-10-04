@@ -1050,6 +1050,7 @@ rest_status_t rest_post_status(int rssi, const char *ip,
 #if BOARD_HAS_TOUCH
     out->touch_enabled = -1;
     out->touch_linger_s = -1;
+    out->touch_gesture = -1;
 #endif
 #ifdef BOARD_FRONTLIGHT_M5PM1
     out->frontlight_pct = -1;
@@ -1216,6 +1217,14 @@ rest_status_t rest_post_status(int rssi, const char *ip,
         if (cJSON_IsBool(te))        out->touch_enabled = cJSON_IsTrue(te) ? 1 : 0;
         else if (cJSON_IsNumber(te)) out->touch_enabled = te->valueint ? 1 : 0;
         out->touch_linger_s = json_get_int(cfg, "touch_linger_s", -1);
+        /* touch_wake rides the same block (server #327): "tap" is the ext1
+         * wake with the digitiser scanning, "gesture" parks the GT911 in its
+         * gesture mode. Any other value, or none, keeps the current mode, so
+         * an older server never flips a panel. */
+        char tw[12] = {0};
+        json_get_str(cfg, "touch_wake", tw, sizeof tw);
+        if (strcmp(tw, "gesture") == 0)  out->touch_gesture = 1;
+        else if (strcmp(tw, "tap") == 0) out->touch_gesture = 0;
 #endif
 #ifdef BOARD_FRONTLIGHT_M5PM1
         out->frontlight_pct = json_get_int(cfg, "frontlight_pct", -1);

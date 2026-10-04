@@ -86,6 +86,7 @@ typedef struct {
 #if BOARD_HAS_TOUCH
     int      touch_enabled;     /* config.touch_enabled: -1 absent, else 0/1 */
     int32_t  touch_linger_s;    /* config.touch_linger_s: -1 absent */
+    int      touch_gesture;     /* config.touch_wake: -1 absent/unknown, 0 "tap", 1 "gesture" */
 #endif
 #ifdef BOARD_FRONTLIGHT_M5PM1
     int32_t  frontlight_pct;    /* config.frontlight_pct: -1 absent */

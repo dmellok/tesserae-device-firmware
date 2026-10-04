@@ -18,25 +18,22 @@
  *   BOARD_TOUCH_HOLD_RST                        latch TP_RST high across sleep
  *   BOARD_TOUCH_WAKE_STUB                       RTC wake-stub quick-tap capture
  *
- * Build flag (off by default; pass -DTOUCH_GESTURE_SLEEP to turn it on):
- *   TOUCH_GESTURE_SLEEP   Park the GT911 in its gesture mode across deep sleep
- *                         instead of leaving it in normal scan, and wake on
- *                         TP_INT going HIGH via ext0 with an RTC pull-down.
- *                         Mirrors Seeed's SenseCraft HMI firmware
- *                         (GT911::enterGestureMode: 0x8046 <- 0x08, 0x8040 <-
- *                         0x08; Gt911Touch::enableGestureWakeup: INT as RTC
- *                         input, pull-down, wait <= 300 ms for idle-low, ext0
- *                         active-high). A normally scanning GT911 draws
- *                         mA-class current for the whole sleep; gesture mode
- *                         is the controller's own low-power scan. Costs: the
- *                         controller reports a gesture id at 0x814b instead
- *                         of a point at 0x8150 while parked, so the wake stub
- *                         records the id rather than a coordinate, and the
- *                         next touch_init() hardware-resets the controller
- *                         (~120 ms) to get coordinate mode back. Whether a
- *                         plain single tap counts as a wake gesture is a
- *                         property of the GT911's stored config; see
- *                         touch_gt911.c. Off: byte-identical to before.
+ * Gesture-mode sleep (runtime; server config touch_wake = "gesture", next to
+ * touch_enabled): park the GT911 in its gesture mode across deep sleep instead
+ * of leaving it in normal scan, and wake on TP_INT going HIGH via ext0 with an
+ * RTC pull-down. Mirrors Seeed's SenseCraft HMI firmware
+ * (GT911::enterGestureMode: 0x8046 <- 0x08, 0x8040 <- 0x08;
+ * Gt911Touch::enableGestureWakeup: INT as RTC input, pull-down, wait <= 300 ms
+ * for idle-low, ext0 active-high). A normally scanning GT911 draws mA-class
+ * current for the whole sleep (5.5 mA measured on an E1003, server #327);
+ * gesture mode is the controller's own low-power scan, 0.78 mA typical per the
+ * datasheet's "doze" row. Costs: the GT911 has no single-tap gesture, so a
+ * double tap or a swipe wakes the panel and a first tap does not; the
+ * controller reports a gesture id at 0x814b instead of a point at 0x8150 while
+ * parked, so the wake stub records the id rather than a coordinate; and the
+ * next touch_init() hardware-resets the controller (~120 ms) to get coordinate
+ * mode back, so the mode is only honoured on a board with TP_RST wired (E1003,
+ * Sticky). The default, touch_wake = "tap", is the ext1 path, unchanged.
  */
 #pragma once
 
@@ -117,17 +114,19 @@ bool touch_int_asserted(void);
 /* Prepare for deep sleep. Call on the real deep-sleep path, BEFORE the caller
  * arms the button ext1 mask.
  *
- * Default: leave the GT911 scanning (monitor mode) so it pulls INT low on a
- * touch, latch TP_RST / TOUCH_EN where the board asks for it, and leave the
- * wake to the caller: buttons_arm_ext1_with(touch_sleep_wake_mask()) folds the
- * active-low INT into the button ext1 ANY_LOW mask.
+ * gesture_mode false (touch_wake "tap"): leave the GT911 scanning (monitor
+ * mode) so it pulls INT low on a touch, latch TP_RST / TOUCH_EN where the
+ * board asks for it, and leave the wake to the caller:
+ * buttons_arm_ext1_with(touch_sleep_wake_mask()) folds the active-low INT into
+ * the button ext1 ANY_LOW mask.
  *
- * TOUCH_GESTURE_SLEEP: additionally command gesture mode, configure INT as an
- * RTC input with a pull-down, wait for it to idle low, and arm ext0 on INT
- * HIGH here. touch_sleep_wake_mask() then returns 0 so the caller leaves the
- * ext1 mask to the buttons. The next touch_init() (any wake cause) resets the
- * controller back to coordinate mode. */
-void touch_prepare_sleep(void);
+ * gesture_mode true (touch_wake "gesture"): additionally command gesture mode,
+ * configure INT as an RTC input with a pull-down, wait for it to idle low, and
+ * arm ext0 on INT HIGH here. touch_sleep_wake_mask() then returns 0 so the
+ * caller leaves the ext1 mask to the buttons. The next touch_init() (any wake
+ * cause) resets the controller back to coordinate mode. On a board without
+ * TP_RST the request is logged and the tap wake is armed instead. */
+void touch_prepare_sleep(bool gesture_mode);
 
 /* Park a digitiser the operator has switched OFF, on the deep-sleep path only.
  * The counterpart to touch_prepare_sleep(): that one keeps the controller alive
@@ -148,16 +147,17 @@ void touch_prepare_sleep(void);
 void touch_park_idle(void);
 
 /* Bits the caller should fold into the button ext1 ANY_LOW mask after
- * touch_prepare_sleep(): TOUCH_INT_WAKE_MASK in the default mode, 0 under
- * TOUCH_GESTURE_SLEEP (ext0 is armed inside touch_prepare_sleep() instead;
+ * touch_prepare_sleep(): TOUCH_INT_WAKE_MASK in tap mode, 0 after a
+ * gesture-mode arm (ext0 is armed inside touch_prepare_sleep() instead;
  * adding INT to an ANY_LOW mask with a pull-up would wake immediately, since
  * INT idles low in gesture mode). */
 uint64_t touch_sleep_wake_mask(void);
 
-/* True when this boot is an ext0 wake, which under TOUCH_GESTURE_SLEEP can only
- * be the GT911 gesture INT (nothing else arms ext0 on these boards). Always
- * false in the default build, where a touch wake is an ext1 wake whose status
- * word carries TOUCH_INT_WAKE_MASK. */
+/* True when the last sleep was a gesture-mode sleep and this boot is an ext0
+ * wake, which can only be the GT911 gesture INT (nothing else arms ext0 on
+ * these boards). Read it before touch_init(), which consumes the flag. Always
+ * false after a tap-mode sleep, where a touch wake is an ext1 wake whose
+ * status word carries TOUCH_INT_WAKE_MASK. */
 bool touch_woke_by_gesture(void);
 
 #endif /* BOARD_HAS_TOUCH */
