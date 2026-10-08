@@ -105,6 +105,7 @@ jobs:
           - seeed-reterminal-e1004
           - waveshare-photopainter-73
           - seeed-ee02
+          - gooddisplay-esp32-133c02
           - xiao-epaper-75
           - xiao-epaper-75-bwr
           - xiao-epaper-75-c3

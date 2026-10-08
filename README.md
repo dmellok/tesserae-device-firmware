@@ -26,6 +26,7 @@ one board (and thus one driver) per PlatformIO environment.
 | [Seeed reTerminal **E1003**](https://www.seeedstudio.com/reTerminal-E1003-p-6731.html) | Grayscale (10.3") | IT8951 | 1872×1404, 4bpp gray | `it8951_gray` | `seeed-reterminal-e1003` |
 | [Seeed reTerminal **E1004**](https://www.seeedstudio.com/reTerminal-E1004-p-6692.html) | Spectra-6, dual-chip | T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `seeed-reterminal-e1004` |
 | [Seeed **XIAO ePaper Kit — EE02**](https://www.seeedstudio.com/XIAO-ePaper-DIY-Kit-EE02-for-13-3-Spectratm-6-E-Ink.html) | Spectra-6, dual-chip | T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `seeed-ee02` |
+| [Good Display **ESP32-133C02**](https://www.good-display.com/product/546.html) | Spectra-6, dual-chip | GDEP133C02 / T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `gooddisplay-esp32-133c02` |
 | [Seeed **XIAO ePaper Display Board — EE03**](https://www.seeedstudio.com/XIAO-ePaper-Display-Board-ESP32-S3-EE03-p-6638.html) + 10.3" mono | Grayscale (10.3") | IT8951 | 1872×1404, 4bpp gray | `it8951_gray` | `seeed-ee03` |
 | [**TRMNL 7.5" OG DIY Kit**](https://www.seeedstudio.com/TRMNL-7-5-Inch-OG-DIY-Kit-p-6481.html) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `xiao-epaper-75` |
 | XIAO driver board + 7.5" **B/W/Red** panel (DKE DEPG0750RW / GDEW075Z08 class) | Tri-color BWR | UC8179 | 800×480, 2bpp | `mono_spi` (`EPD_BWR`) | `xiao-epaper-75-bwr` |
@@ -43,8 +44,9 @@ one board (and thus one driver) per PlatformIO environment.
 | **Xteink X4** | Mono B/W (4.26") | SSD1677 | 800×480, 1bpp | `ssd1677_gray` (`EPD_MONO`) | `xteink-x4` |
 
 The four reTerminals, the PhotoPainter, the EE02, the TRMNL 7.5" kit, the
-Waveshare 10.85-inch G, and the M5Stack M5Paper have been verified end-to-end
-on real hardware; the Waveshare 13.3E6 is the seed target and builds green. The EE04 pair builds green but is **not yet hardware-verified**
+Good Display ESP32-133C02, the Waveshare 10.85-inch G, and the M5Stack M5Paper
+have been verified end-to-end on real hardware; the Waveshare 13.3E6 is the
+seed target and builds green. The EE04 pair builds green but is **not yet hardware-verified**
 (pin map taken from Seeed_GFX; the EE04 takes one panel on either its 24-pin or
 50-pin FPC — flash the env matching the attached panel and set the jumper caps
 accordingly). The **EE03** (10.3" kit) is verified on hardware (selftest
@@ -68,6 +70,12 @@ board. Wire the panel as defined in `boards/waveshare_1085g.h`: SCLK=GPIO12,
 MOSI=GPIO11, CS_M=GPIO10, CS_S=GPIO9, DC=GPIO8, RST=GPIO7, BUSY=GPIO6, and
 PWR=GPIO5.
 
+The `gooddisplay-esp32-133c02` env targets Good Display's integrated carrier
+board for the 13.3" GDEP133C02 Spectra 6 panel. It uses the ESP32-S3-WROOM-1
+N16R8 module, the carrier's dedicated microSD SPI bus, and active-high onboard
+buttons on Ref2 boards. Ref1 boards do not populate those button pads, so the
+same firmware image works there too.
+
 Reuse is the norm — most boards share an existing driver and differ only in the
 board header:
 
@@ -75,8 +83,10 @@ board header:
   ED2208-GCA init is byte-identical); two board flags tailor it: `EPD_ROTATE_180`
   (panel mounted upside-down) and `BOARD_HAS_PMIC` (panel power + battery from an
   **AXP2101 PMIC over I2C**, not a GPIO gate / ADC divider — see `src/pmic.c`).
-- The **XIAO ePaper Kit — EE02** shares the E1004's `spectra6_t133a01_dual`
-  driver (same T133A01 panel), with only a different pin map.
+- The **XIAO ePaper Kit — EE02** and **Good Display ESP32-133C02** share the
+  E1004's `spectra6_t133a01_dual` driver (same T133A01/GDEP133C02-class panel),
+  with different pin maps. The Good Display carrier also differs in its
+  dedicated SD SPI bus and active-high Ref2 buttons.
 - The **TRMNL 7.5" OG DIY Kit** shares the E1001's `mono_spi` driver (same
   800×480 mono panel), with its own pin map.
 - The **M5Stack M5Paper** (the original, pre-S3) shares the E1003's
@@ -237,7 +247,7 @@ format the firmware expects for that kind:
 
 | Kind | Frame format | Size |
 | --- | --- | --- |
-| `waveshare_133e6`, `seeed_reterminal_e1004`, `seeed_ee02` | 4bpp packed Spectra-6 | 960000 B |
+| `waveshare_133e6`, `seeed_reterminal_e1004`, `seeed_ee02`, `gooddisplay_esp32_133c02` | 4bpp packed Spectra-6 | 960000 B |
 | `seeed_reterminal_e1002`, `waveshare_photopainter_73`, `seeed_ee04_73e6` | 4bpp packed Spectra-6 | 192000 B |
 | `seeed_reterminal_e1001`, `xiao_epaper_75`, `seeed_ee04_75`, `xteink_x4` | 1bpp packed mono (bit 1 = white) | 48000 B |
 | `seeed_reterminal_e1001_gray` | 2bpp packed 4-gray (4 px/byte, MSB-first, 0b00=black..0b11=white) | 96000 B |
@@ -489,15 +499,17 @@ The **reTerminals** flash through an onboard **WCH CH340** USB-serial bridge
 and enable it under *System Settings → General → Login Items & Extensions →
 Driver Extensions*; the port then appears as `/dev/cu.wchusbserial*`.
 
-The **XIAO ESP32-S3 boards** (PhotoPainter, EE02, TRMNL 7.5") have no CH340 — they
-flash over the S3's **native USB-Serial-JTAG**, which enumerates as
-`/dev/cu.usbmodem*` (no driver needed). These boards route the console to
-USB-Serial-JTAG, so app logs *are* visible over that USB port (except the
-PhotoPainter, whose console stays on UART0 — use the panel splashes there).
+The **XIAO ESP32-S3 boards** (PhotoPainter, EE02, TRMNL 7.5") and the
+**Good Display ESP32-133C02** have no CH340 — they flash over the S3's **native
+USB-Serial-JTAG**, which enumerates as `/dev/cu.usbmodem*` (no driver needed).
+These boards route the console to USB-Serial-JTAG, so app logs *are* visible
+over that USB port (except the PhotoPainter, whose console stays on UART0 — use
+the panel splashes there).
 
 ```sh
 pio run -e <env> -t upload --upload-port /dev/cu.wchusbserial*   # reTerminals
 pio run -e xiao-epaper-75 -t upload --upload-port /dev/cu.usbmodem*   # XIAO boards
+pio run -e gooddisplay-esp32-133c02 -t upload --upload-port /dev/cu.usbmodem*   # Good Display
 ```
 
 If a native-USB board's port keeps flickering/disappearing (the app deep-sleeps,

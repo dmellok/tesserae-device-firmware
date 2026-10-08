@@ -263,14 +263,26 @@ bool sdcard_mount(void)
      * panel driver's later spi_bus_initialize() (which tolerates
      * ESP_ERR_INVALID_STATE) inherits a bus that fits full frames. */
     spi_bus_config_t bus = {
+#ifdef SD_USE_DEDICATED_SPI
+        .mosi_io_num = SD_PIN_MOSI,
+        .miso_io_num = SD_PIN_MISO,
+        .sclk_io_num = SD_PIN_SCLK,
+        .max_transfer_sz = 4096,
+#else
         .mosi_io_num = EPD_PIN_MOSI,
         .miso_io_num = SD_PIN_MISO,
         .sclk_io_num = EPD_PIN_SCLK,
+        .max_transfer_sz = EPD_BUF_BYTES,
+#endif
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = EPD_BUF_BYTES,
     };
-    err = spi_bus_initialize(EPD_SPI_HOST, &bus, SPI_DMA_CH_AUTO);
+#ifdef SD_USE_DEDICATED_SPI
+    const spi_host_device_t sd_host = SD_SPI_HOST;
+#else
+    const spi_host_device_t sd_host = EPD_SPI_HOST;
+#endif
+    err = spi_bus_initialize(sd_host, &bus, SPI_DMA_CH_AUTO);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "spi_bus_initialize: %s", esp_err_to_name(err));
         goto fail_power;
@@ -278,19 +290,23 @@ bool sdcard_mount(void)
     /* SD lines idle high; weak pull-ups firm up the shared lines between
      * blocks (standard SDSPI practice, matters on loaded buses). */
     gpio_set_pull_mode((gpio_num_t)SD_PIN_MISO, GPIO_PULLUP_ONLY);
+#ifndef SD_USE_DEDICATED_SPI
     gpio_set_pull_mode((gpio_num_t)EPD_PIN_MOSI, GPIO_PULLUP_ONLY);
+#endif
     gpio_set_pull_mode((gpio_num_t)SD_PIN_CS, GPIO_PULLUP_ONLY);
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = EPD_SPI_HOST;
+    host.slot = sd_host;
 #ifdef SD_SPI_MAX_KHZ
     /* Boards with a heavily loaded shared bus (E1003: the IT8951 hangs off
      * the same MISO) can't run the SDSPI default 20 MHz -- init passes but
      * bulk data reads fail (bench 2026-07-24). */
     host.max_freq_khz = SD_SPI_MAX_KHZ;
+#elif defined(SD_SPI_HZ)
+    host.max_freq_khz = SD_SPI_HZ / 1000;
 #endif
     sdspi_device_config_t slot = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot.host_id = EPD_SPI_HOST;
+    slot.host_id = sd_host;
     slot.gpio_cs = (gpio_num_t)SD_PIN_CS;
     for (int attempt = 1;; attempt++) {
         err = esp_vfs_fat_sdspi_mount(SDCARD_MOUNT_POINT, &host, &slot, &mnt, &s_card);
