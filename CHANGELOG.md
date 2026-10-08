@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.45.0] - 2026-10-09
+
+### Added
+
+- The Good Display ESP32-133C02, Good Display's ESP32-S3 carrier for the
+  13.3" GDEP133C02 Spectra 6 panel (env `gooddisplay-esp32-133c02`, kind
+  `gooddisplay_esp32_133c02`). It shares the reTerminal E1004's dual-controller
+  driver and frame format (960000 bytes, 4 bpp) and takes Good Display's own
+  init values for this glass; the E1004 and EE02 keep theirs. The onboard
+  microSD slot sits on its own SPI bus, and the three buttons on Ref2 boards
+  are active-high, so boards can now declare either; Ref1 boards, which lack
+  the buttons, run the same image. Verified on hardware by the contributor.
+
 ## [1.44.0] - 2026-10-05
 
 ### Added

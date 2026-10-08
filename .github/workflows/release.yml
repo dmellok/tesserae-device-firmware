@@ -53,6 +53,7 @@ jobs:
           - { env: seeed-reterminal-sticky,   kind: seeed_reterminal_sticky, chip: esp32s3 }
           - { env: seeed-reterminal-e1004,    kind: seeed_reterminal_e1004, chip: esp32s3 }
           - { env: seeed-ee02,                kind: seeed_ee02, chip: esp32s3 }
+          - { env: gooddisplay-esp32-133c02,  kind: gooddisplay_esp32_133c02, chip: esp32s3 }
           - { env: xiao-epaper-75,            kind: xiao_epaper_75, chip: esp32s3 }
           - { env: xiao-epaper-75-bwr,        kind: xiao_epaper_75_bwr, chip: esp32s3 }
           - { env: xiao-epaper-75-c3,         kind: xiao_epaper_panel_75_c3, chip: esp32c3 }
