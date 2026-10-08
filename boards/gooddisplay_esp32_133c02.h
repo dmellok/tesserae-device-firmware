@@ -29,6 +29,10 @@
 #define EPD_HEIGHT     1600
 #define EPD_BUF_BYTES  ((EPD_WIDTH * EPD_HEIGHT) / 2)
 
+/* The shared T133A01 driver takes Good Display's own init values for this
+ * glass (analog timing, CDI, boosters; no DCDC) instead of the E1004's. */
+#define EPD_T133_GDEP133C02_INIT 1
+
 /* 6-colour Spectra palette indices (nibble values). */
 #define EPD_COL_BLACK   0x0
 #define EPD_COL_WHITE   0x1

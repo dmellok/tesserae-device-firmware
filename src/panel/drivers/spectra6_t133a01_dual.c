@@ -27,6 +27,7 @@
 
 #include "drivers/spectra6_t133a01_dual.h"
 #include "../busy_sleep.h"
+#include "diag_run.h"           /* BUSY timeouts latch a report for the next status */
 
 #include <string.h>
 
@@ -54,6 +55,7 @@ static const char *TAG = "epd_t133a01";
 #define TRES        0x61
 #define AN_TM       0x74
 #define AGID        0x86
+#define DCDC        0xA5   /* T133A01-specific DC/DC setting (not on 13.3E6) */
 #define VDDN        0xB0
 #define VCOM_PWR    0xB1
 #define EN_BUF      0xB6
@@ -63,19 +65,37 @@ static const char *TAG = "epd_t133a01";
 #define CMD66       0xF0
 
 /* --- T133A01 init parameter blobs (bbepT133A01InitIO, do NOT edit) --- */
+#ifdef EPD_T133_GDEP133C02_INIT
+/* Good Display GDEP133C02 carrier: the vendor's analog timing, CDI and
+ * booster values, and no DCDC command. Only that board header sets this, so
+ * the E1004 and EE02 keep the blobs below. */
 static const uint8_t AN_TM_V[]    = {0xC0, 0x1C, 0x1C, 0xCC, 0xCC, 0xCC, 0x15, 0x15, 0x55};
+#else
+static const uint8_t AN_TM_V[]    = {0x00, 0x0C, 0x0C, 0xD9, 0xDD, 0xDD, 0x15, 0x15, 0x55};
+#endif
 static const uint8_t CMD66_V[]    = {0x49, 0x55, 0x13, 0x5D, 0x05, 0x10};
 static const uint8_t PSR_V[]      = {0xDF, 0x69};
+#ifdef EPD_T133_GDEP133C02_INIT
 static const uint8_t CDI_V[]      = {0xF7};
+#else
+static const uint8_t DCDC_V[]     = {0x44, 0x54, 0x00};
+static const uint8_t CDI_V[]      = {0x37};
+#endif
 static const uint8_t TCON_V[]     = {0x03, 0x03};
 static const uint8_t AGID_V[]     = {0x10};
 static const uint8_t PWS_V[]      = {0x22};
 static const uint8_t TRES_V[]     = {0x04, 0xB0, 0x03, 0x20};
 static const uint8_t PWR_V[]      = {0x0F, 0x00, 0x28, 0x2C, 0x28, 0x38};
 static const uint8_t EN_BUF_V[]   = {0x07};
+#ifdef EPD_T133_GDEP133C02_INIT
 static const uint8_t BTST_P_V[]   = {0xE8, 0x28};
 static const uint8_t VDDP_EN_V[]  = {0x01};
 static const uint8_t BTST_N_V[]   = {0xE8, 0x28};
+#else
+static const uint8_t BTST_P_V[]   = {0xE0, 0x20};
+static const uint8_t VDDP_EN_V[]  = {0x01};
+static const uint8_t BTST_N_V[]   = {0xE0, 0x20};
+#endif
 static const uint8_t VDDN_V[]     = {0x01};
 static const uint8_t VCOM_PWR_V[] = {0x02};
 static const uint8_t CCSET_V[]    = {0x01};   /* per-frame "current frame" */
@@ -186,6 +206,7 @@ static bool wait_idle(const char *tag, uint32_t timeout_ms)
             ESP_LOGE(TAG, "%s: BUSY never cleared in %u ms; continuing so the "
                           "panel is still powered down rather than left driven",
                      tag, (unsigned)timeout_ms);
+            diag_note_paint(DIAG_PAINT_READY_TIMEOUT);
             return false;
         }
     }
@@ -345,6 +366,9 @@ static void t133_init(void)
     CMD(AN_TM,    AN_TM_V,    false);
     CMD(CMD66,    CMD66_V,    true);
     CMD(PSR,      PSR_V,      true);
+#ifndef EPD_T133_GDEP133C02_INIT
+    CMD(DCDC,     DCDC_V,     false);
+#endif
     CMD(CDI,      CDI_V,      true);
     CMD(TCON,     TCON_V,     true);
     CMD(AGID,     AGID_V,     true);
