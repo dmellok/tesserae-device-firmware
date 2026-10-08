@@ -1,14 +1,15 @@
 /*
  * buttons.h -- board-agnostic front-button support (header-only).
  *
- * A board header defines any subset of these active-low, RTC-capable GPIOs:
+ * A board header defines any subset of these RTC-capable GPIOs (active-low by
+ * default; define BOARD_BUTTON_ACTIVE_HIGH for active-high keys):
  *
  *     #define BOARD_BTN_REFRESH_PIN  <gpio>   // middle / "green" -> refresh
  *     #define BOARD_BTN_LEFT_PIN     <gpio>   // -> rotate to previous
  *     #define BOARD_BTN_RIGHT_PIN    <gpio>   // -> rotate to next
  *
- * All defined pins are ORed into ONE ext1 deep-sleep wake mask
- * (ESP_EXT1_WAKEUP_ANY_LOW). On the next boot buttons_which_woke() reports which
+ * All defined pins are ORed into ONE ext1 deep-sleep wake mask. On the next
+ * boot buttons_which_woke() reports which
  * one triggered, so the cycle can tell the server ("refresh"/"left"/"right"); the
  * server maps those to refresh / rotate_prev / rotate_next (mapping is
  * configurable server-side, so the labels are just conventions).
@@ -53,6 +54,12 @@ static inline const char *button_name(button_id_t b)
 
 #ifdef BOARD_HAS_BUTTONS
 
+#ifdef BOARD_BUTTON_ACTIVE_HIGH
+#  define BOARD_BUTTON_PRESSED_LEVEL 1
+#else
+#  define BOARD_BUTTON_PRESSED_LEVEL 0
+#endif
+
 #include "driver/gpio.h"
 #include "esp_sleep.h"
 #include "freertos/FreeRTOS.h"
@@ -73,8 +80,13 @@ static inline const char *button_name(button_id_t b)
  *    wake cause instead of an ext1 / GPIO status word. */
 #if SOC_PM_SUPPORT_EXT1_WAKEUP && !CONFIG_IDF_TARGET_ESP32
 #  include "driver/rtc_io.h"
-#  define BTN_IDLE_HIGH(g)  do { rtc_gpio_pullup_en(g); rtc_gpio_pulldown_dis(g); } while (0)
-#  define BTN_ENABLE_WAKE(m) esp_sleep_enable_ext1_wakeup((m), ESP_EXT1_WAKEUP_ANY_LOW)
+#  ifdef BOARD_BUTTON_ACTIVE_HIGH
+#    define BTN_IDLE_HIGH(g)  do { rtc_gpio_pulldown_en(g); rtc_gpio_pullup_dis(g); } while (0)
+#    define BTN_ENABLE_WAKE(m) esp_sleep_enable_ext1_wakeup((m), ESP_EXT1_WAKEUP_ANY_HIGH)
+#  else
+#    define BTN_IDLE_HIGH(g)  do { rtc_gpio_pullup_en(g); rtc_gpio_pulldown_dis(g); } while (0)
+#    define BTN_ENABLE_WAKE(m) esp_sleep_enable_ext1_wakeup((m), ESP_EXT1_WAKEUP_ANY_LOW)
+#  endif
 #elif SOC_PM_SUPPORT_EXT1_WAKEUP  /* classic ESP32: ext0 on the refresh pin only */
 #  define BTN_WAKE_IS_EXT0 1
    /* No rtc_gpio_pullup_en here: a classic-ESP32 button board wiring the keys
@@ -126,8 +138,8 @@ static inline const char *button_name(button_id_t b)
  * The REST path needs no equivalent: it re-fetches synchronously per press. */
 #define RELAY_BUTTON_POLL_MS 3000
 
-/* Arm every defined button as an ext1 wake source (active-low; RTC pull-up so
- * the idle level is high and won't spuriously wake us). Call on the sleep path. */
+/* Arm every defined button as an ext1 wake source. Active-low buttons get RTC
+ * pull-ups; active-high buttons get RTC pull-downs. Call on the sleep path. */
 static inline void buttons_arm_ext1(void)
 {
 #ifdef BOARD_BTN_REFRESH_PIN
@@ -142,10 +154,9 @@ static inline void buttons_arm_ext1(void)
     BTN_ENABLE_WAKE(BUTTON_WAKE_MASK);
 }
 
-/* As buttons_arm_ext1(), but also folds extra active-low RTC-GPIO pins into the
- * same ext1 ANY_LOW mask (e.g. an active-low touch INT). RTC pull-ups keep every
- * line idling high so only a real low edge wakes us. This is the reliable wake
- * path on the reTerminal hardware (ext0 did not fire on the touch INT). */
+/* As buttons_arm_ext1(), but also folds extra RTC-GPIO pins into the same ext1
+ * mask (e.g. a touch INT). This is the reliable wake path on the reTerminal
+ * hardware (ext0 did not fire on the touch INT). */
 static inline void buttons_arm_ext1_with(uint64_t extra_low_mask)
 {
 #ifdef BOARD_BTN_REFRESH_PIN
@@ -175,19 +186,23 @@ static inline void buttons_poll_init(void)
         /* On the ext0 (classic ESP32) boards the keys are on input-only pads
          * with no internal pulls and their own external ones; asking for a
          * pull-up there just logs an error. Elsewhere keep the internal pull. */
-#if defined(BTN_WAKE_IS_EXT0)
+#if defined(BTN_WAKE_IS_EXT0) || defined(BOARD_BUTTON_ACTIVE_HIGH)
         .pull_up_en   = GPIO_PULLUP_DISABLE,
 #else
         .pull_up_en   = GPIO_PULLUP_ENABLE,
 #endif
+#ifdef BOARD_BUTTON_ACTIVE_HIGH
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+#else
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
+#endif
         .intr_type    = GPIO_INTR_DISABLE,
     };
     gpio_config(&io);
 }
 
-/* Edge-detecting poll: reports a button once, on its high->low transition (a
- * NEW press), and not again until it is released -- so a held or stuck button
+/* Edge-detecting poll: reports a button once, on its idle->pressed transition
+ * (a NEW press), and not again until it is released -- so a held or stuck button
  * fires a single event. Call every ~20 ms; that cadence is also the debounce
  * (mechanical bounce settles well inside one period, and the seconds-long
  * fetch+paint after a hit swallows any release bounce). */
@@ -196,7 +211,7 @@ static inline button_id_t buttons_poll_pressed(void)
 #ifdef BOARD_BTN_REFRESH_PIN
     {
         static bool down;
-        bool p = gpio_get_level((gpio_num_t)BOARD_BTN_REFRESH_PIN) == 0;
+        bool p = gpio_get_level((gpio_num_t)BOARD_BTN_REFRESH_PIN) == BOARD_BUTTON_PRESSED_LEVEL;
         if (p && !down) { down = true; return BTN_REFRESH; }
         if (!p) down = false;
     }
@@ -204,7 +219,7 @@ static inline button_id_t buttons_poll_pressed(void)
 #ifdef BOARD_BTN_LEFT_PIN
     {
         static bool down;
-        bool p = gpio_get_level((gpio_num_t)BOARD_BTN_LEFT_PIN) == 0;
+        bool p = gpio_get_level((gpio_num_t)BOARD_BTN_LEFT_PIN) == BOARD_BUTTON_PRESSED_LEVEL;
         if (p && !down) { down = true; return BTN_LEFT; }
         if (!p) down = false;
     }
@@ -212,7 +227,7 @@ static inline button_id_t buttons_poll_pressed(void)
 #ifdef BOARD_BTN_RIGHT_PIN
     {
         static bool down;
-        bool p = gpio_get_level((gpio_num_t)BOARD_BTN_RIGHT_PIN) == 0;
+        bool p = gpio_get_level((gpio_num_t)BOARD_BTN_RIGHT_PIN) == BOARD_BUTTON_PRESSED_LEVEL;
         if (p && !down) { down = true; return BTN_RIGHT; }
         if (!p) down = false;
     }
@@ -234,7 +249,7 @@ static inline bool buttons_is_maintenance_button(button_id_t b)
 static inline bool buttons_maintenance_is_pressed(void)
 {
 #ifdef BOARD_BTN_REFRESH_PIN
-    return gpio_get_level((gpio_num_t)BOARD_BTN_REFRESH_PIN) == 0;
+    return gpio_get_level((gpio_num_t)BOARD_BTN_REFRESH_PIN) == BOARD_BUTTON_PRESSED_LEVEL;
 #else
     return false;
 #endif
@@ -282,6 +297,9 @@ static inline button_id_t buttons_which_woke(void)
     if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_GPIO) return BTN_NONE;
     uint64_t st = esp_sleep_get_gpio_wakeup_status();
 #  endif
+#ifdef BOARD_BUTTON_ACTIVE_HIGH
+    st &= BUTTON_WAKE_MASK;
+#endif
     if (st & BUTTONS__REFRESH_BIT) return BTN_REFRESH;
     if (st & BUTTONS__LEFT_BIT)    return BTN_LEFT;
     if (st & BUTTONS__RIGHT_BIT)   return BTN_RIGHT;
