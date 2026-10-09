@@ -22,8 +22,12 @@
 #if SOC_USB_SERIAL_JTAG_SUPPORTED
 #include "driver/usb_serial_jtag.h"
 #endif
+#include "driver/spi_master.h"
+#include "driver/gpio.h"
 #include "esp_attr.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "esp_random.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
@@ -229,6 +233,9 @@ typedef struct {
  * conditional inside. A queued OTA is still deliberately not applied mid-run;
  * it lands on the next reboot. */
 static bool fetch_and_paint_current(const char *server_url);
+#if defined(TESSERAE_STREAM_FRAMES) && defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L)
+static bool openpaper_l_paint_cached_frame_if_pending(void);
+#endif
 static bool frame_fetch(const char *server_url, const char *held_etag,
                         pending_frame_t *out);
 static void frame_paint(pending_frame_t *p);
@@ -723,10 +730,17 @@ static void run_provisioning_then_reboot(const char *note)
         /* Bring the AP up FIRST (joinable in ~1-2 s), THEN paint the portal
          * splash. The user can use 192.168.4.1 immediately, or hold the board's
          * maintenance control to tear AP down and switch to Companion BLE. */
-        provisioning_begin();
-        led_blink(100, 1000);             /* slow blink: portal open */
+#if defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L)
+        ESP_LOGW(TAG, "painting portal splash before provisioning_begin");
         if (portal_note) splash_show_portal_note(portal_note);
         else             splash_show_portal();
+#endif
+        provisioning_begin();
+        led_blink(100, 1000);             /* slow blink: portal open */
+#if !defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L)
+        if (portal_note) splash_show_portal_note(portal_note);
+        else             splash_show_portal();
+#endif
         provisioning_result_t result = provisioning_serve();
         led_set(false);
         if (result == PROVISIONING_RESULT_SAVED) {
@@ -784,6 +798,12 @@ static void run_provisioning_then_reboot(const char *note)
  * instead, avoiding a wasted second ~30 s refresh on the no-creds path. */
 static void maybe_show_splash(esp_reset_reason_t reset_reason, bool has_creds)
 {
+#ifdef TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L
+    /* The 13.3" dual-controller glass already needs a full refresh for the
+     * real frame; a cold-boot logo costs another ~30 s and can leave one half
+     * stale on this board. Skip the cosmetic logo and let the real frame paint. */
+    return;
+#endif
     if (reset_reason != ESP_RST_POWERON && reset_reason != ESP_RST_EXT) {
         return;
     }
@@ -1017,9 +1037,27 @@ typedef struct {
     size_t   total;         /* bytes accepted from the body so far */
     int      y;             /* panel row the next block starts at */
     bool     bad;           /* refused; drop everything after */
+#if defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L)
+    size_t   nonwhite[2];   /* [0] = left half, [1] = right half */
+#endif
 } stream_ctx_t;
 
 #define STREAM_ROW_BYTES ((size_t)EPD_BUF_BYTES / EPD_HEIGHT)
+
+#if defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L)
+/* Scan whole rows of the filled block and tally non-white bytes per frame
+ * half. A packed byte is 0x11 when both of its pixels are white. */
+static void stream_scan(stream_ctx_t *c, size_t nbytes)
+{
+    const size_t HALF = STREAM_ROW_BYTES / 2;
+    size_t rows = nbytes / STREAM_ROW_BYTES;
+    for (size_t r = 0; r < rows; r++) {
+        const uint8_t *row = c->block + r * STREAM_ROW_BYTES;
+        for (size_t b = 0; b < STREAM_ROW_BYTES; b++)
+            if (row[b] != 0x11) c->nonwhite[b < HALF ? 0 : 1]++;
+    }
+}
+#endif
 
 static esp_err_t stream_sink(void *user, const uint8_t *data, size_t len,
                              int64_t content_length)
@@ -1049,6 +1087,9 @@ static esp_err_t stream_sink(void *user, const uint8_t *data, size_t len,
         data     += n;
         len      -= n;
         if (c->fill == c->block_bytes) {
+#if defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L)
+            stream_scan(c, c->fill);
+#endif
             if (!epd_stream_rows(c->block, c->y, EPD_STREAM_ROWS)) {
                 c->bad = true;
                 return ESP_FAIL;
@@ -1086,10 +1127,18 @@ static bool stream_fetch_and_paint(const char *url)
     if (ok && c.fill) {
         /* Trailing partial block (only when EPD_HEIGHT is not a multiple of
          * EPD_STREAM_ROWS). Whole rows by construction: total == EPD_BUF_BYTES. */
+#if defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L)
+        stream_scan(&c, c.fill);
+#endif
         ok = epd_stream_rows(c.block, c.y, (int)(c.fill / STREAM_ROW_BYTES));
     }
     if (ok) {
         ESP_LOGI(TAG, "streamed %u bytes; refreshing (~30 s)...", (unsigned)c.total);
+#if defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L)
+        ESP_LOGI(TAG, "frame halves: non-white bytes left=%u right=%u "
+                 "(a blank half means the frame itself is blank there)",
+                 (unsigned)c.nonwhite[0], (unsigned)c.nonwhite[1]);
+#endif
     } else {
         ESP_LOGE(TAG, "streamed frame incomplete (%u of %u bytes, err %s); "
                  "leaving the current image", (unsigned)c.total,
@@ -1100,6 +1149,498 @@ static bool stream_fetch_and_paint(const char *url)
     free(c.block);
     return ok;
 }
+
+#if defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L)
+#define OPENPAPER_L_CACHE_MAGIC 0x4f504c46u
+#define OPENPAPER_L_FRAME_RETRIES 2
+#define OPENPAPER_L_RETRY_DELAY_MS 750
+#define OPENPAPER_L_PAINT_SETTLE_MS 250
+#define OPENPAPER_L_RADIO_QUIET_SLEEP_US 1000000ULL
+#define OPENPAPER_L_PANEL_OFF_SETTLE_MS 500
+
+typedef struct {
+    uint32_t magic;
+    uint32_t size;
+    uint8_t backend;
+    char etag[80];
+    char part_label[17];    /* the app slot holding the frame, OTA_SLOT backend only */
+} openpaper_l_cache_state_t;
+
+typedef enum {
+    OPENPAPER_L_CACHE_NONE = 0,
+    OPENPAPER_L_CACHE_EXT_FLASH = 1,
+    OPENPAPER_L_CACHE_OTA_SLOT = 2,
+} openpaper_l_cache_backend_t;
+
+RTC_NOINIT_ATTR static openpaper_l_cache_state_t s_openpaper_l_cache;
+
+static spi_device_handle_t s_openpaper_l_flash;
+static bool s_openpaper_l_flash_ready;
+static bool s_openpaper_l_flash_bus_inited;
+
+typedef struct {
+    openpaper_l_cache_backend_t backend;
+    const esp_partition_t *part;
+    size_t offset;
+    size_t total;
+    bool bad;
+} openpaper_l_cache_sink_t;
+
+/* The fallback cache borrows the app slot that is NOT running, the one the
+ * next OTA would be written to, so OTA keeps working: the running app is
+ * never touched, and an update simply overwrites a stale frame. It is refused
+ * while that slot still matters as an app: the running image is on its first,
+ * unconfirmed boot (the other slot is the rollback target), or an update has
+ * been staged there and the reboot into it has not happened yet. */
+static const esp_partition_t *openpaper_l_cache_partition(void)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) return NULL;
+#if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+    esp_ota_img_states_t st;
+    if (esp_ota_get_state_partition(running, &st) == ESP_OK &&
+        st == ESP_OTA_IMG_PENDING_VERIFY) {
+        ESP_LOGW(TAG, "running image not confirmed yet; keeping the other slot "
+                 "as its rollback target");
+        return NULL;
+    }
+#endif
+    const esp_partition_t *boot = esp_ota_get_boot_partition();
+    if (boot && boot != running) {
+        ESP_LOGW(TAG, "an update is staged in '%s'; not caching over it",
+                 boot->label);
+        return NULL;
+    }
+    const esp_partition_t *spare = esp_ota_get_next_update_partition(NULL);
+    if (!spare || spare == running) return NULL;
+    return spare;
+}
+
+static esp_err_t openpaper_l_flash_txrx(const uint8_t *tx, uint8_t *rx, size_t len)
+{
+    spi_transaction_t t = {
+        .length = len * 8,
+        .tx_buffer = tx,
+        .rx_buffer = rx,
+    };
+    return spi_device_polling_transmit(s_openpaper_l_flash, &t);
+}
+
+static esp_err_t openpaper_l_flash_cmd(uint8_t cmd)
+{
+    return openpaper_l_flash_txrx(&cmd, NULL, 1);
+}
+
+static esp_err_t openpaper_l_flash_wait_ready(void)
+{
+    uint8_t tx[2] = {0x05, 0x00};
+    uint8_t rx[2] = {0};
+    int64_t deadline = esp_timer_get_time() + 30000000LL;
+    do {
+        esp_err_t err = openpaper_l_flash_txrx(tx, rx, sizeof tx);
+        if (err != ESP_OK) return err;
+        if ((rx[1] & 0x01) == 0) return ESP_OK;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    } while (esp_timer_get_time() < deadline);
+    return ESP_ERR_TIMEOUT;
+}
+
+static esp_err_t openpaper_l_flash_write_enable(void)
+{
+    esp_err_t err = openpaper_l_flash_cmd(0x06);
+    if (err != ESP_OK) return err;
+    uint8_t tx[2] = {0x05, 0x00};
+    uint8_t rx[2] = {0};
+    err = openpaper_l_flash_txrx(tx, rx, sizeof tx);
+    if (err != ESP_OK) return err;
+    return (rx[1] & 0x02) ? ESP_OK : ESP_FAIL;
+}
+
+static esp_err_t openpaper_l_flash_read_jedec(uint8_t id[3])
+{
+    uint8_t tx[4] = {0x9f, 0, 0, 0};
+    uint8_t rx[4] = {0};
+    esp_err_t err = openpaper_l_flash_txrx(tx, rx, sizeof tx);
+    if (err == ESP_OK) memcpy(id, &rx[1], 3);
+    return err;
+}
+
+static bool openpaper_l_flash_init(void)
+{
+    if (s_openpaper_l_flash_ready) return true;
+    if (!s_openpaper_l_flash_bus_inited) {
+        spi_bus_config_t bus = {
+            .mosi_io_num = EPD_PIN_MOSI,
+            .miso_io_num = OPENPAPER_L_FLASH_MISO,
+            .sclk_io_num = EPD_PIN_SCLK,
+            .quadwp_io_num = -1,
+            .quadhd_io_num = -1,
+            .max_transfer_sz = 4096,
+        };
+        esp_err_t err = spi_bus_initialize(EPD_SPI_HOST, &bus, SPI_DMA_CH_AUTO);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "external flash spi bus init failed: %s", esp_err_to_name(err));
+            return false;
+        }
+        s_openpaper_l_flash_bus_inited = true;
+    }
+    spi_device_interface_config_t dev = {
+        .clock_speed_hz = EPD_SPI_HZ,
+        .mode = 0,
+        .spics_io_num = OPENPAPER_L_FLASH_CS,
+        .queue_size = 1,
+    };
+    esp_err_t err = spi_bus_add_device(EPD_SPI_HOST, &dev, &s_openpaper_l_flash);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "external flash add device failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    uint8_t id[3] = {0};
+    err = openpaper_l_flash_read_jedec(id);
+    if (err != ESP_OK || id[0] == 0x00 || id[0] == 0xff) {
+        ESP_LOGW(TAG, "external flash JEDEC read failed: %s id=%02x %02x %02x",
+                 esp_err_to_name(err), id[0], id[1], id[2]);
+        spi_bus_remove_device(s_openpaper_l_flash);
+        s_openpaper_l_flash = NULL;
+        return false;
+    }
+    ESP_LOGI(TAG, "external flash JEDEC id: %02x %02x %02x", id[0], id[1], id[2]);
+    s_openpaper_l_flash_ready = true;
+    return true;
+}
+
+static esp_err_t openpaper_l_flash_read(size_t offset, void *dst, size_t len)
+{
+    if (!openpaper_l_flash_init()) return ESP_ERR_NOT_FOUND;
+    uint8_t *out = dst;
+    while (len) {
+        size_t chunk = len > 4092 ? 4092 : len;
+        uint8_t *tx = heap_caps_calloc(1, chunk + 4, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        uint8_t *rx = heap_caps_malloc(chunk + 4, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (!tx || !rx) {
+            free(tx);
+            free(rx);
+            return ESP_ERR_NO_MEM;
+        }
+        tx[0] = 0x03;
+        tx[1] = (uint8_t)(offset >> 16);
+        tx[2] = (uint8_t)(offset >> 8);
+        tx[3] = (uint8_t)offset;
+        esp_err_t err = openpaper_l_flash_txrx(tx, rx, chunk + 4);
+        if (err == ESP_OK) memcpy(out, rx + 4, chunk);
+        free(tx);
+        free(rx);
+        if (err != ESP_OK) return err;
+        offset += chunk;
+        out += chunk;
+        len -= chunk;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t openpaper_l_flash_erase_frame(void)
+{
+    if (!openpaper_l_flash_init()) return ESP_ERR_NOT_FOUND;
+    const size_t erase_bytes = ((size_t)EPD_BUF_BYTES + 4095u) & ~4095u;
+    for (size_t off = 0; off < erase_bytes; off += 4096) {
+        esp_err_t err = openpaper_l_flash_write_enable();
+        if (err != ESP_OK) return err;
+        uint8_t tx[4] = {0x20, (uint8_t)(off >> 16), (uint8_t)(off >> 8), (uint8_t)off};
+        err = openpaper_l_flash_txrx(tx, NULL, sizeof tx);
+        if (err != ESP_OK) return err;
+        err = openpaper_l_flash_wait_ready();
+        if (err != ESP_OK) return err;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t openpaper_l_flash_write(size_t offset, const uint8_t *data, size_t len)
+{
+    if (!openpaper_l_flash_init()) return ESP_ERR_NOT_FOUND;
+    while (len) {
+        size_t page_left = 256 - (offset & 0xffu);
+        size_t chunk = len < page_left ? len : page_left;
+        esp_err_t err = openpaper_l_flash_write_enable();
+        if (err != ESP_OK) return err;
+        uint8_t *tx = heap_caps_malloc(chunk + 4, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (!tx) return ESP_ERR_NO_MEM;
+        tx[0] = 0x02;
+        tx[1] = (uint8_t)(offset >> 16);
+        tx[2] = (uint8_t)(offset >> 8);
+        tx[3] = (uint8_t)offset;
+        memcpy(tx + 4, data, chunk);
+        err = openpaper_l_flash_txrx(tx, NULL, chunk + 4);
+        free(tx);
+        if (err != ESP_OK) return err;
+        err = openpaper_l_flash_wait_ready();
+        if (err != ESP_OK) return err;
+        offset += chunk;
+        data += chunk;
+        len -= chunk;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t openpaper_l_cache_backend_write(openpaper_l_cache_sink_t *c,
+                                                 const uint8_t *data, size_t len)
+{
+    if (c->backend == OPENPAPER_L_CACHE_EXT_FLASH) {
+        return openpaper_l_flash_write(c->offset, data, len);
+    }
+    return esp_partition_write(c->part, c->offset, data, len);
+}
+
+static esp_err_t openpaper_l_cache_read(openpaper_l_cache_backend_t backend,
+                                        const esp_partition_t *part,
+                                        size_t offset, void *dst, size_t len)
+{
+    if (backend == OPENPAPER_L_CACHE_EXT_FLASH) {
+        return openpaper_l_flash_read(offset, dst, len);
+    }
+    return esp_partition_read(part, offset, dst, len);
+}
+
+static esp_err_t openpaper_l_cache_sink(void *user, const uint8_t *data,
+                                        size_t len, int64_t content_length)
+{
+    openpaper_l_cache_sink_t *c = user;
+    if (c->bad) return ESP_FAIL;
+    if (c->total == 0 && content_length > 0 &&
+        content_length != (int64_t)EPD_BUF_BYTES) {
+        ESP_LOGE(TAG, "frame size mismatch: Content-Length %lld, expected %u; "
+                 "refusing cache", (long long)content_length,
+                 (unsigned)EPD_BUF_BYTES);
+        c->bad = true;
+        return ESP_FAIL;
+    }
+    if (c->total + len > (size_t)EPD_BUF_BYTES) {
+        ESP_LOGE(TAG, "frame body exceeds %u bytes; refusing cache",
+                 (unsigned)EPD_BUF_BYTES);
+        c->bad = true;
+        return ESP_FAIL;
+    }
+    esp_err_t err = openpaper_l_cache_backend_write(c, data, len);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "cache write @%u failed: %s", (unsigned)c->offset,
+                 esp_err_to_name(err));
+        c->bad = true;
+        return err;
+    }
+    c->offset += len;
+    c->total += len;
+    return ESP_OK;
+}
+
+static bool openpaper_l_prepare_cache_backend(openpaper_l_cache_backend_t backend,
+                                              const esp_partition_t **part_out)
+{
+    *part_out = NULL;
+    if (backend == OPENPAPER_L_CACHE_EXT_FLASH) {
+        ESP_LOGI(TAG, "caching OpenPaper L frame to external flash (%u bytes)...",
+                 (unsigned)EPD_BUF_BYTES);
+        esp_err_t err = openpaper_l_flash_erase_frame();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "external flash erase failed: %s", esp_err_to_name(err));
+            return false;
+        }
+        return true;
+    }
+
+    const esp_partition_t *part = openpaper_l_cache_partition();
+    if (!part) {
+        ESP_LOGE(TAG, "no spare app slot to cache the frame in");
+        return false;
+    }
+    if (part->size < (size_t)EPD_BUF_BYTES) {
+        ESP_LOGE(TAG, "%s too small for the frame cache: %u < %u", part->label,
+                 (unsigned)part->size, (unsigned)EPD_BUF_BYTES);
+        return false;
+    }
+    const size_t erase_bytes = ((size_t)EPD_BUF_BYTES + 4095u) & ~4095u;
+    ESP_LOGI(TAG, "caching OpenPaper L frame to spare slot %s (%u bytes)...",
+             part->label, (unsigned)EPD_BUF_BYTES);
+    esp_err_t err = esp_partition_erase_range(part, 0, erase_bytes);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "cache erase failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    *part_out = part;
+    return true;
+}
+
+static bool openpaper_l_cache_frame_backend(const char *url, const char *etag,
+                                            openpaper_l_cache_backend_t backend)
+{
+    const esp_partition_t *part = NULL;
+    if (!openpaper_l_prepare_cache_backend(backend, &part)) return false;
+
+    openpaper_l_cache_sink_t c = {.backend = backend, .part = part};
+    size_t received = 0;
+    esp_err_t err = image_fetch_to_sink(url, NULL, openpaper_l_cache_sink, &c, &received);
+    if (err != ESP_OK || c.bad || c.total != (size_t)EPD_BUF_BYTES) {
+        ESP_LOGE(TAG, "cache download incomplete (%u of %u bytes, err %s)",
+                 (unsigned)c.total, (unsigned)EPD_BUF_BYTES,
+                 esp_err_to_name(err));
+        return false;
+    }
+    s_openpaper_l_cache.size = EPD_BUF_BYTES;
+    s_openpaper_l_cache.backend = (uint8_t)backend;
+    snprintf(s_openpaper_l_cache.part_label, sizeof s_openpaper_l_cache.part_label,
+             "%s", part ? part->label : "");
+    snprintf(s_openpaper_l_cache.etag, sizeof s_openpaper_l_cache.etag, "%s",
+             etag ? etag : "");
+    s_openpaper_l_cache.magic = OPENPAPER_L_CACHE_MAGIC;
+    ESP_LOGI(TAG, "cached frame in %s; entering radio-free paint pass",
+             backend == OPENPAPER_L_CACHE_EXT_FLASH ? "external flash" : part->label);
+    return true;
+}
+
+static bool openpaper_l_cache_frame_from_url(const char *url, const char *etag)
+{
+    s_openpaper_l_cache.magic = 0;
+    if (openpaper_l_cache_frame_backend(url, etag, OPENPAPER_L_CACHE_EXT_FLASH)) {
+        return true;
+    }
+    ESP_LOGW(TAG, "external flash cache unavailable; falling back to the spare app slot");
+    return openpaper_l_cache_frame_backend(url, etag, OPENPAPER_L_CACHE_OTA_SLOT);
+}
+
+static void openpaper_l_panel_hard_off(void)
+{
+    gpio_config_t out = {
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = (1ULL << EPD_PIN_PWR) |
+                        (1ULL << EPD_PIN_RST) |
+                        (1ULL << EPD_PIN_CS_M) |
+                        (1ULL << EPD_PIN_CS_S),
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&out));
+    gpio_set_level(EPD_PIN_CS_M, 1);
+    gpio_set_level(EPD_PIN_CS_S, 1);
+    gpio_set_level(EPD_PIN_RST, 0);
+    gpio_set_level(EPD_PIN_PWR, 0);
+}
+
+static void openpaper_l_post_presleep_status(int pw, int ph)
+{
+    if (rest_config_get()->device_token[0] == '\0') return;
+    char ip[16] = {0};
+    wifi_manager_get_sta_ip(ip, sizeof ip);
+    int32_t interval = rest_config_get()->sleep_s;
+    time_t now = time(NULL);
+    uint32_t sleep_until = (now > EPOCH_REASONABLE_MIN &&
+                            now < EPOCH_REASONABLE_MAX && interval > 0)
+                               ? (uint32_t)(now + interval) : 0;
+    rest_status_out_t so;
+    rest_status_t ss = rest_post_status(current_rssi(), ip, pw, ph, interval,
+                                        sleep_until, FW_VERSION, &so, 8000);
+    if (ss == REST_OK) {
+        ESP_LOGI(TAG, "pre-paint status heartbeat posted");
+        if (so.logs_upload) log_capture_upload();
+        if (so.sleep_interval_s > 0) rest_config_set_sleep_s(so.sleep_interval_s);
+        wake_align_set_target(so.wake_at);
+    } else {
+        ESP_LOGW(TAG, "pre-paint status heartbeat failed (%d)", ss);
+    }
+}
+
+static void openpaper_l_radio_quiet_sleep(void)
+{
+    ESP_LOGI(TAG, "radio quiet sleep before cached paint");
+    wifi_sta_stop();
+    ESP_LOGI(TAG, "wifi deinit -> %s", esp_err_to_name(esp_wifi_deinit()));
+    openpaper_l_panel_hard_off();
+    vTaskDelay(pdMS_TO_TICKS(OPENPAPER_L_PANEL_OFF_SETTLE_MS));
+    ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(OPENPAPER_L_RADIO_QUIET_SLEEP_US));
+    esp_deep_sleep_start();
+}
+
+static bool openpaper_l_paint_cached_frame_if_pending(void)
+{
+    if (s_openpaper_l_cache.magic != OPENPAPER_L_CACHE_MAGIC ||
+        s_openpaper_l_cache.size != (uint32_t)EPD_BUF_BYTES)
+        return false;
+
+    openpaper_l_cache_backend_t backend =
+        (openpaper_l_cache_backend_t)s_openpaper_l_cache.backend;
+    const esp_partition_t *part = NULL;
+    if (backend == OPENPAPER_L_CACHE_OTA_SLOT) {
+        /* Read back from the slot the frame was written to, and never from the
+         * one now running (a reboot into an update can swap them). */
+        s_openpaper_l_cache.part_label[sizeof s_openpaper_l_cache.part_label - 1] = '\0';
+        part = esp_partition_find_first(ESP_PARTITION_TYPE_APP,
+                                        ESP_PARTITION_SUBTYPE_ANY,
+                                        s_openpaper_l_cache.part_label);
+        if (!part || part == esp_ota_get_running_partition()) {
+            ESP_LOGE(TAG, "pending cached frame's slot '%s' is missing or now "
+                     "running; dropping it", s_openpaper_l_cache.part_label);
+            s_openpaper_l_cache.magic = 0;
+            return false;
+        }
+    } else if (backend != OPENPAPER_L_CACHE_EXT_FLASH) {
+        ESP_LOGE(TAG, "pending cached frame has unknown backend %u",
+                 (unsigned)s_openpaper_l_cache.backend);
+        s_openpaper_l_cache.magic = 0;
+        return false;
+    }
+
+    stream_ctx_t c = {0};
+    c.block_bytes = (size_t)EPD_STREAM_ROWS * STREAM_ROW_BYTES;
+    c.block = heap_caps_malloc(c.block_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!c.block) {
+        ESP_LOGE(TAG, "OOM allocating %u-byte cached paint block",
+                 (unsigned)c.block_bytes);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "painting cached OpenPaper L frame before WiFi...");
+    openpaper_l_panel_hard_off();
+    vTaskDelay(pdMS_TO_TICKS(OPENPAPER_L_PANEL_OFF_SETTLE_MS));
+    ESP_ERROR_CHECK(epd_port_init());
+    epd_init();
+    vTaskDelay(pdMS_TO_TICKS(OPENPAPER_L_PAINT_SETTLE_MS));
+    bool ok = epd_stream_begin();
+    for (int side = 0; ok && side < 2; side++) {
+        for (int y = 0; ok && y < EPD_HEIGHT; y += EPD_STREAM_ROWS) {
+            int rows = EPD_STREAM_ROWS;
+            if (y + rows > EPD_HEIGHT) rows = EPD_HEIGHT - y;
+            size_t n = (size_t)rows * STREAM_ROW_BYTES;
+            esp_err_t err = openpaper_l_cache_read(backend, part,
+                                                   (size_t)y * STREAM_ROW_BYTES,
+                                                   c.block, n);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "cache read y=%d backend=%u failed: %s", y,
+                         (unsigned)backend, esp_err_to_name(err));
+                ok = false;
+                break;
+            }
+            if (side == 0) stream_scan(&c, n);
+            ok = epd_stream_rows_side(side, c.block, y, rows);
+        }
+    }
+    if (ok) {
+        ESP_LOGI(TAG, "cached frame halves: non-white bytes left=%u right=%u",
+                 (unsigned)c.nonwhite[0], (unsigned)c.nonwhite[1]);
+    }
+    epd_stream_end(ok);
+    epd_sleep();
+    free(c.block);
+
+    if (ok) {
+        if (s_openpaper_l_cache.etag[0]) rest_config_set_frame_etag(s_openpaper_l_cache.etag);
+        rest_config_set_ui_state(UI_CONNECTED);
+        rest_config_save();
+        ESP_LOGI(TAG, "cached frame painted; etag=%s", s_openpaper_l_cache.etag);
+    } else {
+        ESP_LOGE(TAG, "cached frame paint failed; dropping pending cache marker");
+    }
+    s_openpaper_l_cache.magic = 0;
+    return ok;
+}
+#endif /* TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L */
 #endif /* TESSERAE_STREAM_FRAMES */
 
 #if BOARD_HAS_TOUCH
@@ -1402,6 +1943,13 @@ void app_main(void)
     bool first_boot = (reset_reason != ESP_RST_DEEPSLEEP);
     ESP_LOGI(TAG, "boot; reset_reason=%d wakeup_cause=%d settings_mode=%d first_boot=%d",
              reset_reason, esp_sleep_get_wakeup_cause(), settings_mode, first_boot);
+#if defined(TESSERAE_STREAM_FRAMES) && defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L)
+    if (!settings_mode && openpaper_l_paint_cached_frame_if_pending()) {
+        led_set(false);
+        sleep_forever_or_until_timer();
+        return;
+    }
+#endif
     /* The LED stays on through a cold boot (someone is looking) and goes off
      * as soon as a frame paints; a timed wake in the night keeps it dark. */
     if (!first_boot) led_set(false);
@@ -2670,6 +3218,16 @@ void app_main(void)
     /* 2. Frame metadata, with If-None-Match for the ETag/304 dedup. */
     rest_frame_out_t fo;
     rest_status_t fs = rest_get_frame(&fo, 10000);
+#if defined(TESSERAE_STREAM_FRAMES) && defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L)
+    for (int attempt = 1; fs == REST_NET_ERR &&
+         attempt <= OPENPAPER_L_FRAME_RETRIES; attempt++) {
+        ESP_LOGW(TAG, "frame request transient failure; retry %d/%d",
+                 attempt, OPENPAPER_L_FRAME_RETRIES);
+        vTaskDelay(pdMS_TO_TICKS(OPENPAPER_L_RETRY_DELAY_MS));
+        memset(&fo, 0, sizeof fo);
+        fs = rest_get_frame(&fo, 15000);
+    }
+#endif
     if (fs == REST_OK) {
         snprintf(new_etag, sizeof new_etag, "%s", fo.etag);
         /* The 200 body is the freshest button_wake_s (a 304/204 has no body:
@@ -2682,6 +3240,27 @@ void app_main(void)
         char fullurl[512];
         resolve_url(c->server_url, fo.url, fullurl, sizeof fullurl);
 #ifdef TESSERAE_STREAM_FRAMES
+#if defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L)
+        /* WiFi scans can leave the second controller unreliable until reboot on
+         * this board. Cache the full frame, then reboot into an early paint-only
+         * pass before any radio starts. */
+        bool cached = false;
+        for (int attempt = 0; !cached &&
+             attempt <= OPENPAPER_L_FRAME_RETRIES; attempt++) {
+            if (attempt > 0) {
+                ESP_LOGW(TAG, "cached frame fetch retry %d/%d", attempt,
+                         OPENPAPER_L_FRAME_RETRIES);
+                vTaskDelay(pdMS_TO_TICKS(OPENPAPER_L_RETRY_DELAY_MS));
+            }
+            cached = openpaper_l_cache_frame_from_url(fullurl, new_etag);
+        }
+        if (cached) {
+            openpaper_l_post_presleep_status(pw, ph);
+            openpaper_l_radio_quiet_sleep();
+        } else {
+            ESP_LOGE(TAG, "cached frame fetch failed for %s", fullurl);
+        }
+#else
         /* No RAM for a frame on this board: the download is painted as it
          * arrives, radio up (see stream_fetch_and_paint). By the time this
          * returns true the frame is on the glass; the bookkeeping that the
@@ -2691,6 +3270,7 @@ void app_main(void)
         } else {
             ESP_LOGE(TAG, "streamed frame failed for %s", fullurl);
         }
+#endif
 #else
         fetched_image_t img;
         if (image_fetch(fullurl, &img) == ESP_OK) {
