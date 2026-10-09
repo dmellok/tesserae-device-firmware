@@ -69,6 +69,7 @@ void epd_display_partial_mode(const uint8_t *image, int x, int y, int w, int h,
 bool epd_supports_stream(void);
 bool epd_stream_begin(void);
 bool epd_stream_rows(const uint8_t *rows, int y0, int nrows);
+bool epd_stream_rows_side(int side, const uint8_t *rows, int y0, int nrows);
 bool epd_stream_end(bool refresh);
 
 /* Override the 4-gray register-LUT tuning at runtime (EPD_GRAY_TUNER builds).

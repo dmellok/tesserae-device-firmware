@@ -107,6 +107,12 @@ typedef struct epd_driver {
      *   overwrites it). Drivers may restrict n (even counts, a maximum). */
     bool (*stream_begin)(void);
     bool (*stream_rows)(const uint8_t *rows, int y0, int nrows);
+    /* OPTIONAL (NULL = use stream_rows): write only one controller half from a
+     * normal full-width band. side 0 consumes columns 0..W/2-1, side 1 consumes
+     * W/2..W-1. Used by dual-controller panels that must match the vendor order
+     * (all chunks for one CS, then all chunks for the other) without buffering a
+     * 960 KB frame in RAM. */
+    bool (*stream_rows_side)(int side, const uint8_t *rows, int y0, int nrows);
     bool (*stream_end)(bool refresh);
 } epd_driver_t;
 
