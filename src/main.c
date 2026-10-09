@@ -26,6 +26,7 @@
 #include "driver/gpio.h"
 #include "esp_attr.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_random.h"
 #include "esp_sleep.h"
@@ -1162,12 +1163,13 @@ typedef struct {
     uint32_t size;
     uint8_t backend;
     char etag[80];
+    char part_label[17];    /* the app slot holding the frame, OTA_SLOT backend only */
 } openpaper_l_cache_state_t;
 
 typedef enum {
     OPENPAPER_L_CACHE_NONE = 0,
     OPENPAPER_L_CACHE_EXT_FLASH = 1,
-    OPENPAPER_L_CACHE_OTA_1 = 2,
+    OPENPAPER_L_CACHE_OTA_SLOT = 2,
 } openpaper_l_cache_backend_t;
 
 RTC_NOINIT_ATTR static openpaper_l_cache_state_t s_openpaper_l_cache;
@@ -1184,11 +1186,34 @@ typedef struct {
     bool bad;
 } openpaper_l_cache_sink_t;
 
+/* The fallback cache borrows the app slot that is NOT running, the one the
+ * next OTA would be written to, so OTA keeps working: the running app is
+ * never touched, and an update simply overwrites a stale frame. It is refused
+ * while that slot still matters as an app: the running image is on its first,
+ * unconfirmed boot (the other slot is the rollback target), or an update has
+ * been staged there and the reboot into it has not happened yet. */
 static const esp_partition_t *openpaper_l_cache_partition(void)
 {
-    return esp_partition_find_first(ESP_PARTITION_TYPE_APP,
-                                    ESP_PARTITION_SUBTYPE_APP_OTA_1,
-                                    "ota_1");
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) return NULL;
+#if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+    esp_ota_img_states_t st;
+    if (esp_ota_get_state_partition(running, &st) == ESP_OK &&
+        st == ESP_OTA_IMG_PENDING_VERIFY) {
+        ESP_LOGW(TAG, "running image not confirmed yet; keeping the other slot "
+                 "as its rollback target");
+        return NULL;
+    }
+#endif
+    const esp_partition_t *boot = esp_ota_get_boot_partition();
+    if (boot && boot != running) {
+        ESP_LOGW(TAG, "an update is staged in '%s'; not caching over it",
+                 boot->label);
+        return NULL;
+    }
+    const esp_partition_t *spare = esp_ota_get_next_update_partition(NULL);
+    if (!spare || spare == running) return NULL;
+    return spare;
 }
 
 static esp_err_t openpaper_l_flash_txrx(const uint8_t *tx, uint8_t *rx, size_t len)
@@ -1423,17 +1448,17 @@ static bool openpaper_l_prepare_cache_backend(openpaper_l_cache_backend_t backen
 
     const esp_partition_t *part = openpaper_l_cache_partition();
     if (!part) {
-        ESP_LOGE(TAG, "ota_1 cache partition not found");
+        ESP_LOGE(TAG, "no spare app slot to cache the frame in");
         return false;
     }
     if (part->size < (size_t)EPD_BUF_BYTES) {
-        ESP_LOGE(TAG, "ota_1 cache too small: %u < %u", (unsigned)part->size,
-                 (unsigned)EPD_BUF_BYTES);
+        ESP_LOGE(TAG, "%s too small for the frame cache: %u < %u", part->label,
+                 (unsigned)part->size, (unsigned)EPD_BUF_BYTES);
         return false;
     }
     const size_t erase_bytes = ((size_t)EPD_BUF_BYTES + 4095u) & ~4095u;
-    ESP_LOGI(TAG, "caching OpenPaper L frame to ota_1 (%u bytes)...",
-             (unsigned)EPD_BUF_BYTES);
+    ESP_LOGI(TAG, "caching OpenPaper L frame to spare slot %s (%u bytes)...",
+             part->label, (unsigned)EPD_BUF_BYTES);
     esp_err_t err = esp_partition_erase_range(part, 0, erase_bytes);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "cache erase failed: %s", esp_err_to_name(err));
@@ -1460,11 +1485,13 @@ static bool openpaper_l_cache_frame_backend(const char *url, const char *etag,
     }
     s_openpaper_l_cache.size = EPD_BUF_BYTES;
     s_openpaper_l_cache.backend = (uint8_t)backend;
+    snprintf(s_openpaper_l_cache.part_label, sizeof s_openpaper_l_cache.part_label,
+             "%s", part ? part->label : "");
     snprintf(s_openpaper_l_cache.etag, sizeof s_openpaper_l_cache.etag, "%s",
              etag ? etag : "");
     s_openpaper_l_cache.magic = OPENPAPER_L_CACHE_MAGIC;
     ESP_LOGI(TAG, "cached frame in %s; entering radio-free paint pass",
-             backend == OPENPAPER_L_CACHE_EXT_FLASH ? "external flash" : "ota_1");
+             backend == OPENPAPER_L_CACHE_EXT_FLASH ? "external flash" : part->label);
     return true;
 }
 
@@ -1474,8 +1501,8 @@ static bool openpaper_l_cache_frame_from_url(const char *url, const char *etag)
     if (openpaper_l_cache_frame_backend(url, etag, OPENPAPER_L_CACHE_EXT_FLASH)) {
         return true;
     }
-    ESP_LOGW(TAG, "external flash cache unavailable; falling back to ota_1");
-    return openpaper_l_cache_frame_backend(url, etag, OPENPAPER_L_CACHE_OTA_1);
+    ESP_LOGW(TAG, "external flash cache unavailable; falling back to the spare app slot");
+    return openpaper_l_cache_frame_backend(url, etag, OPENPAPER_L_CACHE_OTA_SLOT);
 }
 
 static void openpaper_l_panel_hard_off(void)
@@ -1540,10 +1567,16 @@ static bool openpaper_l_paint_cached_frame_if_pending(void)
     openpaper_l_cache_backend_t backend =
         (openpaper_l_cache_backend_t)s_openpaper_l_cache.backend;
     const esp_partition_t *part = NULL;
-    if (backend == OPENPAPER_L_CACHE_OTA_1) {
-        part = openpaper_l_cache_partition();
-        if (!part) {
-            ESP_LOGE(TAG, "pending cached frame but ota_1 partition is missing");
+    if (backend == OPENPAPER_L_CACHE_OTA_SLOT) {
+        /* Read back from the slot the frame was written to, and never from the
+         * one now running (a reboot into an update can swap them). */
+        s_openpaper_l_cache.part_label[sizeof s_openpaper_l_cache.part_label - 1] = '\0';
+        part = esp_partition_find_first(ESP_PARTITION_TYPE_APP,
+                                        ESP_PARTITION_SUBTYPE_ANY,
+                                        s_openpaper_l_cache.part_label);
+        if (!part || part == esp_ota_get_running_partition()) {
+            ESP_LOGE(TAG, "pending cached frame's slot '%s' is missing or now "
+                     "running; dropping it", s_openpaper_l_cache.part_label);
             s_openpaper_l_cache.magic = 0;
             return false;
         }
