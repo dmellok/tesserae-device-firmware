@@ -63,6 +63,13 @@ bool epd_stream_rows(const uint8_t *rows, int y0, int nrows)
     return d->stream_rows ? d->stream_rows(rows, y0, nrows) : false;
 }
 
+bool epd_stream_rows_side(int side, const uint8_t *rows, int y0, int nrows)
+{
+    const epd_driver_t *d = epd_active_driver();
+    if (d->stream_rows_side) return d->stream_rows_side(side, rows, y0, nrows);
+    return d->stream_rows ? d->stream_rows(rows, y0, nrows) : false;
+}
+
 bool epd_stream_end(bool refresh)
 {
     const epd_driver_t *d = epd_active_driver();

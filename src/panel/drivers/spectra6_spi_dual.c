@@ -169,10 +169,8 @@ static void hw_reset(void)
 
 /* ---------- driver entry points (exported via the vtable below) ---------- */
 
-static esp_err_t s6d_port_init(void)
+static void s6d_configure_panel_pins(void)
 {
-    if (s_port_inited) return ESP_OK;
-
     gpio_config_t out = {
         .intr_type = GPIO_INTR_DISABLE,
         .mode = GPIO_MODE_OUTPUT,
@@ -202,9 +200,20 @@ static esp_err_t s6d_port_init(void)
     gpio_set_level(EPD_PIN_CS_M, 1);
     gpio_set_level(EPD_PIN_CS_S, 1);
     gpio_set_level(EPD_PIN_PWR,  0);
+}
+
+static esp_err_t s6d_port_init(void)
+{
+    if (s_port_inited) return ESP_OK;
+
+    s6d_configure_panel_pins();
 
     spi_bus_config_t bus = {
+#ifdef OPENPAPER_L_FLASH_MISO
+        .miso_io_num = OPENPAPER_L_FLASH_MISO,
+#else
         .miso_io_num = -1,
+#endif
         .mosi_io_num = EPD_PIN_MOSI,
         .sclk_io_num = EPD_PIN_SCLK,
         .quadwp_io_num = -1,
@@ -223,7 +232,8 @@ static esp_err_t s6d_port_init(void)
         .spics_io_num = -1,            /* we drive CS by hand */
         .queue_size = 1,
     };
-    ESP_ERROR_CHECK(spi_bus_initialize(EPD_SPI_HOST, &bus, SPI_DMA_CH_AUTO));
+    esp_err_t err = spi_bus_initialize(EPD_SPI_HOST, &bus, SPI_DMA_CH_AUTO);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
     ESP_ERROR_CHECK(spi_bus_add_device(EPD_SPI_HOST, &dev, &s_spi));
 
     s_port_inited = true;
@@ -303,11 +313,13 @@ static void trigger_refresh(void)
     ESP_LOGI(TAG, "refresh done");
 }
 
-static void s6d_clear(uint8_t color)
+/* Full-DTM fill of both controllers with one palette colour, without touching
+ * the glass: one 300-byte half-row repeated 1600 times per controller -- the
+ * same bytes a 480000-byte scratch would send, without needing PSRAM for it
+ * (the OpenPaper L has none). Split out of s6d_clear() so the partial-window
+ * selftest can lay a base without a POF in the middle of its sequence. */
+static void s6d_fill_all(uint8_t color)
 {
-    /* One 300-byte half-row repeated 1600 times per controller: the same
-     * bytes a 480000-byte scratch would send, without needing PSRAM for it
-     * (the OpenPaper L has none). */
     const size_t HALF_ROW = EPD_WIDTH / 4;     /* 300 */
     uint8_t row[HALF_ROW];
     memset(row, (color << 4) | color, HALF_ROW);
@@ -319,6 +331,11 @@ static void s6d_clear(uint8_t color)
             send_data_buf(row, HALF_ROW);
         cs_both(1);
     }
+}
+
+static void s6d_clear(uint8_t color)
+{
+    s6d_fill_all(color);
     trigger_refresh();
 }
 
@@ -473,35 +490,71 @@ static void stream_window(int cs_pin, int y0, int nrows)
 
 static bool s6d_stream_begin(void)
 {
-    return s_port_inited;
+    /* Seed both controller RAMs with a known white image before partial-window
+     * streaming. This avoids stale/undefined controller RAM showing through if
+     * any frame chunk is blank or skipped. */
+    if (!s_port_inited) return false;
+    s6d_fill_all(EPD_COL_WHITE);
+    return true;
+}
+
+/* Write one controller's slice of a full-width row block. */
+static bool s6d_stream_rows_side(int side, const uint8_t *rows, int y0, int nrows)
+{
+    const size_t HALF_ROW = EPD_WIDTH / 4;     /* 300 */
+    const size_t FULL_ROW = HALF_ROW * 2;      /* 600 */
+    const int    cs       = side == 0 ? EPD_PIN_CS_M : EPD_PIN_CS_S;
+
+    stream_window(cs, y0, nrows);
+    gpio_set_level(cs, 0);
+    send_cmd(DTM);
+    for (int r = 0; r < nrows; r++) {
+        const uint8_t *src = rows + (size_t)r * FULL_ROW + (size_t)side * HALF_ROW;
+        send_data_buf(src, HALF_ROW);
+    }
+    cs_both(1);
+    vTaskDelay(pdMS_TO_TICKS(1));
+    return true;
 }
 
 static bool s6d_stream_rows(const uint8_t *rows, int y0, int nrows)
 {
-    const size_t HALF_ROW = EPD_WIDTH / 4;     /* 300 */
-    const size_t FULL_ROW = HALF_ROW * 2;      /* 600 */
     if (nrows <= 0 || (nrows & 1) || y0 < 0 || y0 + nrows > EPD_HEIGHT) {
         ESP_LOGE(TAG, "stream block y=%d n=%d rejected (rows must be even)", y0, nrows);
         return false;
     }
-    for (int side = 0; side < 2; side++) {
-        const int cs = side == 0 ? EPD_PIN_CS_M : EPD_PIN_CS_S;
-        stream_window(cs, y0, nrows);
-        gpio_set_level(cs, 0);
-        send_cmd(DTM);
-        for (int r = 0; r < nrows; r++)
-            send_data_buf(rows + (size_t)r * FULL_ROW + (size_t)side * HALF_ROW, HALF_ROW);
-        cs_both(1);
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
+    for (int side = 0; side < 2; side++)
+        s6d_stream_rows_side(side, rows, y0, nrows);
     return true;
 }
 
 static bool s6d_stream_end(bool refresh)
 {
     static const uint8_t no_window[9] = {0};
-    cs_both(0); cmd_with_data(PTLW, no_window, sizeof no_window); cs_both(1);
-    if (refresh) trigger_refresh();
+    const int cs[2] = { EPD_PIN_CS_M, EPD_PIN_CS_S };
+
+    /* Step 1, as the vendor app does: drop the last partial window so a stale
+     * band cannot bound the refresh that follows. */
+    for (int i = 0; i < 2; i++) {
+#ifdef EPD_NO_DC
+        gpio_set_level(cs[i], 0); cmd_with_data(PTLW, no_window, sizeof no_window); cs_both(1);
+#else
+        cs_both(0); cmd_with_data(PTLW, no_window, sizeof no_window); cs_both(1);
+#endif
+    }
+
+    /* Step 2, which the vendor app gets for free from GxEPD2 and we did not
+     * have: the reference driver's refresh() arms a FULL-PANEL partial window
+     * on BOTH controllers immediately before DRF, even on a controller that has
+     * nothing to update (there it arms a 2x2 dummy). Its comment is the reason:
+     * the MASTER generates the high-voltage DCDC the SLAVE refreshes from, and a
+     * controller with no window armed at DRF time can be left out of the cycle -
+     * which is exactly "left half paints, right half stays white". Arm the whole
+     * panel on each (local coords: HRST 0, HRED 1199, VRST 0, VRED 799). */
+    if (refresh) {
+        for (int i = 0; i < 2; i++) stream_window(cs[i], 0, EPD_HEIGHT);
+        trigger_refresh();
+    }
     return true;
 }
 #endif /* TESSERAE_STREAM_FRAMES */
@@ -527,6 +580,7 @@ const epd_driver_t spectra6_spi_dual_driver = {
 #ifdef TESSERAE_STREAM_FRAMES
     .stream_begin       = s6d_stream_begin,
     .stream_rows        = s6d_stream_rows,
+    .stream_rows_side   = s6d_stream_rows_side,
     .stream_end         = s6d_stream_end,
 #endif
 };
