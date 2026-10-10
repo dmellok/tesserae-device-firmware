@@ -77,6 +77,8 @@ jobs:
           # can bring it up, and the site lists it as experimental.
           - { env: paperlesspaper-openpaper-7, kind: paperlesspaper_openpaper_7, chip: esp32c6 }
           - { env: paperlesspaper-openpaper-l, kind: paperlesspaper_openpaper_l, chip: esp32c6 }
+          - { env: waveshare-epaper-73f,      kind: waveshare_epaper_73f, chip: esp32s3 }
+          - { env: epdiy-v7-ed133ut2,         kind: epdiy_v7_ed133ut2, chip: esp32s3 }
           # app_only: keeps its FACTORY bootloader and table, so no merged
           # factory image and the flasher entry carries ONLY otadata + app parts
           # (writing a bootloader at 0x0 bricks a unit with no BOOT strap). Its

@@ -23,6 +23,10 @@
  *     bring the rails up via pmic_*() instead of relying on a GPIO gate.
  *   - EPD_PIN_PWR: boards with a GPIO panel-power gate (EE04) define it; the
  *     driver raises it before init and cuts it on sleep, like the dual driver.
+ *
+ * Also drives the 7-colour ACeP 7.3" (Waveshare e-Paper (F)) behind
+ * EPD_INIT_ACEP_7IN3F: the same controller family and transport with its own
+ * init block, see run_init_sequence_acep().
  */
 #include "app_config.h"          /* board.h -> PANEL_DRIVER_* selection */
 
@@ -317,9 +321,70 @@ static bool run_init_sequence_v2(void)
 }
 #endif /* EPD_S6_INIT_GDEP073E01_V2 */
 
+#ifdef EPD_INIT_ACEP_7IN3F
+/* Waveshare 7.3" e-Paper (F), the 7-colour ACeP glass (AC073TC1A), from
+ * Waveshare's EPD_7in3f reference driver (EPD_7IN3F_Init). Same UC81xx command
+ * set and transport as the Spectra panels this driver was written for, so only
+ * the init block differs: the PFS + BTST1-3 block AND the IPC/TSE/VDCS/CCSET
+ * extras, PLL 0x3c, TVDCS 0x00. The refresh tail (PON, DRF 0x00, POF) and deep
+ * sleep (0x07 0xa5) are the reference's as well. The frame is 4bpp ACeP
+ * indices in the panel's own order (0 black, 1 white, 2 green, 3 blue, 4 red,
+ * 5 yellow, 6 orange), which is what the server's inky_7colour gamut sends, so
+ * it goes to DTM unchanged. A board opts in with EPD_INIT_ACEP_7IN3F. Bytes
+ * copied from the reference; NOT confirmed on glass yet. */
+static const uint8_t F_PWR[]   = {0x3f, 0x00, 0x32, 0x2a, 0x0e, 0x2a};
+static const uint8_t F_PSR[]   = {0x5f, 0x69};
+static const uint8_t F_PFS[]   = {0x00, 0x54, 0x00, 0x44};
+static const uint8_t F_BTST1[] = {0x40, 0x1f, 0x1f, 0x2c};
+static const uint8_t F_BTST2[] = {0x6f, 0x1f, 0x1f, 0x22};
+static const uint8_t F_BTST3[] = {0x6f, 0x1f, 0x1f, 0x22};
+static const uint8_t F_IPC[]   = {0x00, 0x04};
+static const uint8_t F_PLL[]   = {0x3c};
+static const uint8_t F_TSE[]   = {0x00};
+static const uint8_t F_VDCS[]  = {0x1e};
+static const uint8_t F_TVDCS[] = {0x00};
+static const uint8_t F_AGID[]  = {0x00};
+static const uint8_t F_CCSET[] = {0x00};
+static const uint8_t F_TSSET[] = {0x00};
+
+static bool run_init_sequence_acep(void)
+{
+#ifdef EPD_PIN_PWR
+    gpio_set_level(EPD_PIN_PWR, 1);
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+    reset_panel();
+    if (!wait_busy("reset")) return false;
+    vTaskDelay(pdMS_TO_TICKS(30));
+
+    if (!cmd_data(0xaa, CMD_H,    sizeof CMD_H))    return false;
+    if (!cmd_data(0x01, F_PWR,    sizeof F_PWR))    return false;
+    if (!cmd_data(0x00, F_PSR,    sizeof F_PSR))    return false;
+    if (!cmd_data(0x03, F_PFS,    sizeof F_PFS))    return false;
+    if (!cmd_data(0x05, F_BTST1,  sizeof F_BTST1))  return false;
+    if (!cmd_data(0x06, F_BTST2,  sizeof F_BTST2))  return false;
+    if (!cmd_data(0x08, F_BTST3,  sizeof F_BTST3))  return false;
+    if (!cmd_data(0x13, F_IPC,    sizeof F_IPC))    return false;
+    if (!cmd_data(0x30, F_PLL,    sizeof F_PLL))    return false;
+    if (!cmd_data(0x41, F_TSE,    sizeof F_TSE))    return false;
+    if (!cmd_data(0x50, CDI,      sizeof CDI))      return false;
+    if (!cmd_data(0x60, TCON,     sizeof TCON))     return false;
+    if (!cmd_data(0x61, TRES,     sizeof TRES))     return false;
+    if (!cmd_data(0x82, F_VDCS,   sizeof F_VDCS))   return false;
+    if (!cmd_data(0x84, F_TVDCS,  sizeof F_TVDCS))  return false;
+    if (!cmd_data(0x86, F_AGID,   sizeof F_AGID))   return false;
+    if (!cmd_data(0xe3, PWS,      sizeof PWS))      return false;
+    if (!cmd_data(0xe0, F_CCSET,  sizeof F_CCSET))  return false;
+    if (!cmd_data(0xe6, F_TSSET,  sizeof F_TSSET))  return false;
+    return wait_busy("init");
+}
+#endif /* EPD_INIT_ACEP_7IN3F */
+
 static void s6s_init(void)
 {
-#ifdef EPD_S6_INIT_GDEP073E01_V2
+#if defined(EPD_INIT_ACEP_7IN3F)
+    const bool ok = run_init_sequence_acep();
+#elif defined(EPD_S6_INIT_GDEP073E01_V2)
     const bool ok = run_init_sequence_v2();
 #else
     const bool ok = run_init_sequence();
@@ -371,21 +436,26 @@ static void s6s_clear(uint8_t color)
     trigger_refresh();
 }
 
-/* Diagnostic: six palette bands top-to-bottom (see the base driver). */
+/* Diagnostic: one band per palette colour, top-to-bottom (see the base
+ * driver). Six on Spectra glass, seven on ACeP, which adds orange. */
 static void s6s_show_color_bars(void)
 {
-    static const uint8_t palette[6] = {
+    static const uint8_t palette[] = {
         EPD_COL_BLACK, EPD_COL_WHITE,  EPD_COL_YELLOW,
         EPD_COL_RED,   EPD_COL_BLUE,   EPD_COL_GREEN,
+#ifdef EPD_COL_ORANGE
+        EPD_COL_ORANGE,
+#endif
     };
+    enum { BANDS = sizeof palette };
     uint8_t row[EPD_WIDTH / 2];                    /* 400 bytes/row */
 
     if (!cmd(0x10)) return;
-    for (int b = 0; b < 6; b++) {
+    for (int b = 0; b < BANDS; b++) {
         uint8_t packed = (palette[b] << 4) | palette[b];
         memset(row, packed, sizeof row);
-        int band_h = EPD_HEIGHT / 6;
-        if (b == 5) band_h += EPD_HEIGHT % 6;
+        int band_h = EPD_HEIGHT / BANDS;
+        if (b == BANDS - 1) band_h += EPD_HEIGHT % BANDS;
         for (int y = 0; y < band_h; y++)
             if (!send_buffer(row, sizeof row)) return;
     }
@@ -422,12 +492,16 @@ static void s6s_sleep(void)
 
 const epd_driver_t spectra6_spi_single_driver = {
     .info = {
+#ifdef EPD_INIT_ACEP_7IN3F
+        .name      = "ACeP 7-colour single (800x480)",
+#else
         .name      = "Spectra-6 single (800x480)",
+#endif
         .width     = EPD_WIDTH,
         .height    = EPD_HEIGHT,
         .bpp       = 4,
         .buf_bytes = EPD_BUF_BYTES,
-        .grayscale = false,    /* nibbles are indices into 6 fixed colours */
+        .grayscale = false,    /* nibbles are indices into 6 (or 7) fixed colours */
     },
     .port_init          = s6s_port_init,
     .init               = s6s_init,

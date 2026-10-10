@@ -62,6 +62,10 @@
 #  include "paperlesspaper_openpaper_7.h"
 #elif defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L)
 #  include "paperlesspaper_openpaper_l.h"
+#elif defined(TESSERAE_BOARD_WAVESHARE_EPAPER_73F)
+#  include "waveshare_epaper_73f.h"
+#elif defined(TESSERAE_BOARD_EPDIY_V7)
+#  include "epdiy_v7.h"
 #else
 #  error "No TESSERAE_BOARD_* selected. Set one in platformio.ini build_flags."
 #endif

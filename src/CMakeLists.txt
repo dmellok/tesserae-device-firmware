@@ -7,6 +7,13 @@
 # rather than unconditional: boards that do not render icons neither generate
 # the stub nor should pay the ~484 KB for it. The E1003 env turns it on via
 # `board_build.cmake_extra_args = ... -D TESSERAE_ICON_FONT=1`.
+# The epdiy library, for the epdiy board targets only (-D TESSERAE_EPDIY=1; the
+# root CMakeLists.txt adds components_opt/epdiy_dep to the build for them).
+set(TESSERAE_OPT_REQUIRES "")
+if(TESSERAE_EPDIY)
+    list(APPEND TESSERAE_OPT_REQUIRES epdiy_dep)
+endif()
+
 set(TESSERAE_EMBED_FILES "")
 if(TESSERAE_ICON_FONT)
     list(APPEND TESSERAE_EMBED_FILES "fonts/Phosphor-Bold.ttf")
@@ -26,6 +33,7 @@ idf_component_register(
         "panel/drivers/it8951_gray.c"
         "panel/drivers/ssd1677_gray.c"
         "panel/drivers/parallel_epd_gray.c"
+        "panel/drivers/epdiy_gray.c"
         "panel/busy_sleep.c"
         "rtc_pcf8563.c"
         "sy6974.c"
@@ -117,4 +125,5 @@ idf_component_register(
         mbedtls
         lwip
         mdns
+        ${TESSERAE_OPT_REQUIRES}
 )
