@@ -16,11 +16,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   DevKitC-1 default and each can be overridden from `build_flags`. Unverified
   on hardware; flash `waveshare-epaper-73f-selftest` first.
 - The epdiy v7 board with an ED133UT2 13.3" panel, 1600x1200 at 16 greys (env
-  `epdiy-v7-ed133ut2`, kind `epdiy_v7_ed133ut2`, #39). A new driver family
-  links the epdiy library, pinned to 2.1.3 and pulled only for epdiy targets,
-  for the v7 board's TPS65185 and PCA9555; the panel's VCOM and the waveform
-  are build settings. Partial refresh is in the `-partialtest` env until it
-  has been seen on glass. Unverified on hardware; flash
+  `epdiy-v7-ed133ut2`, kind `epdiy_v7_ed133ut2`, #39). It runs on the same
+  parallel driver as the PaperS3, a FastEPD port, with the v7's TPS65185 and
+  PCA9535 power path and gate timing from FastEPD and the grey matrix and VCOM
+  (-2.28 V) tuned for this panel in bitbank2/FastEPD#44. Logs go to the UART
+  with USB as the second console. Unverified on hardware; flash
   `epdiy-v7-ed133ut2-selftest` first.
 
 ## [1.45.0] - 2026-10-09

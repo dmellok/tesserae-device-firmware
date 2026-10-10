@@ -64,6 +64,10 @@ extern char font8x8_basic[128][8];
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#ifdef EPD_PAR_POWER_TPS65185
+#include "i2c_bus.h"
+#endif
+
 static const char *TAG = "epd_par";
 
 /* ------------------------------------------------------------------ */
@@ -172,7 +176,14 @@ static bool IRAM_ATTR on_tx_done(esp_lcd_panel_io_handle_t io,
 /* ------------------------------------------------------------------ */
 
 /* Seed the gate driver so the next latched row is row 0. The pulse widths are
- * FastEPD's PaperS3RowControl verbatim; they are panel timing, not style. */
+ * FastEPD's PaperS3RowControl verbatim; they are panel timing, not style. The
+ * epdiy v7 board (EPD_PAR_ROW_START_V7) takes FastEPD's EPDiyV7RowControl
+ * instead: the same shape with 10 us on the last two CKV highs. */
+#ifdef EPD_PAR_ROW_START_V7
+#define ROW_START_TAIL_US 10
+#else
+#define ROW_START_TAIL_US 18
+#endif
 static void row_start(void)
 {
     gpio_set_level(EPD_PIN_CKV, 1);
@@ -186,10 +197,10 @@ static void row_start(void)
     esp_rom_delay_us(10);
     gpio_set_level(EPD_PIN_CKV, 0);
     gpio_set_level(EPD_PIN_CKV, 1);
-    esp_rom_delay_us(18);
+    esp_rom_delay_us(ROW_START_TAIL_US);
     gpio_set_level(EPD_PIN_CKV, 0);
     gpio_set_level(EPD_PIN_CKV, 1);
-    esp_rom_delay_us(18);
+    esp_rom_delay_us(ROW_START_TAIL_US);
     gpio_set_level(EPD_PIN_CKV, 0);
     gpio_set_level(EPD_PIN_CKV, 1);
 }
@@ -252,6 +263,116 @@ static void pass_end(void)
 /* Power                                                              */
 /* ------------------------------------------------------------------ */
 
+#ifdef EPD_PAR_POWER_TPS65185
+/* Boards whose panel rails come from a TPS65185 PMIC, with its enables behind a
+ * PCA9535 I/O expander (the epdiy v7). Ported from FastEPD's EPDiyV7IOInit /
+ * EPDiyV7EinkPower. Expander pins 8..15 are its second port: */
+#define PCA_ADDR        0x20
+#define TPS_ADDR        0x68
+#define PCA_OE          (1u << 0)   /* pin 8  */
+#define PCA_GMOD        (1u << 1)   /* pin 9  */
+#define PCA_PWRUP       (1u << 3)   /* pin 11 */
+#define PCA_VCOM_CTRL   (1u << 4)   /* pin 12 */
+#define PCA_WAKEUP      (1u << 5)   /* pin 13 */
+#define PCA_PWRGOOD     (1u << 6)   /* pin 14, input */
+#define PCA_REG_IN1     0x01
+#define PCA_REG_OUT1    0x03
+#define PCA_REG_CFG1    0x07
+#define TPS_REG_ENABLE  0x01
+#define TPS_REG_VCOM1   0x03        /* VCOM1 (low 8 bits), VCOM2 follows */
+#define TPS_REG_PG      0x0F
+#ifndef EPD_PAR_I2C_HZ
+#define EPD_PAR_I2C_HZ  400000
+#endif
+
+static i2c_master_dev_handle_t s_pca, s_tps;
+static uint8_t s_pca_out1;          /* shadow of the expander's port-1 outputs */
+
+static bool i2c_wr(i2c_master_dev_handle_t d, const uint8_t *b, size_t n)
+{
+    return d && i2c_master_transmit(d, b, n, 50) == ESP_OK;
+}
+
+static bool i2c_rd(i2c_master_dev_handle_t d, uint8_t reg, uint8_t *v)
+{
+    return d && i2c_master_transmit_receive(d, &reg, 1, v, 1, 50) == ESP_OK;
+}
+
+static bool pca_set(uint8_t bits, bool on)
+{
+    s_pca_out1 = on ? (uint8_t)(s_pca_out1 | bits) : (uint8_t)(s_pca_out1 & ~bits);
+    const uint8_t b[2] = { PCA_REG_OUT1, s_pca_out1 };
+    return i2c_wr(s_pca, b, sizeof b);
+}
+
+/* Attach the expander and the PMIC, outputs low (PMIC asleep) before the pins
+ * become outputs, so nothing is enabled by the expander's power-on default. */
+static esp_err_t tps_io_init(void)
+{
+    i2c_master_bus_handle_t bus;
+    esp_err_t err = i2c_bus_get(EPD_PAR_I2C_PORT, EPD_PAR_I2C_SDA, EPD_PAR_I2C_SCL, &bus);
+    if (err != ESP_OK) return err;
+    i2c_device_config_t dc = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = PCA_ADDR,
+        .scl_speed_hz = EPD_PAR_I2C_HZ,
+    };
+    if ((err = i2c_master_bus_add_device(bus, &dc, &s_pca)) != ESP_OK) return err;
+    dc.device_address = TPS_ADDR;
+    if ((err = i2c_master_bus_add_device(bus, &dc, &s_tps)) != ESP_OK) return err;
+    s_pca_out1 = 0;
+    const uint8_t out[2] = { PCA_REG_OUT1, 0x00 };
+    const uint8_t cfg[2] = { PCA_REG_CFG1, 0xC0 };   /* 8..13 out, 14..15 in */
+    if (!i2c_wr(s_pca, out, sizeof out) || !i2c_wr(s_pca, cfg, sizeof cfg)) {
+        ESP_LOGE(TAG, "PCA9535 at 0x%02x did not answer", PCA_ADDR);
+        return ESP_ERR_NOT_FOUND;
+    }
+    return ESP_OK;
+}
+
+static void power(bool on)
+{
+    if (on == s_powered) return;
+    if (on) {
+        gpio_set_level(EPD_PIN_SPV, 1);
+        pca_set(PCA_OE, true);
+        pca_set(PCA_GMOD, true);
+        pca_set(PCA_WAKEUP, true);
+        pca_set(PCA_PWRUP, true);
+        pca_set(PCA_VCOM_CTRL, true);
+        vTaskDelay(pdMS_TO_TICKS(3));
+        uint8_t in = 0;
+        int waited = 0;
+        while (!(i2c_rd(s_pca, PCA_REG_IN1, &in) && (in & PCA_PWRGOOD)) && waited < 500) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+            waited++;
+        }
+        if (!(in & PCA_PWRGOOD)) ESP_LOGE(TAG, "TPS65185 PWRGOOD never rose");
+
+        const uint8_t en[2] = { TPS_REG_ENABLE, 0x3F };   /* all rails on */
+        const int vcom = EPD_VCOM_MV / 10;                  /* 10 mV steps */
+        const uint8_t vc[3] = { TPS_REG_VCOM1, (uint8_t)vcom, (uint8_t)(vcom >> 8) };
+        if (!i2c_wr(s_tps, en, sizeof en) || !i2c_wr(s_tps, vc, sizeof vc))
+            ESP_LOGE(TAG, "TPS65185 at 0x%02x did not answer", TPS_ADDR);
+
+        uint8_t pg = 0;
+        for (waited = 0; waited < 400 && (pg & 0xFA) != 0xFA; waited++) {
+            i2c_rd(s_tps, TPS_REG_PG, &pg);
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        if ((pg & 0xFA) != 0xFA) ESP_LOGE(TAG, "TPS65185 rails not good (PG 0x%02x)", pg);
+    } else {
+        pca_set(PCA_PWRUP, false);
+        pca_set(PCA_VCOM_CTRL, false);
+        pca_set(PCA_OE, false);
+        pca_set(PCA_GMOD, false);
+        gpio_set_level(EPD_PIN_SPV, 0);
+        vTaskDelay(pdMS_TO_TICKS(1));
+        pca_set(PCA_WAKEUP, false);        /* starts the PMIC's power-down sequence */
+    }
+    s_powered = on;
+}
+#else
 static void power(bool on)
 {
     if (on == s_powered) return;
@@ -270,6 +391,7 @@ static void power(bool on)
     }
     s_powered = on;
 }
+#endif /* EPD_PAR_POWER_TPS65185 */
 
 /* ------------------------------------------------------------------ */
 /* Passes                                                             */
@@ -454,7 +576,10 @@ static esp_err_t par_port_init(void)
     /* Everything except the data bus, CL and SPH -- those belong to the LCD
      * peripheral from esp_lcd_new_panel_io_i80() on. */
     const gpio_config_t io = {
-        .pin_bit_mask = (1ULL << EPD_PIN_PWR) | (1ULL << EPD_PIN_BST_EN) |
+        .pin_bit_mask =
+#ifndef EPD_PAR_POWER_TPS65185
+                        (1ULL << EPD_PIN_PWR) | (1ULL << EPD_PIN_BST_EN) |
+#endif
                         (1ULL << EPD_PIN_SPV) | (1ULL << EPD_PIN_CKV) |
                         (1ULL << EPD_PIN_LE),
         .mode = GPIO_MODE_OUTPUT,
@@ -463,8 +588,16 @@ static esp_err_t par_port_init(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     ESP_ERROR_CHECK(gpio_config(&io));
+#ifdef EPD_PAR_POWER_TPS65185
+    esp_err_t perr = tps_io_init();
+    if (perr != ESP_OK) {
+        ESP_LOGE(TAG, "panel power I/O: %s", esp_err_to_name(perr));
+        return perr;
+    }
+#else
     gpio_set_level(EPD_PIN_PWR, 0);
     gpio_set_level(EPD_PIN_BST_EN, 0);
+#endif
     gpio_set_level(EPD_PIN_SPV, 0);
     gpio_set_level(EPD_PIN_CKV, 0);
     gpio_set_level(EPD_PIN_LE, 0);

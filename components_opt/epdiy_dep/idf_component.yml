@@ -1,7 +1,0 @@
-## Pulls the epdiy library (LGPL-3.0) for the epdiy board targets only. This
-## directory joins the build when an env sets -D TESSERAE_EPDIY=1 in
-## board_build.cmake_extra_args (see the root CMakeLists.txt), so no other
-## target fetches or links it. Pinned exactly: a new epdiy release can retune
-## waveforms, so moving it is a deliberate edit followed by a bench check.
-dependencies:
-  vroland/epdiy: "==2.1.3"
