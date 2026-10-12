@@ -388,8 +388,33 @@ static esp_err_t t133_port_init(void)
  * delays 10 ms between commands. */
 static void t133_init(void)
 {
+#ifdef EPD_T133_INKPLATE13_INIT
+    /* A panel left in DEEP_SLEEP by the previous boot needs a real power cycle,
+     * not the microsecond EN pulse a bare toggle gives. Soldered setPanelPinsToLow(): "helps empty capacitors, without this
+     * sometimes the panel refuses to refresh". With EN low, a signal pin held
+     * high (CS, DC, BS1, BUSY pull-up) can back-feed the controllers through
+     * their input diodes and keep them alive in DEEP_SLEEP, so drive every
+     * panel pin low for the discharge, then restore the idle levels. */
+    gpio_set_level(EPD_PIN_PWR, 0);
+    gpio_set_level(EPD_PIN_RST, 0);
+    gpio_set_level(EPD_PIN_DC, 0);
+    gpio_set_level(EPD_PIN_CS_M, 0);
+    gpio_set_level(EPD_PIN_CS_S, 0);
+    gpio_set_level(EPD_PIN_BS0, 0);
+    gpio_set_level(EPD_PIN_BS1, 0);
+    gpio_set_direction(EPD_PIN_BUSY, GPIO_MODE_OUTPUT);
+    gpio_set_level(EPD_PIN_BUSY, 0);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    gpio_set_direction(EPD_PIN_BUSY, GPIO_MODE_INPUT);
+    gpio_set_level(EPD_PIN_DC, 1);
+    gpio_set_level(EPD_PIN_CS_M, 1);
+    gpio_set_level(EPD_PIN_CS_S, 1);
+    gpio_set_level(EPD_PIN_BS1, 1);   /* BS0 low, BS1 high = 4-wire SPI */
+    vTaskDelay(pdMS_TO_TICKS(50));
+#endif
     gpio_set_level(EPD_PIN_PWR, 1);   /* EN: enable panel power */
     vTaskDelay(pdMS_TO_TICKS(EPD_T133_RST_MS > 20 ? EPD_T133_RST_MS : 10));
+    ESP_LOGI(TAG, "power on: BUSY=%d", gpio_get_level(EPD_PIN_BUSY));
 
     hw_reset();
 
