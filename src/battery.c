@@ -205,6 +205,9 @@ int battery_read_mv(void)
 #include "esp_adc/adc_oneshot.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#ifdef BOARD_VBAT_SWITCH_EXP_PIN
+#include "io_expander.h"
+#endif
 
 #ifndef BOARD_BATTERY_ADC_UNIT
 #  define BOARD_BATTERY_ADC_UNIT   ADC_UNIT_1
@@ -245,6 +248,48 @@ static int64_t s_cache_at_us = -1;
 
 static int battery_sample_mv(void);
 
+#ifdef BOARD_VBAT_SWITCH_EXP_PIN
+/* Divider enable on an I/O-expander port-1 pin (Inkplate 13SPECTRA, PCAL6416A
+ * P1-1) rather than a GPIO. The board has two revisions: older = PMOS only
+ * (drive LOW to enable), newer = PMOS + NMOS (drive HIGH). Soldered's readBattery()
+ * tells them apart by reading the pin as an input first -- a pull-up on the
+ * older board makes it read HIGH. Read-modify-write on cfg/out, since other
+ * port-1 pins (SD power) live in the same registers.
+ * Returns false if the expander does not answer; *active_low is the polarity. */
+static io_exp_t s_vbat_exp;
+static bool     s_vbat_exp_open;
+
+static bool vbat_exp_bit(uint8_t reg, bool set)
+{
+    uint8_t v;
+    if (!io_exp_read(&s_vbat_exp, reg, &v)) return false;
+    v = set ? (uint8_t)(v | (1u << BOARD_VBAT_SWITCH_EXP_PIN))
+            : (uint8_t)(v & ~(1u << BOARD_VBAT_SWITCH_EXP_PIN));
+    return io_exp_write(&s_vbat_exp, reg, v);
+}
+
+static bool vbat_exp_on(bool *active_low)
+{
+    if (!s_vbat_exp_open) {
+        if (io_exp_open(&s_vbat_exp, BOARD_VBAT_SWITCH_EXP_I2C_PORT, BOARD_VBAT_SWITCH_EXP_I2C_SDA,
+                        BOARD_VBAT_SWITCH_EXP_I2C_SCL, BOARD_VBAT_SWITCH_EXP_ADDR, 400000) != ESP_OK)
+            return false;
+        s_vbat_exp_open = true;
+    }
+    uint8_t in;
+    if (!vbat_exp_bit(IO_EXP_REG_CFG1, true) ||            /* pin -> input */
+        !io_exp_read(&s_vbat_exp, IO_EXP_REG_IN1, &in)) return false;
+    *active_low = (in >> BOARD_VBAT_SWITCH_EXP_PIN) & 1;
+    return vbat_exp_bit(IO_EXP_REG_OUT1, !*active_low) &&  /* enable level */
+           vbat_exp_bit(IO_EXP_REG_CFG1, false);           /* pin -> output */
+}
+
+static void vbat_exp_off(bool active_low)
+{
+    vbat_exp_bit(IO_EXP_REG_OUT1, active_low);
+}
+#endif
+
 int battery_read_mv(void)
 {
     int64_t now = esp_timer_get_time();
@@ -264,6 +309,12 @@ static int battery_sample_mv(void)
     gpio_set_direction(BOARD_VBAT_SWITCH_PIN, GPIO_MODE_OUTPUT);
     gpio_set_level(BOARD_VBAT_SWITCH_PIN, VBAT_SWITCH_ON);
     vTaskDelay(pdMS_TO_TICKS(10));   /* let the load switch + divider settle */
+#endif
+#ifdef BOARD_VBAT_SWITCH_EXP_PIN
+    bool exp_low = false;
+    /* Expander not answering = no reading, not a flat cell (0 mV is "unknown"). */
+    if (!vbat_exp_on(&exp_low)) return 0;
+    vTaskDelay(pdMS_TO_TICKS(10));
 #endif
 
     adc_oneshot_unit_handle_t adc = NULL;
@@ -319,6 +370,9 @@ static int battery_sample_mv(void)
 done:
 #ifdef BOARD_VBAT_SWITCH_PIN
     gpio_set_level(BOARD_VBAT_SWITCH_PIN, VBAT_SWITCH_OFF);
+#endif
+#ifdef BOARD_VBAT_SWITCH_EXP_PIN
+    vbat_exp_off(exp_low);
 #endif
     return BATTERY_SCALE(pin_mv);
 }

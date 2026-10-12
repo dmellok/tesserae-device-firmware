@@ -67,6 +67,7 @@ extern char font8x8_basic[128][8];
 
 #ifdef EPD_PAR_POWER_TPS65185
 #include "i2c_bus.h"
+#include "io_expander.h"
 #endif
 
 static const char *TAG = "epd_par";
@@ -309,9 +310,6 @@ static void pass_end(void)
 #define PCA_VCOM_CTRL   (1u << 4)   /* pin 12 */
 #define PCA_WAKEUP      (1u << 5)   /* pin 13 */
 #define PCA_PWRGOOD     (1u << 6)   /* pin 14, input */
-#define PCA_REG_IN1     0x01
-#define PCA_REG_OUT1    0x03
-#define PCA_REG_CFG1    0x07
 #define TPS_REG_ENABLE  0x01
 #define TPS_REG_VCOM1   0x03        /* VCOM1 (low 8 bits), VCOM2 follows */
 #define TPS_REG_PG      0x0F
@@ -319,7 +317,8 @@ static void pass_end(void)
 #define EPD_PAR_I2C_HZ  400000
 #endif
 
-static i2c_master_dev_handle_t s_pca, s_tps;
+static io_exp_t s_pca;
+static i2c_master_dev_handle_t s_tps;
 static uint8_t s_pca_out1;          /* shadow of the expander's port-1 outputs */
 
 static bool i2c_wr(i2c_master_dev_handle_t d, const uint8_t *b, size_t n)
@@ -335,8 +334,7 @@ static bool i2c_rd(i2c_master_dev_handle_t d, uint8_t reg, uint8_t *v)
 static bool pca_set(uint8_t bits, bool on)
 {
     s_pca_out1 = on ? (uint8_t)(s_pca_out1 | bits) : (uint8_t)(s_pca_out1 & ~bits);
-    const uint8_t b[2] = { PCA_REG_OUT1, s_pca_out1 };
-    return i2c_wr(s_pca, b, sizeof b);
+    return io_exp_write(&s_pca, IO_EXP_REG_OUT1, s_pca_out1);
 }
 
 /* Attach the expander and the PMIC, outputs low (PMIC asleep) before the pins
@@ -346,18 +344,17 @@ static esp_err_t tps_io_init(void)
     i2c_master_bus_handle_t bus;
     esp_err_t err = i2c_bus_get(EPD_PAR_I2C_PORT, EPD_PAR_I2C_SDA, EPD_PAR_I2C_SCL, &bus);
     if (err != ESP_OK) return err;
+    if ((err = io_exp_open(&s_pca, EPD_PAR_I2C_PORT, EPD_PAR_I2C_SDA, EPD_PAR_I2C_SCL,
+                           PCA_ADDR, EPD_PAR_I2C_HZ)) != ESP_OK) return err;
     i2c_device_config_t dc = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = PCA_ADDR,
+        .device_address = TPS_ADDR,
         .scl_speed_hz = EPD_PAR_I2C_HZ,
     };
-    if ((err = i2c_master_bus_add_device(bus, &dc, &s_pca)) != ESP_OK) return err;
-    dc.device_address = TPS_ADDR;
     if ((err = i2c_master_bus_add_device(bus, &dc, &s_tps)) != ESP_OK) return err;
     s_pca_out1 = 0;
-    const uint8_t out[2] = { PCA_REG_OUT1, 0x00 };
-    const uint8_t cfg[2] = { PCA_REG_CFG1, 0xC0 };   /* 8..13 out, 14..15 in */
-    if (!i2c_wr(s_pca, out, sizeof out) || !i2c_wr(s_pca, cfg, sizeof cfg)) {
+    /* cfg 0xC0: 8..13 out, 14..15 in */
+    if (!io_exp_write(&s_pca, IO_EXP_REG_OUT1, 0x00) || !io_exp_write(&s_pca, IO_EXP_REG_CFG1, 0xC0)) {
         ESP_LOGE(TAG, "PCA9535 at 0x%02x did not answer", PCA_ADDR);
         return ESP_ERR_NOT_FOUND;
     }
@@ -377,7 +374,7 @@ static void power(bool on)
         vTaskDelay(pdMS_TO_TICKS(3));
         uint8_t in = 0;
         int waited = 0;
-        while (!(i2c_rd(s_pca, PCA_REG_IN1, &in) && (in & PCA_PWRGOOD)) && waited < 500) {
+        while (!(io_exp_read(&s_pca, IO_EXP_REG_IN1, &in) && (in & PCA_PWRGOOD)) && waited < 500) {
             vTaskDelay(pdMS_TO_TICKS(1));
             waited++;
         }

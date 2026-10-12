@@ -39,6 +39,7 @@ idf_component_register(
         "shtc3.c"
         "sht3x.c"
         "i2c_bus.c"
+        "io_expander.c"
         "touch_coords.c"
         "touch_gt911.c"
         "touch_ft6336.c"

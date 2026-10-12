@@ -27,6 +27,7 @@ one board (and thus one driver) per PlatformIO environment.
 | [Seeed reTerminal **E1004**](https://www.seeedstudio.com/reTerminal-E1004-p-6692.html) | Spectra-6, dual-chip | T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `seeed-reterminal-e1004` |
 | [Seeed **XIAO ePaper Kit — EE02**](https://www.seeedstudio.com/XIAO-ePaper-DIY-Kit-EE02-for-13-3-Spectratm-6-E-Ink.html) | Spectra-6, dual-chip | T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `seeed-ee02` |
 | [Good Display **ESP32-133C02**](https://www.good-display.com/product/546.html) | Spectra-6, dual-chip | GDEP133C02 / T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `gooddisplay-esp32-133c02` |
+| [Soldered **Inkplate 13SPECTRA**](https://soldered.com/product/inkplate-13spectra/) | Spectra-6, dual-chip | EL133UF1 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `soldered-inkplate-13spectra` |
 | [Seeed **XIAO ePaper Display Board — EE03**](https://www.seeedstudio.com/XIAO-ePaper-Display-Board-ESP32-S3-EE03-p-6638.html) + 10.3" mono | Grayscale (10.3") | IT8951 | 1872×1404, 4bpp gray | `it8951_gray` | `seeed-ee03` |
 | [**TRMNL 7.5" OG DIY Kit**](https://www.seeedstudio.com/TRMNL-7-5-Inch-OG-DIY-Kit-p-6481.html) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `xiao-epaper-75` |
 | XIAO driver board + 7.5" **B/W/Red** panel (DKE DEPG0750RW / GDEW075Z08 class) | Tri-color BWR | UC8179 | 800×480, 2bpp | `mono_spi` (`EPD_BWR`) | `xiao-epaper-75-bwr` |
@@ -247,7 +248,7 @@ format the firmware expects for that kind:
 
 | Kind | Frame format | Size |
 | --- | --- | --- |
-| `waveshare_133e6`, `seeed_reterminal_e1004`, `seeed_ee02`, `gooddisplay_esp32_133c02` | 4bpp packed Spectra-6 | 960000 B |
+| `waveshare_133e6`, `seeed_reterminal_e1004`, `seeed_ee02`, `gooddisplay_esp32_133c02`, `soldered_inkplate_13spectra` | 4bpp packed Spectra-6 | 960000 B |
 | `seeed_reterminal_e1002`, `waveshare_photopainter_73`, `seeed_ee04_73e6` | 4bpp packed Spectra-6 | 192000 B |
 | `seeed_reterminal_e1001`, `xiao_epaper_75`, `seeed_ee04_75`, `xteink_x4` | 1bpp packed mono (bit 1 = white) | 48000 B |
 | `seeed_reterminal_e1001_gray` | 2bpp packed 4-gray (4 px/byte, MSB-first, 0b00=black..0b11=white) | 96000 B |

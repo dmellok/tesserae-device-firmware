@@ -67,6 +67,7 @@ Hardware code registry:
 | `9` | `waveshare_133e6` | Reserved; BLE not enabled |
 | `10` | `waveshare_photopainter_73` | Reserved; BLE not enabled |
 | `11` | `seeed_ee03` | Enabled |
+| `19` | `soldered_inkplate_13spectra` | Enabled |
 
 The advertisement does not expose SSID, server URL, room name, password, full
 MAC address, or device token.

@@ -42,6 +42,7 @@ static const char *TAG = "epd_t133a01";
 
 /* --- UC81xx command opcodes used by the T133A01 --- */
 #define PSR         0x00
+#define PLL         0x30
 #define PWR         0x01
 #define POF         0x02   /* power off */
 #define DEEP_SLEEP  0x07
@@ -64,9 +65,15 @@ static const char *TAG = "epd_t133a01";
 #define PWS         0xE3
 #define CMD66       0xF0
 
+/* Carriers whose vendor init differs from the E1004's: no DCDC command, the
+ * vendor's analog timing and CDI. */
+#if defined(EPD_T133_GDEP133C02_INIT) || defined(EPD_T133_INKPLATE13_INIT)
+#define T133_ALT_INIT 1
+#endif
+
 /* --- T133A01 init parameter blobs (bbepT133A01InitIO, do NOT edit) --- */
-#ifdef EPD_T133_GDEP133C02_INIT
-/* Good Display GDEP133C02 carrier: the vendor's analog timing, CDI and
+#ifdef T133_ALT_INIT
+/* Good Display GDEP133C02 / Soldered Inkplate 13SPECTRA carrier: the vendor's analog timing, CDI and
  * booster values, and no DCDC command. Only that board header sets this, so
  * the E1004 and EE02 keep the blobs below. */
 static const uint8_t AN_TM_V[]    = {0xC0, 0x1C, 0x1C, 0xCC, 0xCC, 0xCC, 0x15, 0x15, 0x55};
@@ -74,8 +81,13 @@ static const uint8_t AN_TM_V[]    = {0xC0, 0x1C, 0x1C, 0xCC, 0xCC, 0xCC, 0x15, 0
 static const uint8_t AN_TM_V[]    = {0x00, 0x0C, 0x0C, 0xD9, 0xDD, 0xDD, 0x15, 0x15, 0x55};
 #endif
 static const uint8_t CMD66_V[]    = {0x49, 0x55, 0x13, 0x5D, 0x05, 0x10};
+#ifdef EPD_T133_INKPLATE13_INIT
+static const uint8_t PSR_V[]      = {0xDF, 0x6B};
+static const uint8_t PLL_V[]      = {0x08};    /* both chips; E1004/GDEP omit it */
+#else
 static const uint8_t PSR_V[]      = {0xDF, 0x69};
-#ifdef EPD_T133_GDEP133C02_INIT
+#endif
+#ifdef T133_ALT_INIT
 static const uint8_t CDI_V[]      = {0xF7};
 #else
 static const uint8_t DCDC_V[]     = {0x44, 0x54, 0x00};
@@ -87,7 +99,11 @@ static const uint8_t PWS_V[]      = {0x22};
 static const uint8_t TRES_V[]     = {0x04, 0xB0, 0x03, 0x20};
 static const uint8_t PWR_V[]      = {0x0F, 0x00, 0x28, 0x2C, 0x28, 0x38};
 static const uint8_t EN_BUF_V[]   = {0x07};
-#ifdef EPD_T133_GDEP133C02_INIT
+#if defined(EPD_T133_INKPLATE13_INIT)
+static const uint8_t BTST_P_V[]   = {0xD8, 0x18};
+static const uint8_t VDDP_EN_V[]  = {0x01};
+static const uint8_t BTST_N_V[]   = {0xD8, 0x18};
+#elif defined(EPD_T133_GDEP133C02_INIT)
 static const uint8_t BTST_P_V[]   = {0xE8, 0x28};
 static const uint8_t VDDP_EN_V[]  = {0x01};
 static const uint8_t BTST_N_V[]   = {0xE8, 0x28};
@@ -99,7 +115,17 @@ static const uint8_t BTST_N_V[]   = {0xE0, 0x20};
 static const uint8_t VDDN_V[]     = {0x01};
 static const uint8_t VCOM_PWR_V[] = {0x02};
 static const uint8_t CCSET_V[]    = {0x01};   /* per-frame "current frame" */
+#ifdef EPD_T133_INKPLATE13_INIT
+static const uint8_t DRF_V[]      = {0x00};   /* Inkplate 13SPECTRA refreshes with DRF=0x00 */
+#else
 static const uint8_t DRF_V[]      = {0x01};   /* T133A01 refreshes with DRF=0x01 */
+#endif
+
+/* Reset pulse / power-settle time. The E1004 resets in 20 ms; Soldered's
+ * 13SPECTRA driver uses 100 ms. A board header may override. */
+#ifndef EPD_T133_RST_MS
+#define EPD_T133_RST_MS 20
+#endif
 static const uint8_t POF_V[]      = {0x00};
 
 static spi_device_handle_t s_spi;
@@ -262,11 +288,11 @@ static bool update_phase(const char *tag, uint8_t cmd, const uint8_t *data,
     return ok;
 }
 
-/* Reset pulse per bbepT133A01InitIO: RST low 20 ms, high 20 ms, wait idle. */
+/* Reset pulse per bbepT133A01InitIO: RST low, high (EPD_T133_RST_MS each), wait idle. */
 static void hw_reset(void)
 {
-    gpio_set_level(EPD_PIN_RST, 0); vTaskDelay(pdMS_TO_TICKS(20));
-    gpio_set_level(EPD_PIN_RST, 1); vTaskDelay(pdMS_TO_TICKS(20));
+    gpio_set_level(EPD_PIN_RST, 0); vTaskDelay(pdMS_TO_TICKS(EPD_T133_RST_MS));
+    gpio_set_level(EPD_PIN_RST, 1); vTaskDelay(pdMS_TO_TICKS(EPD_T133_RST_MS));
     wait_idle("reset", BUSY_RESET_TIMEOUT_MS);
 }
 
@@ -300,7 +326,11 @@ static esp_err_t t133_port_init(void)
         .pin_bit_mask =
             (1ULL << EPD_PIN_RST)  | (1ULL << EPD_PIN_DC)  |
             (1ULL << EPD_PIN_CS_M) | (1ULL << EPD_PIN_CS_S) |
-            (1ULL << EPD_PIN_PWR),
+            (1ULL << EPD_PIN_PWR)
+#if defined(EPD_PIN_BS0) && defined(EPD_PIN_BS1)
+            | (1ULL << EPD_PIN_BS0) | (1ULL << EPD_PIN_BS1)
+#endif
+            ,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
     };
@@ -320,6 +350,11 @@ static esp_err_t t133_port_init(void)
     gpio_set_level(EPD_PIN_CS_M, 1);
     gpio_set_level(EPD_PIN_CS_S, 1);
     gpio_set_level(EPD_PIN_PWR,  0);
+#if defined(EPD_PIN_BS0) && defined(EPD_PIN_BS1)
+    /* Interface-select straps (Inkplate 13SPECTRA): 4-wire SPI = BS0 low, BS1 high. */
+    gpio_set_level(EPD_PIN_BS0, 0);
+    gpio_set_level(EPD_PIN_BS1, 1);
+#endif
 
     spi_bus_config_t bus = {
         .miso_io_num = -1,
@@ -354,7 +389,7 @@ static esp_err_t t133_port_init(void)
 static void t133_init(void)
 {
     gpio_set_level(EPD_PIN_PWR, 1);   /* EN: enable panel power */
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(EPD_T133_RST_MS > 20 ? EPD_T133_RST_MS : 10));
 
     hw_reset();
 
@@ -366,8 +401,11 @@ static void t133_init(void)
     CMD(AN_TM,    AN_TM_V,    false);
     CMD(CMD66,    CMD66_V,    true);
     CMD(PSR,      PSR_V,      true);
-#ifndef EPD_T133_GDEP133C02_INIT
+#ifndef T133_ALT_INIT
     CMD(DCDC,     DCDC_V,     false);
+#endif
+#ifdef EPD_T133_INKPLATE13_INIT
+    CMD(PLL,      PLL_V,      true);
 #endif
     CMD(CDI,      CDI_V,      true);
     CMD(TCON,     TCON_V,     true);

@@ -34,6 +34,8 @@
 #  include "seeed_ee02.h"
 #elif defined(TESSERAE_BOARD_GOODDISPLAY_ESP32_133C02)
 #  include "gooddisplay_esp32_133c02.h"
+#elif defined(TESSERAE_BOARD_SOLDERED_INKPLATE_13SPECTRA)
+#  include "soldered_inkplate_13spectra.h"
 #elif defined(TESSERAE_BOARD_XIAO_EPAPER_75)
 #  include "seeed_xiao_epaper_75.h"
 #elif defined(TESSERAE_BOARD_XIAO_EPAPER_75_C3)

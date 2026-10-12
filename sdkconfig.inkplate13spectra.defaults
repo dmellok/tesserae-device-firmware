@@ -1,0 +1,5 @@
+# Soldered Inkplate 13SPECTRA: 32 MB flash (per Soldered's Crowd Supply listing).
+# Layered after sdkconfig.ota.defaults; the A/B table in partitions_ota.csv
+# already fits, the rest of flash stays reserved for future data partitions.
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
