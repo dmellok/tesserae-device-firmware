@@ -9,9 +9,10 @@
  * from Soldered's Inkplate-Arduino-library (Inkplate13SPECTRA/pins.h) and the
  * Soldered-Inkplate-ESPHome inkplate_spi component.
  *
- * NOT YET VERIFIED ON HARDWARE. Open point: Soldered holds DC high and never
- * toggles it under the BS0=0/BS1=1 strap, while this driver toggles it per
- * command like the E1004. Expected harmless; unproven.
+ * On hardware: boots, paints the setup QR and a full-colour frame. Soldered
+ * holds DC high under the BS0=0/BS1=1 strap; toggling it per command, as this
+ * driver does, works too. Battery, the wake button and deep sleep are not yet
+ * checked on the board.
  */
 #pragma once
 
@@ -34,6 +35,13 @@
 #define EPD_WIDTH      1200
 #define EPD_HEIGHT     1600
 #define EPD_BUF_BYTES  ((EPD_WIDTH * EPD_HEIGHT) / 2)
+
+/* The server's catalog entry for this kind is landscape 1600x1200, for the
+ * community inkplate-tesserae-driver firmware, which turns frames on the
+ * device. This firmware paints the portrait buffer as-is, so it registers with
+ * rotation 0 to declare 1200x1600 as its framebuffer; the server then packs
+ * frames at that stride and turns a landscape dashboard onto it. */
+#define BOARD_FRAMEBUFFER_ROTATION 0
 
 /* Soldered's init values and slower power/reset timing. */
 #define EPD_T133_INKPLATE13_INIT 1

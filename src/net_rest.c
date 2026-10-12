@@ -624,6 +624,12 @@ static char *identity_body(uint16_t panel_w, uint16_t panel_h,
     cJSON_AddStringToObject(o, "kind", TESSERAE_DEVICE_KIND);
     cJSON_AddNumberToObject(o, "panel_w", panel_w);
     cJSON_AddNumberToObject(o, "panel_h", panel_h);
+#ifdef BOARD_FRAMEBUFFER_ROTATION
+    /* Declares panel_w x panel_h as the framebuffer (server issue #200), so
+     * frames arrive at this stride even when the kind's catalog entry has the
+     * panel the other way round. */
+    cJSON_AddNumberToObject(o, "rotation", BOARD_FRAMEBUFFER_ROTATION);
+#endif
     cJSON_AddStringToObject(o, "fw_version", fw_version);
     cJSON_AddStringToObject(o, "mac", mac ? mac : "");
 #if TESSERAE_OTA_CAPABILITY_ENABLED

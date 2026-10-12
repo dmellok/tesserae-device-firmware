@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Soldered Inkplate 13SPECTRA (`soldered-inkplate-13spectra`): the 13.3"
+  Spectra 6 panel on the shared T133A01 dual-controller driver with Soldered's
+  init values, battery through the PCAL6416A expander (needs JP5 shorted) and
+  the GPIO18 wake button. It registers with `rotation: 0`, so the server packs
+  frames at the panel's portrait 1200x1600 stride even though the catalog entry
+  for the kind is landscape. Boot, the setup screen and colour are checked on
+  hardware; battery, wake button and deep sleep are not yet.
+
 - `epdiy-v7-ed133ut2-wholerect`, the v7 build with `EPD_PAR_PARTIAL_WHOLE_RECT`:
   a grey partial drives every pixel of its whole rect through the clear and
   the grey matrix, not only the pixels and rows that differ from the glass
