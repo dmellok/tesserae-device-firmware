@@ -37,7 +37,7 @@ void epd_light_sleep_set_ble(bool up)
 
 bool epd_light_sleep_allowed(void)
 {
-#ifdef EPD_NO_LIGHT_SLEEP
+#if defined(EPD_NO_LIGHT_SLEEP) || defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L)
     return false;
 #else
     if (s_wifi_up || s_ble_up || s_disabled) return false;
