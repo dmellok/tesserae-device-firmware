@@ -41,16 +41,22 @@
 /* ------------------------------------------------------------------ */
 #define EPD_PIN_SCLK   15
 #define EPD_PIN_MOSI   4
-#define EPD_PIN_CS_M   20   /* left  half (cols   0..599), "CS_EPD_PIN"  */
-#define EPD_PIN_CS_S   19   /* right half (cols 600..1199), "EPD_CS_S"   */
+#define EPD_PIN_CS_M   20   /* right half (cols 600..1199), "CS_EPD_PIN" */
+#define EPD_PIN_CS_S   19   /* left  half (cols   0..599), "EPD_CS_S"    */
 #define EPD_PIN_RST    1
 #define EPD_PIN_BUSY   18
 #define EPD_PIN_PWR    12   /* active-high panel rail ("DISP_POWER")       */
 #define EPD_NO_DC      1    /* no data/command line: CS-framed opcodes    */
+
+/* Vendor paper-l firmware: SerialFlash on the shared SPI bus. */
+#define OPENPAPER_L_FLASH_CS    21
+#define OPENPAPER_L_FLASH_MISO  5
 #define EPD_PWR_SETTLE_MS 100   /* vendor waits 100 ms after the rail     */
 
 #define EPD_SPI_HOST   SPI2_HOST
+#ifndef EPD_SPI_HZ
 #define EPD_SPI_HZ     (10 * 1000 * 1000)
+#endif
 
 /* Panel geometry. Native orientation is portrait. Same frame layout as the
  * Waveshare 13.3E6: 1600 rows of 600 packed bytes, first 300 to CS_M. */
