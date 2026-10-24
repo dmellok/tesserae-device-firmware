@@ -372,6 +372,19 @@ static void send_simple(auth_mode_t auth, const char *event, const char *message
     if (encoded) { send_event(auth, encoded); free(encoded); }
 }
 
+/* Use the same board-specific state of charge as the network heartbeat,
+ * including the Sticky fuel gauge. Missing sensing is unknown, never 0%. */
+static void add_battery_status(cJSON *root)
+{
+    bool present = battery_present();
+    int mv = present ? battery_read_mv() : 0;
+    int pct = present && mv > 0 ? battery_read_pct() : -1;
+    if (mv > 0) cJSON_AddNumberToObject(root, "battery_mv", mv);
+    else cJSON_AddNullToObject(root, "battery_mv");
+    if (pct >= 0 && pct <= 100) cJSON_AddNumberToObject(root, "battery_pct", pct);
+    else cJSON_AddNullToObject(root, "battery_pct");
+}
+
 static void send_diagnostics(auth_mode_t auth)
 {
     cJSON *root = cJSON_CreateObject();
@@ -388,7 +401,7 @@ static void send_diagnostics(auth_mode_t auth)
         cJSON_AddBoolToObject(root, "screen_mode_error", true);
     memset(photo_key, 0, sizeof photo_key);
 #endif
-    cJSON_AddNumberToObject(root, "battery_mv", battery_read_mv());
+    add_battery_status(root);
     cJSON_AddNumberToObject(root, "free_heap", esp_get_free_heap_size());
     cJSON_AddNumberToObject(root, "reset_reason", esp_reset_reason());
     cJSON_AddBoolToObject(root, "wifi_configured", wifi_creds_present());
@@ -666,7 +679,14 @@ static void process_photo_command(const command_t *command, const cJSON *root, c
         return;
     }
     if (strcmp(op, "photo_capabilities") == 0) {
-        send_event(command->auth, s_photo_capabilities);
+        cJSON *reply = cJSON_Parse(s_photo_capabilities);
+        if (!reply) { send_simple(command->auth, "error", "Could not read photo capabilities"); return; }
+        add_battery_status(reply);
+        char *encoded = cJSON_PrintUnformatted(reply);
+        cJSON_Delete(reply);
+        if (encoded && strlen(encoded) <= BLE_SETUP_MESSAGE_MAX) send_event(command->auth, encoded);
+        else send_simple(command->auth, "error", "Photo capabilities reply too large");
+        free(encoded);
         return;
     }
     uint32_t id;

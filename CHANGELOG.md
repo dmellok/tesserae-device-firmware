@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- Bluetooth diagnostics and authenticated Photo v2 capabilities include
+  `battery_mv` and `battery_pct`. Percentages use the same board-specific curve
+  or fuel gauge as network status. Unavailable readings are null; battery
+  telemetry is excluded from the photo capability digest.
+
 ## [1.55.0] - 2026-10-24
 
 ### Changed

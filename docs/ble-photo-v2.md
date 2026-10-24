@@ -122,6 +122,12 @@ mode reboot from replacing another action after its acceptance reply.
 ## Capabilities and pixel layout
 
 In the photo session, `{"op":"photo_capabilities"}` returns the full descriptor.
+
+The authenticated reply also includes optional `battery_mv` and `battery_pct`
+telemetry, sampled when handling the request. Percentages use the same
+board-specific curve or fuel gauge as network status. Unavailable readings are
+null. These fields are not part of the capability digest or pixel format.
+
 The following are the initial enabled targets, taken from the active driver's
 buffer geometry, not inferred from the phone's hardware catalog:
 
