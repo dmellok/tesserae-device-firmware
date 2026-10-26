@@ -28,6 +28,7 @@ one board (and thus one driver) per PlatformIO environment.
 | [Seeed **XIAO ePaper Kit — EE02**](https://www.seeedstudio.com/XIAO-ePaper-DIY-Kit-EE02-for-13-3-Spectratm-6-E-Ink.html) | Spectra-6, dual-chip | T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `seeed-ee02` |
 | [Good Display **ESP32-133C02**](https://www.good-display.com/product/546.html) | Spectra-6, dual-chip | GDEP133C02 / T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `gooddisplay-esp32-133c02` |
 | [Soldered **Inkplate 13SPECTRA**](https://soldered.com/product/inkplate-13spectra/) | Spectra-6, dual-chip | EL133UF1 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `soldered-inkplate-13spectra` |
+| Huessen 13.3" WiFi frame (**EPF1301**) | Spectra-6, dual-chip, no DC line | EL133UF1 | 1200×1600, 4bpp | `huessen_epf1301_dual` | `huessen-epf1301` |
 | [Elecrow **CrowPanel ESP32 5.79"**](https://www.elecrow.com/crowpanel-esp32-5-79-e-paper-hmi-display-with-272-792-resolution-black-white-color-driven-by-spi-interface.html) | Mono B/W, dual-chip | 2x SSD1683 | 792×272, 1bpp | `ssd1683_dual` | `elecrow-crowpanel-579` |
 | [Seeed **XIAO ePaper Display Board — EE03**](https://www.seeedstudio.com/XIAO-ePaper-Display-Board-ESP32-S3-EE03-p-6638.html) + 10.3" mono | Grayscale (10.3") | IT8951 | 1872×1404, 4bpp gray | `it8951_gray` | `seeed-ee03` |
 | [**TRMNL 7.5" OG DIY Kit**](https://www.seeedstudio.com/TRMNL-7-5-Inch-OG-DIY-Kit-p-6481.html) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `xiao-epaper-75` |
@@ -77,6 +78,17 @@ board for the 13.3" GDEP133C02 Spectra 6 panel. It uses the ESP32-S3-WROOM-1
 N16R8 module, the carrier's dedicated microSD SPI bus, and active-high onboard
 buttons on Ref2 boards. Ref1 boards do not populate those button pads, so the
 same firmware image works there too.
+
+The `huessen-epf1301` env targets the Huessen 13.3" WiFi picture frame
+(EPF1301), using the stock firmware's pin map and panel sequence. The
+`huessen-epf1301-selftest` env paints colour bars without networking, for a
+first check of a new frame. The first USB flash replaces the stock
+firmware, bootloader included, so take a full backup before it
+(`esptool.py --chip esp32s3 read_flash 0 0x1000000 huessen-stock.bin`). The
+panel runs off the battery rail, so the cell has to be fitted even on USB.
+Only the GPIO1 key wakes the frame (as Refresh). The server needs a catalog
+entry for the `huessen_epf1301` kind (the E1004's 960000-byte frame format)
+before the frame can register.
 
 Reuse is the norm — most boards share an existing driver and differ only in the
 board header:
@@ -258,7 +270,7 @@ format the firmware expects for that kind:
 
 | Kind | Frame format | Size |
 | --- | --- | --- |
-| `waveshare_133e6`, `seeed_reterminal_e1004`, `seeed_ee02`, `gooddisplay_esp32_133c02`, `soldered_inkplate_13spectra` | 4bpp packed Spectra-6 | 960000 B |
+| `waveshare_133e6`, `seeed_reterminal_e1004`, `seeed_ee02`, `gooddisplay_esp32_133c02`, `soldered_inkplate_13spectra`, `huessen_epf1301` | 4bpp packed Spectra-6 | 960000 B |
 | `seeed_reterminal_e1002`, `waveshare_photopainter_73`, `seeed_ee04_73e6` | 4bpp packed Spectra-6 | 192000 B |
 | `seeed_reterminal_e1001`, `xiao_epaper_75`, `seeed_ee04_75`, `xteink_x4` | 1bpp packed mono (bit 1 = white) | 48000 B |
 | `elecrow_crowpanel_579` | 1bpp packed mono (bit 1 = white) | 26928 B |

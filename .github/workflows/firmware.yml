@@ -117,6 +117,7 @@ jobs:
           - seeed-ee02
           - gooddisplay-esp32-133c02
           - soldered-inkplate-13spectra
+          - huessen-epf1301
           - xiao-epaper-75
           - xiao-epaper-75-bwr
           - xiao-epaper-75-c3

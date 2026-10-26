@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Huessen 13.3" WiFi frame (`huessen-epf1301`): the EL133UF1 Spectra 6
+  panel on a new `huessen_epf1301_dual` driver, following the stock firmware's
+  sequence: CS-framed opcodes with no DC line,
+  the display rail cycled from cold around every paint with two resets, and a
+  teardown that puts the controllers in reset before the rail drops. Battery
+  on ADC1 channel 4 (3.34:1), the GPIO1 key as Refresh, the charger enables
+  held on and the display rail held off through sleep. `BOARD_WAKE_DRIVE_LOW_MASK`
+  joins `BOARD_WAKE_DRIVE_HIGH_MASK` for active-low enables. It registers with
+  `rotation: 0` as kind `huessen_epf1301`, which the server must add to its
+  catalog. Checked on hardware: selftest colours on both controller halves,
+  the captive portal, registration and server frames. The env joins the CI
+  build matrix but not yet the release.
+
 ## [1.57.0] - 2026-10-26
 
 ### Added

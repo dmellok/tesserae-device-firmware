@@ -685,7 +685,9 @@ static void rtc_power_off_or_return(int interval_s)
 /* Rails that must be ON while awake and that sleep_park_rails() turns off:
  * release the hold left by the last sleep and drive them high, before any
  * peripheral behind them is touched. The M5Paper's 5 V boost (GPIO5) is one.
- * No-op without a mask. */
+ * BOARD_WAKE_DRIVE_LOW_MASK is the same for active-low enables, which a cold
+ * boot would otherwise leave at their reset state until the first sleep parks
+ * them (the Huessen frame's charger enables). No-op without a mask. */
 static void rails_wake(void)
 {
 #ifdef BOARD_WAKE_DRIVE_HIGH_MASK
@@ -696,6 +698,16 @@ static void rails_wake(void)
         gpio_set_level((gpio_num_t)pin, 1);
         gpio_hold_dis((gpio_num_t)pin);
         gpio_set_level((gpio_num_t)pin, 1);
+    }
+#endif
+#ifdef BOARD_WAKE_DRIVE_LOW_MASK
+    uint64_t low_mask = BOARD_WAKE_DRIVE_LOW_MASK;
+    for (int pin = 0; pin < 64; pin++) {
+        if (!(low_mask & (1ULL << pin))) continue;
+        gpio_set_direction((gpio_num_t)pin, GPIO_MODE_OUTPUT);
+        gpio_set_level((gpio_num_t)pin, 0);
+        gpio_hold_dis((gpio_num_t)pin);
+        gpio_set_level((gpio_num_t)pin, 0);
     }
 #endif
 }

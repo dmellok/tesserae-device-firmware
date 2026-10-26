@@ -20,6 +20,7 @@ idf_component_register(
         "panel/drivers/waveshare_1085g_dual.c"
         "panel/drivers/spectra6_spi_dual.c"
         "panel/drivers/spectra6_t133a01_dual.c"
+        "panel/drivers/huessen_epf1301_dual.c"
         "panel/drivers/spectra6_spi_single.c"
         "panel/drivers/mono_spi.c"
         "panel/drivers/jd79676_bwry.c"
