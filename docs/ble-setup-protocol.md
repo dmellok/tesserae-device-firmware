@@ -72,6 +72,7 @@ Hardware code registry:
 | `10` | `waveshare_photopainter_73` | Reserved; BLE not enabled |
 | `11` | `seeed_ee03` | Enabled |
 | `12` | `m5stack_papermono` | Enabled |
+| `13` | `m5stack_paperdiy` | Enabled |
 | `18` | `gooddisplay_esp32_133c02` | Enabled |
 | `19` | `soldered_inkplate_13spectra` | Enabled |
 | `20` | `picpak_4_2` | Assigned; community PicPak firmware |

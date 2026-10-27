@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- M5Stack PaperDIY (Complete / Assembly Kit) support: `m5stack-paperdiy` and
+  `m5stack-paperdiy-selftest` envs, kind `m5stack_paperdiy`, BLE hardware code
+  13. It is the PaperS3's ED047TC1 panel and bus with the panel rail on the
+  M5PM1 PMIC's PY_G2 output (`EPD_PWR_M5PM1_PIN`, new `m5pm1_gpio_output()`),
+  PMIC battery telemetry, status LED and two user keys (GPIO4 refresh/prev,
+  GPIO3 next) as on the PaperMono. Verified on hardware: the `-selftest` paints
+  16 even grey bands on the PM1 rail alone, and the production build registers
+  and paints a server-composed 960x540 frame on the glass over the network. Not
+  yet exercised on hardware: the two user keys, and battery sag during a paint.
+  No touch, partial refresh or microSD cache.
+  A catalog entry (`hardware/m5stack/paperdiy.json`, `auto_select: false`) is
+  still needed on the server.
+
+### Changed
+
+- All M5PM1 access is serialised on one mutex, so the LED blink timer cannot
+  interleave PMIC transactions with a panel paint. The panel rail write
+  retries, the PMIC watchdog is cleared once per boot on boards whose panel
+  rail is on the PMIC, and the parallel driver waits 10 ms after raising a
+  PMIC-switched rail before enabling the boost.
+
 ## [1.57.0] - 2026-10-26
 
 ### Added

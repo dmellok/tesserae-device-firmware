@@ -41,6 +41,7 @@ one board (and thus one driver) per PlatformIO environment.
 | [Waveshare **PhotoPainter 7.3"**](https://www.waveshare.com/esp32-s3-photopainter.htm) | Spectra-6, single | ED2208-GCA | 800×480, 4bpp | `spectra6_spi_single` | `waveshare-photopainter-73` |
 | [Waveshare **E-Paper ESP32 Driver Board**](https://www.waveshare.com/e-paper-esp32-driver-board.htm) + 7.5" mono (V2) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `waveshare-esp32-driver-75` |
 | [**M5Stack PaperS3**](https://docs.m5stack.com/en/core/PaperS3) | Grayscale (4.7") | none (raw parallel glass) | 960×540, 4bpp gray | `parallel_epd_gray` | `m5stack-papers3` |
+| [**M5Stack PaperDIY**](https://docs.m5stack.com/en/core/PaperDIY_Complete_Kit) (Complete / Assembly Kit) | Grayscale (4.7") | none (raw parallel glass; panel rail on the M5PM1 PMIC) | 960×540, 4bpp gray | `parallel_epd_gray` (`EPD_PWR_M5PM1_PIN`) | `m5stack-paperdiy` |
 | [**M5Stack M5Paper**](https://docs.m5stack.com/en/core/m5paper) (the original, pre-S3) | Grayscale (4.7") | IT8951 | 960×540, 4bpp gray | `it8951_gray` | `m5stack-m5paper` |
 | [**M5Stack PaperMono**](https://docs.m5stack.com/en/core/PaperMono) (Pro and Lite) | Grayscale (3.97") | SSD1677 | 480×800 portrait, 2bpp gray | `ssd1677_gray` | `m5stack-papermono` |
 | **Xteink X4** | Mono B/W (4.26") | SSD1677 | 800×480, 1bpp | `ssd1677_gray` (`EPD_MONO`) | `xteink-x4` |
@@ -58,7 +59,13 @@ map cross-checked between Seeed_GFX and the EE03 V1.0 schematic. Note its
 onboard IT8951 firmware ignores host VCOM writes (both sub-commands read back
 the stored 2500 mV), so the board keeps the stored value. The **Xteink X4** is verified on hardware; note that later X4
 production runs ship a UC8179 or UC8279 in place of the SSD1677 on the same
-board and glass, and `xteink-x4` is the SSD1677 build.
+board and glass, and `xteink-x4` is the SSD1677 build. The **M5Stack PaperDIY**
+is **hardware-verified** on the 2026-10-26 unit: the `-selftest` paints 16 evenly
+spaced grey bands on the PM1 rail alone, and the production build joins Wi-Fi,
+registers with kind `m5stack_paperdiy` and paints a server-composed 960x540 frame
+upright on the glass, then deep-sleeps on the server's interval. Still unproven on
+hardware: the two user keys, and battery sag *during* a paint (see
+`notes/paperdiy-bringup-2026-10-26.md`).
 
 Each board also has a `…-selftest` env that paints a driver-only
 test pattern (colour bars / gray ramp / mono stripes) with no networking — flash
@@ -115,13 +122,24 @@ pin map plus a matrix. Sequences ported from bitbank2's FastEPD. **Not yet
 confirmed on physical hardware**: flash `m5stack-papers3-selftest` and judge
 the 16 grey bands first. This applies to the **PaperS3** only — the original
 M5Paper above is a different machine behind the same glass, with an IT8951
-between the MCU and the panel, and it needed no new driver.
+between the MCU and the panel, and it needed no new driver. The **M5Stack
+PaperDIY** reuses the same driver and glass; the one difference is that its
+panel rail is the M5PM1 PMIC's PY_G2 output (`EPD_PWR_M5PM1_PIN`) rather than a
+GPIO. It is bench-confirmed as of 2026-10-26: the `-selftest` paints the 16
+grey bands evenly with the PMIC rail alone, so no `EPD_PIN_PWR` fallback is
+needed (see `notes/paperdiy-bringup-2026-10-26.md`). The PaperDIY has no BOOT
+button: to enter ROM download mode, long-press the power button until the red
+LED blinks — M5 quotes ~2 s; the 2026-10-26 unit entered download mode on a
+long-press, though the duration itself was not measured. That blink is the
+PM1's, since no application runs in download mode; the setup portal's LED is a
+different signal, a short flash once a second. Click once afterwards to leave
+the bootloader.
 
 The three XIAO ESP32-S3 boards (PhotoPainter, EE02, TRMNL 7.5") are **native-USB**
 (no CH340), so their console runs on USB-Serial-JTAG via
 `sdkconfig.usbjtag.defaults` — which also frees UART0 (GPIO43/44) on the boards
-that route those pins to the panel. The **PaperS3** takes the same base for the
-same reason: it is native-USB too, though it is not a XIAO board.
+that route those pins to the panel. The **PaperS3** and **PaperDIY** take the
+same base for the same reason: they are native-USB too, though not XIAO boards.
 
 **Touch (reTerminal E1003 and reTerminal Sticky).** The onboard **GT911**
 capacitive digitiser on these boards can be enabled per-device from the server
@@ -266,7 +284,7 @@ format the firmware expects for that kind:
 | `xiao_epaper_75_bwr` | 2bpp packed BWR (4 px/byte, MSB-first, 0=black 1=white 2=red, 3 reserved) | 96000 B |
 | `waveshare_1085g` | 2bpp packed B/W/Y/R (4 px/byte, MSB-first, 0=black 1=white 2=yellow 3=red) | 163200 B |
 | `seeed_reterminal_e1003`, `seeed_ee03` | 4bpp packed grayscale (0=black…0xF=white) | 1314144 B |
-| `m5stack_papers3`, `m5stack_m5paper` | 4bpp packed grayscale (0=black…0xF=white) | 259200 B |
+| `m5stack_papers3`, `m5stack_m5paper`, `m5stack_paperdiy` | 4bpp packed grayscale (0=black…0xF=white) | 259200 B |
 
 The PhotoPainter reuses the E1002's 800×480 4bpp format exactly (render normally
 — the **180° rotation is done on-device**, so do not pre-rotate on the server).
