@@ -14,7 +14,9 @@
  * board of that family is a pin map plus a matrix, not a new driver. The epdiy
  * v7 (ED133UT2, 1600x1200) is the second: its panel power is a TPS65185 behind
  * a PCA9535 expander (EPD_PAR_POWER_TPS65185, from FastEPD's EPDiyV7EinkPower)
- * and its gate timing FastEPD's EPDiyV7RowControl (EPD_PAR_ROW_START_V7).
+ * and its gate timing FastEPD's EPDiyV7RowControl (EPD_PAR_ROW_START_V7). The
+ * M5Stack PaperDIY is the third power path: same glass and bus as the PaperS3,
+ * but the panel rail is an M5PM1 output (EPD_PWR_M5PM1_PIN) instead of a GPIO.
  *
  * Sequences ported from bitbank2 FastEPD (BB_PANEL_M5PAPERS3: PaperS3EinkPower,
  * PaperS3IOInit, PaperS3RowControl, bbepClear, bbepFullUpdate's 4bpp path).

@@ -3,7 +3,8 @@
 #include "m5pm1.h"
 #include "app_config.h"   /* pulls board.h -> BOARD_M5PM1_* */
 
-#if defined(BOARD_BATTERY_M5PM1) || defined(BOARD_FRONTLIGHT_M5PM1) || defined(BOARD_LED_M5PM1)
+#if defined(BOARD_BATTERY_M5PM1) || defined(BOARD_FRONTLIGHT_M5PM1) || \
+    defined(BOARD_LED_M5PM1) || defined(EPD_PWR_M5PM1_PIN)
 
 #include <stdint.h>
 #include <string.h>
@@ -13,12 +14,15 @@
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "i2c_bus.h"
 
 #define REG_PWR_CFG   0x06   /* [4] LED_EN level, [3] BOOST, [2] LDO, [1] DCDC, [0] CHG */
 #define REG_I2C_CFG   0x09   /* [4] 400 kHz, [3:0] idle-sleep timeout s (0 = never) */
+#define REG_WDT_CNT   0x0A   /* watchdog, s; the PMIC resets the system at 0 after counting down. 0 = off */
 #define REG_GPIO_MODE 0x10   /* [4:0] 1 = output */
+#define REG_GPIO_OUT  0x11   /* [4:0] output latch, 1 = high */
 #define REG_GPIO_DRV  0x13   /* [4:0] 1 = open-drain */
 #define REG_GPIO_PUPD0 0x14  /* 2 bits per GPIO0-3: 00 none 01 up 10 down */
 #define REG_GPIO_FUNC0 0x16  /* 2 bits per GPIO0-3: 00 gpio 01 irq 10 wake 11 special */
@@ -46,6 +50,30 @@ RTC_DATA_ATTR static bool     s_valid;
 
 static bool s_tried;
 static i2c_master_dev_handle_t s_dev;
+
+/* Every public entry point holds this for the whole of its PMIC conversation.
+ * The main task toggles the panel rail inside every paint while the LED blink
+ * timer writes the same chip from the esp_timer task; interleaved transactions
+ * defeat both the 500 us pacing and pm1_rmw()'s two-reads-must-agree check.
+ * Static, so there is no creation race between the two tasks. */
+#define PM1_LOCK_LED_MS   100   /* timer task: skip a blink phase rather than wait */
+#define PM1_LOCK_MS       2000
+
+static StaticSemaphore_t s_lock_buf;
+static SemaphoreHandle_t s_lock;
+static portMUX_TYPE s_lock_init_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static bool pm1_lock(uint32_t ms)
+{
+    if (s_lock == NULL) {
+        taskENTER_CRITICAL(&s_lock_init_mux);
+        if (s_lock == NULL) s_lock = xSemaphoreCreateMutexStatic(&s_lock_buf);
+        taskEXIT_CRITICAL(&s_lock_init_mux);
+    }
+    return xSemaphoreTake(s_lock, pdMS_TO_TICKS(ms)) == pdTRUE;
+}
+
+static void pm1_unlock(void) { xSemaphoreGive(s_lock); }
 
 static bool pm1_open(void)
 {
@@ -130,11 +158,8 @@ static void pm1_debug_dump(const char *when)
 }
 #endif
 
-static void pm1_refresh(void)
+static void pm1_sample(void)
 {
-    if (s_tried) return;
-    s_tried = true;
-
     if (!pm1_open()) {
         ESP_LOGW(TAG, "I2C bus unavailable");
         return;
@@ -224,12 +249,84 @@ static bool pm1_rmw(uint8_t reg, uint8_t mask, uint8_t value)
     return true;
 }
 
+#ifdef EPD_PWR_M5PM1_PIN
+/* M5's begin() and its PaperDIY init both write WDT_CNT = 0; a non-zero count
+ * resets the system when it expires. Only read-modify-writes when it is not
+ * already off. Gated to the board that has not run without it. */
+static void pm1_disable_watchdog(void)
+{
+    if (s_dev == NULL) return;
+    (void)pm1_rmw(REG_WDT_CNT, 0xFF, 0);
+}
+#endif
+
+/* Once per boot, on first use: the VBAT sample goes before any PM1 write (a
+ * VBAT read after a write returned ~120 mV for the rest of the boot on the
+ * PaperMono bench), then the watchdog write. Callers hold the lock. */
+static void pm1_refresh(void)
+{
+    if (s_tried) return;
+    s_tried = true;
+    pm1_sample();
+#ifdef EPD_PWR_M5PM1_PIN
+    pm1_disable_watchdog();
+#endif
+}
+
+#ifdef EPD_PWR_M5PM1_PIN
+/* PM1 GPIOs already configured as push-pull outputs this boot. */
+static uint8_t s_gpio_cfg;
+
+#define PM1_GPIO_TRIES 3
+
+static bool pm1_gpio_write(int pin, bool high)
+{
+    const uint8_t bit = (uint8_t)(1u << pin);
+    if (!(s_gpio_cfg & bit)) {
+        /* M5GFX's PaperDIY EPD_PWR setup: function = gpio, no pull,
+         * push-pull, mode = output. Only the latch changes after this. */
+        const unsigned shift = (unsigned)pin * 2;
+        if (!(pm1_rmw(REG_GPIO_FUNC0, (uint8_t)(0x03u << shift), 0) &&
+              pm1_rmw(REG_GPIO_PUPD0, (uint8_t)(0x03u << shift), 0) &&
+              pm1_rmw(REG_GPIO_DRV, bit, 0) &&
+              pm1_rmw(REG_GPIO_MODE, bit, bit))) {
+            return false;
+        }
+        s_gpio_cfg |= bit;
+    }
+    return pm1_rmw(REG_GPIO_OUT, bit, high ? bit : 0);
+}
+
+esp_err_t m5pm1_gpio_output(int pin, bool high)
+{
+    /* GPIO4 sits in FUNC1/PUPD1 and nothing needs it yet. */
+    if (pin < 0 || pin > 3) return ESP_ERR_INVALID_ARG;
+    if (!pm1_lock(PM1_LOCK_MS)) return ESP_ERR_TIMEOUT;
+    esp_err_t ret = ESP_ERR_INVALID_STATE;
+    if (pm1_open()) {
+        pm1_refresh();
+        ret = ESP_FAIL;
+        /* A single unstable read makes pm1_rmw() skip the write, and the caller
+         * would paint with the rail off. Retry, waking the PMIC in between. */
+        for (int i = 0; i < PM1_GPIO_TRIES && ret != ESP_OK; i++) {
+            if (i > 0) pm1_wake();
+            if (pm1_gpio_write(pin, high)) ret = ESP_OK;
+        }
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "gpio%d -> %d: PMIC write failed", pin, (int)high);
+        }
+    }
+    pm1_unlock();
+    return ret;
+}
+#endif
+
 #ifdef BOARD_FRONTLIGHT_M5PM1
 static int s_frontlight_pct;
 
 bool m5pm1_frontlight_active(void) { return s_frontlight_pct > 0; }
 
-esp_err_t m5pm1_frontlight_set(int pct)
+static esp_err_t frontlight_locked(int pct)
 {
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
@@ -280,29 +377,49 @@ esp_err_t m5pm1_frontlight_set(int pct)
     ESP_LOGI(TAG, "frontlight %d%%", pct);
     return ESP_OK;
 }
+
+esp_err_t m5pm1_frontlight_set(int pct)
+{
+    if (!pm1_lock(PM1_LOCK_MS)) return ESP_ERR_TIMEOUT;
+    esp_err_t ret = frontlight_locked(pct);
+    pm1_unlock();
+    return ret;
+}
 #endif
 
 #ifdef BOARD_LED_M5PM1
 esp_err_t m5pm1_led_set(bool on)
 {
-    if (!pm1_open()) return ESP_ERR_INVALID_STATE;
+    /* Called from the esp_timer task: never wait long for a paint to finish. */
+    if (!pm1_lock(PM1_LOCK_LED_MS)) return ESP_ERR_TIMEOUT;
+    esp_err_t ret = ESP_ERR_INVALID_STATE;
+    if (pm1_open()) {
 #ifdef BOARD_BATTERY_M5PM1
-    pm1_refresh();   /* see m5pm1_frontlight_set */
+        pm1_refresh();   /* see frontlight_locked */
 #endif
-    return pm1_rmw(REG_PWR_CFG, PM1_LED_CTRL_BIT, on ? PM1_LED_CTRL_BIT : 0) ? ESP_OK : ESP_FAIL;
+        ret = pm1_rmw(REG_PWR_CFG, PM1_LED_CTRL_BIT, on ? PM1_LED_CTRL_BIT : 0) ? ESP_OK : ESP_FAIL;
+    }
+    pm1_unlock();
+    return ret;
 }
 #endif
 
 #ifdef BOARD_BATTERY_M5PM1
 bool m5pm1_battery_available(void)
 {
-    pm1_refresh();
+    if (pm1_lock(PM1_LOCK_MS)) {
+        pm1_refresh();
+        pm1_unlock();
+    }
     return s_valid;
 }
 
 int m5pm1_battery_mv(void)
 {
-    pm1_refresh();
+    if (pm1_lock(PM1_LOCK_MS)) {
+        pm1_refresh();
+        pm1_unlock();
+    }
     return s_valid ? (int)s_mv : 0;
 }
 #endif /* BOARD_BATTERY_M5PM1 */

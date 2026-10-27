@@ -21,6 +21,12 @@
  * its own board macro (all three share BOARD_M5PM1_I2C_*):
  *   BOARD_FRONTLIGHT_M5PM1   the panel frontlight, PWM0 on the PMIC's GPIO3
  *   BOARD_LED_M5PM1          the red channel of the RGB LED, on LED_EN
+ * and the PaperDIY uses a plain GPIO output for its panel rail
+ * (EPD_PWR_M5PM1_PIN, m5pm1_gpio_output below), which also clears the PMIC
+ * watchdog once per boot.
+ *
+ * Every entry point serialises on one mutex: the paint path and the LED blink
+ * timer reach the PMIC from different tasks on the PaperDIY.
  *
  * Register map from m5stack/M5PM1 src/M5PM1.h. Shares the bus through
  * i2c_bus_get() like every other I2C part.
@@ -54,3 +60,10 @@ bool m5pm1_frontlight_active(void);
 
 /* Red status LED (LED_EN): on or off. */
 esp_err_t m5pm1_led_set(bool on);
+
+/* Drive one PM1 GPIO (0-3) as a push-pull output. The PaperDIY's panel rail
+ * (EPD_PWR) is PY_G2, so parallel_epd_gray routes its rail through this when
+ * the board defines EPD_PWR_M5PM1_PIN; compiled only for such boards.
+ * Configures the pin once per boot, then only writes the latch; retries a
+ * flaky write a few times. Returns ESP_OK once the latch is written. */
+esp_err_t m5pm1_gpio_output(int pin, bool high);

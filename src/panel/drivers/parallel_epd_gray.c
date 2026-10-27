@@ -70,6 +70,21 @@ extern char font8x8_basic[128][8];
 #include "io_expander.h"
 #endif
 
+#ifdef EPD_PWR_M5PM1_PIN
+#include "m5pm1.h"
+/* Panel rail on an M5PM1 output instead of a GPIO. A failed write degrades to
+ * a blank paint plus a log line; it never asserts. */
+static void pwr_set(bool on)
+{
+    if (m5pm1_gpio_output(EPD_PWR_M5PM1_PIN, on) != ESP_OK) {
+        ESP_LOGW("epd_par", "panel rail %s failed (PMIC)", on ? "on" : "off");
+    }
+}
+#define PWR_SET(level)  pwr_set(level)
+#else
+#define PWR_SET(level)  gpio_set_level(EPD_PIN_PWR, (level))
+#endif
+
 static const char *TAG = "epd_par";
 
 /* ------------------------------------------------------------------ */
@@ -408,15 +423,21 @@ static void power(bool on)
 {
     if (on == s_powered) return;
     if (on) {
-        gpio_set_level(EPD_PIN_PWR, 1);      /* panel rail */
+        PWR_SET(1);                          /* panel rail (GPIO or PMIC) */
+#ifdef EPD_PWR_M5PM1_PIN
+        /* An I2C write returns before the rail is up; M5's own bring-up waits
+         * 10 ms here before touching the boost. */
+        vTaskDelay(pdMS_TO_TICKS(10));
+#else
         esp_rom_delay_us(100);
+#endif
         gpio_set_level(EPD_PIN_BST_EN, 1);   /* +/-15 V boost */
         esp_rom_delay_us(100);
         gpio_set_level(EPD_PIN_SPV, 1);
     } else {
         gpio_set_level(EPD_PIN_BST_EN, 0);
         vTaskDelay(pdMS_TO_TICKS(1));        /* let the boost bleed down */
-        gpio_set_level(EPD_PIN_PWR, 0);
+        PWR_SET(0);
         esp_rom_delay_us(100);
         gpio_set_level(EPD_PIN_SPV, 0);
     }
@@ -686,7 +707,11 @@ static esp_err_t par_port_init(void)
     const gpio_config_t io = {
         .pin_bit_mask =
 #ifndef EPD_PAR_POWER_TPS65185
+#ifdef EPD_PWR_M5PM1_PIN
+                        (1ULL << EPD_PIN_BST_EN) |
+#else
                         (1ULL << EPD_PIN_PWR) | (1ULL << EPD_PIN_BST_EN) |
+#endif
 #endif
                         (1ULL << EPD_PIN_SPV) | (1ULL << EPD_PIN_CKV) |
                         (1ULL << EPD_PIN_LE),
@@ -703,7 +728,7 @@ static esp_err_t par_port_init(void)
         return perr;
     }
 #else
-    gpio_set_level(EPD_PIN_PWR, 0);
+    PWR_SET(0);
     gpio_set_level(EPD_PIN_BST_EN, 0);
 #endif
     gpio_set_level(EPD_PIN_SPV, 0);
