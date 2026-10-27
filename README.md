@@ -41,6 +41,7 @@ one board (and thus one driver) per PlatformIO environment.
 | paperlesspaper **OpenPaper L** (ESP32-C6, 4 × AA NiMH) | Spectra 6, dual-controller, no DC line | E Ink EL133UF3 | 1200×1600, 4bpp, streamed in 100-row blocks | `spectra6_spi_dual` (`EPD_NO_DC` + `TESSERAE_STREAM_FRAMES`) | `paperlesspaper-openpaper-l` |
 | [Waveshare **PhotoPainter 7.3"**](https://www.waveshare.com/esp32-s3-photopainter.htm) | Spectra-6, single | ED2208-GCA | 800×480, 4bpp | `spectra6_spi_single` | `waveshare-photopainter-73` |
 | [Waveshare **E-Paper ESP32 Driver Board**](https://www.waveshare.com/e-paper-esp32-driver-board.htm) + 7.5" mono (V2) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `waveshare-esp32-driver-75` |
+| [Waveshare **ESP32-S3-RLCD-4.2**](https://www.waveshare.com/esp32-s3-rlcd-4.2.htm) | Reflective LCD (not e-paper), mono | ST7305 | 400×300, 1bpp | `st7305_rlcd` | `waveshare-rlcd-42` |
 | [**M5Stack PaperS3**](https://docs.m5stack.com/en/core/PaperS3) | Grayscale (4.7") | none (raw parallel glass) | 960×540, 4bpp gray | `parallel_epd_gray` | `m5stack-papers3` |
 | [**M5Stack M5Paper**](https://docs.m5stack.com/en/core/m5paper) (the original, pre-S3) | Grayscale (4.7") | IT8951 | 960×540, 4bpp gray | `it8951_gray` | `m5stack-m5paper` |
 | [**M5Stack PaperMono**](https://docs.m5stack.com/en/core/PaperMono) (Pro and Lite) | Grayscale (3.97") | SSD1677 | 480×800 portrait, 2bpp gray | `ssd1677_gray` | `m5stack-papermono` |
@@ -115,6 +116,19 @@ board header:
   from the geometry), runs the driver's 1bpp `EPD_MONO` path, and needs
   `EPD_MIRROR_Y`. It is also the only board here **flashed app-only, keeping its
   factory bootloader** — see "Flashing the Xteink X4" below.
+
+The **Waveshare ESP32-S3-RLCD-4.2** is the first panel here that is not
+e-paper at all: a reflective LCD behind a Sitronix ST7305, which keeps its image
+only while the controller drives it. Its `st7305_rlcd` driver takes the ordinary
+400×300 1bpp frame, transposes it into the controller's 2×4-pixel block layout,
+and at sleep parks the controller in its low-power refresh mode with the SPI
+pins held through the ESP32-S3's deep sleep, so the picture stays up between
+wakes with no blank. Verified on hardware; the hold runs from the board's
+`BOARD_SLEEP_DRIVE_HIGH_MASK` / `_LOW_MASK` on every sleep, painted or not,
+since a wake whose frame was unchanged never reaches the panel driver. Its
+transport is ESP-IDF's `esp_lcd` SPI panel IO (the vendor's path) rather than
+the raw `spi_master` + GPIO chip-select the e-paper drivers use: the latter left
+this glass blank on the bench.
 
 The exception is the **M5Stack PaperS3**, which needed a driver family of its
 own because it is the first panel here with no controller chip. `parallel_epd_gray`

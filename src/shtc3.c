@@ -19,6 +19,7 @@
 
 #include "shtc3.h"
 #include "app_config.h"
+#include "i2c_bus.h"
 
 #ifdef BOARD_HAS_SHTC3
 
@@ -71,27 +72,16 @@ static esp_err_t shtc3_init(void)
 {
     if (s_sensor != NULL) return ESP_OK;
 
-    /* Reuse the bus the PMIC (or anyone) already created on this port; only
-     * create it ourselves if none exists. Mirrors i2c_bus.c's get-or-create so
-     * we never call i2c_new_master_bus() twice on one port. */
-    i2c_master_bus_handle_t existing = NULL;
-    if (i2c_master_get_bus_handle(BOARD_SHTC3_I2C_PORT, &existing) == ESP_OK &&
-        existing != NULL) {
-        s_bus = existing;
-    } else {
-        i2c_master_bus_config_t bus_cfg = {
-            .i2c_port = BOARD_SHTC3_I2C_PORT,
-            .sda_io_num = BOARD_SHTC3_I2C_SDA,
-            .scl_io_num = BOARD_SHTC3_I2C_SCL,
-            .clk_source = I2C_CLK_SRC_DEFAULT,
-            .glitch_ignore_cnt = 7,
-            .flags = { .enable_internal_pullup = true },
-        };
-        esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_bus);
-        if (err != ESP_OK) {
-            s_bus = NULL;
-            return err;
-        }
+    /* Get-or-create through the shared helper: it creates the bus when no one
+     * has (boards where the SHTC3 is the first I2C part up, the Waveshare
+     * RLCD 4.2) and adopts the PMIC's when that got there first (the
+     * PhotoPainter), without the ERROR line i2c_master_get_bus_handle() logs
+     * for a port that does not exist yet. */
+    esp_err_t err = i2c_bus_get(BOARD_SHTC3_I2C_PORT, BOARD_SHTC3_I2C_SDA,
+                                BOARD_SHTC3_I2C_SCL, &s_bus);
+    if (err != ESP_OK) {
+        s_bus = NULL;
+        return err;
     }
 
     i2c_device_config_t device_cfg = {
@@ -99,7 +89,7 @@ static esp_err_t shtc3_init(void)
         .device_address = BOARD_SHTC3_I2C_ADDR,
         .scl_speed_hz = BOARD_SHTC3_I2C_HZ,
     };
-    esp_err_t err = i2c_master_bus_add_device(s_bus, &device_cfg, &s_sensor);
+    err = i2c_master_bus_add_device(s_bus, &device_cfg, &s_sensor);
     if (err != ESP_OK) {
         /* The bus belongs to the PMIC (or a fallback we made); leave it up so
          * we don't disturb a shared owner. Just drop our device handle. */

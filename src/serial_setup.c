@@ -14,6 +14,12 @@
 #include "sdkconfig.h"
 #include "setup_fields.h"
 #include "wifi_manager.h"
+#include "soc/soc.h"
+#if CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32C61
+#include "soc/lp_aon_reg.h"
+#elif CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32C3
+#include "soc/rtc_cntl_reg.h"
+#endif
 
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 #include "driver/usb_serial_jtag.h"
@@ -109,6 +115,27 @@ static void handle_set(const char *line)
     if (!provisioning_notify_saved()) esp_restart();
 }
 
+/* Reboot into the ROM's serial download mode without the BOOT button. The
+ * always-on domain carries a "force download boot" bit the ROM honours on the
+ * next reset and then clears, which is what the paperlesspaper firmware does
+ * on its 'B'. Boards with no DTR/RTS wiring to EN and BOOT (the OpenPaper
+ * frames) have no other way in. The classic ESP32 has no such bit. */
+static bool reboot_into_bootloader(void)
+{
+#if CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32C61
+    REG_WRITE(LP_AON_SYS_CFG_REG, REG_READ(LP_AON_SYS_CFG_REG) | LP_AON_FORCE_DOWNLOAD_BOOT);
+#elif CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32C3
+    REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+#else
+    return false;
+#endif
+    emit("{\"tesserae\":\"setup\",\"ok\":true,\"bootloader\":true,\"restarting\":true}");
+    ESP_LOGW(TAG, "rebooting into the ROM download mode over serial");
+    vTaskDelay(pdMS_TO_TICKS(300));
+    esp_restart();
+    return true;
+}
+
 static void serial_setup_task(void *arg)
 {
     (void)arg;
@@ -127,7 +154,8 @@ static void serial_setup_task(void *arg)
         if (strcmp(cmd, "get") == 0) emit_info("info");
         else if (strcmp(cmd, "set") == 0) handle_set(line);
         else if (strcmp(cmd, "restart") == 0) { emit("{\"tesserae\":\"setup\",\"ok\":true,\"restarting\":true}"); vTaskDelay(pdMS_TO_TICKS(300)); esp_restart(); }
-        else emit_error("unknown cmd; use get, set or restart");
+        else if (strcmp(cmd, "bootloader") == 0) { if (!reboot_into_bootloader()) emit_error("this chip cannot enter download mode from software"); }
+        else emit_error("unknown cmd; use get, set, restart or bootloader");
     }
 }
 

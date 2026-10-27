@@ -19,7 +19,91 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `rotation: 0` as kind `huessen_epf1301`, which the server must add to its
   catalog. Checked on hardware: selftest colours on both controller halves,
   the captive portal, registration and server frames. The env joins the CI
-  build matrix but not yet the release.
+  build matrix and the release matrix.
+
+## [1.59.2] - 2026-10-28
+
+### Fixed
+
+- paperlesspaper OpenPaper L: short black dashes no longer appear on painted
+  frames. The V2 board's SD NAND powers up in SD-bus mode every time the
+  display rail comes on, and in that mode it listens on its command line,
+  which is the bus MOSI, and answers on it whenever a passing bit pattern
+  looks like a valid command; a frame streamed to the panel is megabytes of
+  such patterns. The chip is now moved into SPI mode (CMD0 with its select
+  low, retried until it answers idle) after every rail power-up, where it
+  stays silent unless selected. The rail state is read from the output
+  register rather than the pad, since an output-only pad reads 0 and that
+  re-settled the rail on every flash transfer, and a boot-time probe that
+  raised the rail drops it again afterwards.
+
+## [1.59.1] - 2026-10-28
+
+### Fixed
+
+- paperlesspaper OpenPaper L: the external flash is found on the V2 board.
+  That revision adds an SD NAND chip on the same SPI lines, powered through
+  a load switch whose enable is the display rail; with the rail off the
+  unpowered chip held MISO low and the flash's JEDEC query read zeros, so
+  every frame went through the spare-app-slot fallback. The rail is raised
+  before the flash is touched, and every boot logs whether the flash answered.
+- paperlesspaper OpenPaper L: writing a frame into the external flash takes
+  about 7 s instead of 53 s. The busy poll after each 256-byte page slept a
+  fixed 10 ms; it now polls finely and yields only once the part has been busy
+  for a while, and the cache is erased in 64 KiB blocks instead of 4 KiB
+  sectors. That is radio-on time on a battery frame.
+
+## [1.59.0] - 2026-10-27
+
+### Added
+
+- Serial setup command `bootloader`: the board restarts into the ROM's serial
+  download mode, so a host can flash it with esptool and no BOOT button. The
+  paperlesspaper frames have no DTR/RTS wiring to EN and BOOT, so this is
+  their only button-free way in. ESP32-C6, -S3 and -C3 targets; the classic
+  ESP32 has no such bit and answers with an error.
+
+### Changed
+
+- paperlesspaper OpenPaper L: confirmed on hardware. Colour bars, serial
+  setup and full server cycles (download into the cache, radio-quiet reboot,
+  paint, ETag committed) ran on a bench unit. The cached-paint pass logs the
+  frame's CRC-32 as downloaded and as read back, with its count of all-black
+  bytes, so a cache fault is distinguishable from a render or panel one.
+  Before the external flash is probed, the SD card's chip select (GPIO13, a
+  shared-bus neighbour the vendor firmware also parks) is driven high and the
+  flash is sent a release-from-power-down. The bench unit still answers its
+  JEDEC query with zeros, so it runs on the spare-app-slot cache; the warning
+  stays until that is understood.
+
+## [1.58.0] - 2026-10-27
+
+### Added
+
+- Waveshare ESP32-S3-RLCD-4.2: new `waveshare-rlcd-42` target (and
+  `-selftest`), the first non-e-paper panel. A 4.2" 400x300 reflective LCD
+  behind a Sitronix ST7305, driven by the new `st7305_rlcd` driver: the
+  ordinary 1bpp mono frame is transposed into the controller's 2x4 block
+  layout, and at sleep the controller is left in its low-power refresh mode
+  with the SPI pins held through deep sleep, so the image stays up between
+  wakes. Battery sense on GPIO4, the KEY button advances the rotation, the
+  SHTC3 reports temperature and humidity, and the microSD slot carries the
+  deck cache. Verified on a bench unit: selftest pattern, dashboard frames,
+  image held through deep sleep, battery and sensor readings. The PCF85063
+  RTC is not driven yet.
+- Board headers can name pins to hold HIGH through deep sleep
+  (`BOARD_SLEEP_DRIVE_HIGH_MASK`), alongside the existing low mask; the RLCD
+  board uses it for the controller's reset and chip select.
+- The provisioning splash has a compact layout for 400x300 landscape panels:
+  logo, title and QR in a top row, the Wi-Fi, password and URL lines full
+  width beneath at a legible size. The two-column layout squeezed its text to
+  8-px glyphs and ran off the bottom on this size.
+
+### Fixed
+
+- The SHTC3 driver takes its I2C bus from the shared helper, so a board where
+  the sensor is the first I2C part up no longer logs an I2C error on every
+  wake.
 
 ## [1.57.0] - 2026-10-26
 

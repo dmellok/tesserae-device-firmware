@@ -28,6 +28,7 @@ idf_component_register(
         "panel/drivers/ssd1677_gray.c"
         "panel/drivers/ssd1683_dual.c"
         "panel/drivers/parallel_epd_gray.c"
+        "panel/drivers/st7305_rlcd.c"
         "panel/busy_sleep.c"
         "rtc_pcf8563.c"
         "sy6974.c"
