@@ -28,6 +28,7 @@ one board (and thus one driver) per PlatformIO environment.
 | [Seeed **XIAO ePaper Kit — EE02**](https://www.seeedstudio.com/XIAO-ePaper-DIY-Kit-EE02-for-13-3-Spectratm-6-E-Ink.html) | Spectra-6, dual-chip | T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `seeed-ee02` |
 | [Good Display **ESP32-133C02**](https://www.good-display.com/product/546.html) | Spectra-6, dual-chip | GDEP133C02 / T133A01 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `gooddisplay-esp32-133c02` |
 | [Soldered **Inkplate 13SPECTRA**](https://soldered.com/product/inkplate-13spectra/) | Spectra-6, dual-chip | EL133UF1 | 1200×1600, 4bpp | `spectra6_t133a01_dual` | `soldered-inkplate-13spectra` |
+| Huessen 13.3" WiFi frame (**EPF1301**) | Spectra-6, dual-chip, no DC line | EL133UF1 | 1200×1600, 4bpp | `huessen_epf1301_dual` | `huessen-epf1301` |
 | [Elecrow **CrowPanel ESP32 5.79"**](https://www.elecrow.com/crowpanel-esp32-5-79-e-paper-hmi-display-with-272-792-resolution-black-white-color-driven-by-spi-interface.html) | Mono B/W, dual-chip | 2x SSD1683 | 792×272, 1bpp | `ssd1683_dual` | `elecrow-crowpanel-579` |
 | [Seeed **XIAO ePaper Display Board — EE03**](https://www.seeedstudio.com/XIAO-ePaper-Display-Board-ESP32-S3-EE03-p-6638.html) + 10.3" mono | Grayscale (10.3") | IT8951 | 1872×1404, 4bpp gray | `it8951_gray` | `seeed-ee03` |
 | [**TRMNL 7.5" OG DIY Kit**](https://www.seeedstudio.com/TRMNL-7-5-Inch-OG-DIY-Kit-p-6481.html) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `xiao-epaper-75` |
@@ -40,6 +41,7 @@ one board (and thus one driver) per PlatformIO environment.
 | paperlesspaper **OpenPaper L** (ESP32-C6, 4 × AA NiMH) | Spectra 6, dual-controller, no DC line | E Ink EL133UF3 | 1200×1600, 4bpp, streamed in 100-row blocks | `spectra6_spi_dual` (`EPD_NO_DC` + `TESSERAE_STREAM_FRAMES`) | `paperlesspaper-openpaper-l` |
 | [Waveshare **PhotoPainter 7.3"**](https://www.waveshare.com/esp32-s3-photopainter.htm) | Spectra-6, single | ED2208-GCA | 800×480, 4bpp | `spectra6_spi_single` | `waveshare-photopainter-73` |
 | [Waveshare **E-Paper ESP32 Driver Board**](https://www.waveshare.com/e-paper-esp32-driver-board.htm) + 7.5" mono (V2) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `waveshare-esp32-driver-75` |
+| [Waveshare **ESP32-S3-RLCD-4.2**](https://www.waveshare.com/esp32-s3-rlcd-4.2.htm) | Reflective LCD (not e-paper), mono | ST7305 | 400×300, 1bpp | `st7305_rlcd` | `waveshare-rlcd-42` |
 | [**M5Stack PaperS3**](https://docs.m5stack.com/en/core/PaperS3) | Grayscale (4.7") | none (raw parallel glass) | 960×540, 4bpp gray | `parallel_epd_gray` | `m5stack-papers3` |
 | [**M5Stack PaperDIY**](https://docs.m5stack.com/en/core/PaperDIY_Complete_Kit) (Complete / Assembly Kit) | Grayscale (4.7") | none (raw parallel glass; panel rail on the M5PM1 PMIC) | 960×540, 4bpp gray | `parallel_epd_gray` (`EPD_PWR_M5PM1_PIN`) | `m5stack-paperdiy` |
 | [**M5Stack M5Paper**](https://docs.m5stack.com/en/core/m5paper) (the original, pre-S3) | Grayscale (4.7") | IT8951 | 960×540, 4bpp gray | `it8951_gray` | `m5stack-m5paper` |
@@ -63,9 +65,9 @@ board and glass, and `xteink-x4` is the SSD1677 build. The **M5Stack PaperDIY**
 is **hardware-verified** on the 2026-10-26 unit: the `-selftest` paints 16 evenly
 spaced grey bands on the PM1 rail alone, and the production build joins Wi-Fi,
 registers with kind `m5stack_paperdiy` and paints a server-composed 960x540 frame
-upright on the glass, then deep-sleeps on the server's interval. Still unproven on
-hardware: the two user keys, and battery sag *during* a paint (see
-`notes/paperdiy-bringup-2026-10-26.md`).
+upright on the glass, then deep-sleeps on the server's interval. Both keys wake
+it from deep sleep and report themselves (GPIO4 left, GPIO3 right). Still
+unmeasured: battery sag *during* a paint (see `notes/paperdiy-bringup-2026-10-26.md`).
 
 Each board also has a `…-selftest` env that paints a driver-only
 test pattern (colour bars / gray ramp / mono stripes) with no networking — flash
@@ -84,6 +86,17 @@ board for the 13.3" GDEP133C02 Spectra 6 panel. It uses the ESP32-S3-WROOM-1
 N16R8 module, the carrier's dedicated microSD SPI bus, and active-high onboard
 buttons on Ref2 boards. Ref1 boards do not populate those button pads, so the
 same firmware image works there too.
+
+The `huessen-epf1301` env targets the Huessen 13.3" WiFi picture frame
+(EPF1301), using the stock firmware's pin map and panel sequence. The
+`huessen-epf1301-selftest` env paints colour bars without networking, for a
+first check of a new frame. The first USB flash replaces the stock
+firmware, bootloader included, so take a full backup before it
+(`esptool.py --chip esp32s3 read_flash 0 0x1000000 huessen-stock.bin`). The
+panel runs off the battery rail, so the cell has to be fitted even on USB.
+Only the GPIO1 key wakes the frame (as Refresh). The server needs a catalog
+entry for the `huessen_epf1301` kind (the E1004's 960000-byte frame format)
+before the frame can register.
 
 Reuse is the norm — most boards share an existing driver and differ only in the
 board header:
@@ -110,6 +123,19 @@ board header:
   from the geometry), runs the driver's 1bpp `EPD_MONO` path, and needs
   `EPD_MIRROR_Y`. It is also the only board here **flashed app-only, keeping its
   factory bootloader** — see "Flashing the Xteink X4" below.
+
+The **Waveshare ESP32-S3-RLCD-4.2** is the first panel here that is not
+e-paper at all: a reflective LCD behind a Sitronix ST7305, which keeps its image
+only while the controller drives it. Its `st7305_rlcd` driver takes the ordinary
+400×300 1bpp frame, transposes it into the controller's 2×4-pixel block layout,
+and at sleep parks the controller in its low-power refresh mode with the SPI
+pins held through the ESP32-S3's deep sleep, so the picture stays up between
+wakes with no blank. Verified on hardware; the hold runs from the board's
+`BOARD_SLEEP_DRIVE_HIGH_MASK` / `_LOW_MASK` on every sleep, painted or not,
+since a wake whose frame was unchanged never reaches the panel driver. Its
+transport is ESP-IDF's `esp_lcd` SPI panel IO (the vendor's path) rather than
+the raw `spi_master` + GPIO chip-select the e-paper drivers use: the latter left
+this glass blank on the bench.
 
 The exception is the **M5Stack PaperS3**, which needed a driver family of its
 own because it is the first panel here with no controller chip. `parallel_epd_gray`
@@ -276,7 +302,7 @@ format the firmware expects for that kind:
 
 | Kind | Frame format | Size |
 | --- | --- | --- |
-| `waveshare_133e6`, `seeed_reterminal_e1004`, `seeed_ee02`, `gooddisplay_esp32_133c02`, `soldered_inkplate_13spectra` | 4bpp packed Spectra-6 | 960000 B |
+| `waveshare_133e6`, `seeed_reterminal_e1004`, `seeed_ee02`, `gooddisplay_esp32_133c02`, `soldered_inkplate_13spectra`, `huessen_epf1301` | 4bpp packed Spectra-6 | 960000 B |
 | `seeed_reterminal_e1002`, `waveshare_photopainter_73`, `seeed_ee04_73e6` | 4bpp packed Spectra-6 | 192000 B |
 | `seeed_reterminal_e1001`, `xiao_epaper_75`, `seeed_ee04_75`, `xteink_x4` | 1bpp packed mono (bit 1 = white) | 48000 B |
 | `elecrow_crowpanel_579` | 1bpp packed mono (bit 1 = white) | 26928 B |

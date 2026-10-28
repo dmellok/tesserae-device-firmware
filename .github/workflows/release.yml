@@ -55,7 +55,13 @@ jobs:
           - { env: seeed-ee02,                kind: seeed_ee02, chip: esp32s3 }
           - { env: gooddisplay-esp32-133c02,  kind: gooddisplay_esp32_133c02, chip: esp32s3 }
           - { env: soldered-inkplate-13spectra, kind: soldered_inkplate_13spectra, chip: esp32s3 }
+          # Huessen EPF1301: EL133UF1 on its own driver (no DC line, rail cycled per paint).
+          # Hardware-verified by the contributor on one frame.
+          - { env: huessen-epf1301,           kind: huessen_epf1301, chip: esp32s3 }
           - { env: elecrow-crowpanel-579,     kind: elecrow_crowpanel_579, chip: esp32s3 }
+          # Reflective LCD, not e-paper: first ST7305 target. Built blind;
+          # listed as experimental on the site until a unit confirms it.
+          - { env: waveshare-rlcd-42,         kind: waveshare_rlcd_42, chip: esp32s3 }
           - { env: xiao-epaper-75,            kind: xiao_epaper_75, chip: esp32s3 }
           - { env: xiao-epaper-75-bwr,        kind: xiao_epaper_75_bwr, chip: esp32s3 }
           - { env: xiao-epaper-75-c3,         kind: xiao_epaper_panel_75_c3, chip: esp32c3 }
@@ -75,12 +81,10 @@ jobs:
           # unverified in the catalog until a unit confirms it.
           - { env: m5stack-papermono,         kind: m5stack_papermono, chip: esp32s3 }
           # PaperDIY: the PaperS3's ED047TC1 glass with its panel rail on the
-          # M5PM1's PY_G2 output. Hardware-verified on a bench unit; the two
-          # user keys are not yet exercised.
+          # M5PM1's PY_G2 output. Hardware-verified on a bench unit, keys included.
           - { env: m5stack-paperdiy,          kind: m5stack_paperdiy, chip: esp32s3 }
-          # ESP32-C6 picture frames. The L build has never met its hardware
-          # (see boards/paperlesspaper_openpaper_l.h); it ships so a tester
-          # can bring it up, and the site lists it as experimental.
+          # ESP32-C6 picture frames, both confirmed on hardware (the L on
+          # 2026-10-27; see boards/paperlesspaper_openpaper_l.h).
           - { env: paperlesspaper-openpaper-7, kind: paperlesspaper_openpaper_7, chip: esp32c6 }
           - { env: paperlesspaper-openpaper-l, kind: paperlesspaper_openpaper_l, chip: esp32c6 }
           - { env: waveshare-epaper-73f,      kind: waveshare_epaper_73f, chip: esp32s3 }

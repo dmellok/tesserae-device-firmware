@@ -1,0 +1,5 @@
+# Huessen EPF1301: layered after sdkconfig.usbjtag.defaults and
+# sdkconfig.ota.defaults. The stock image boots the 16 MB flash in DIO at
+# 80 MHz (esptool image header); the flash part itself is not identified, so
+# keep DIO rather than assume it takes QIO.
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y

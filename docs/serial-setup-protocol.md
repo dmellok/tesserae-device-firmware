@@ -82,6 +82,16 @@ the request it was in the middle of is abandoned, which is harmless.
 
 `{"tesserae":"setup","cmd":"restart"}` restarts the board.
 
+`{"tesserae":"setup","cmd":"bootloader"}` restarts the board into the ROM's
+serial download mode, so a host can flash it with esptool without touching the
+BOOT button. The board answers `{"tesserae":"setup","ok":true,"bootloader":true,
+"restarting":true}` first; about half a second later the port carries the ROM
+loader, which a host drives with `--before no-reset`. Boards whose USB bridge has
+no DTR/RTS wiring to EN and BOOT (the paperlesspaper OpenPaper frames) have no
+other button-free way in. The board must be awake and past boot to hear it: a
+host waits for the `hello` after a reset, or for any wake, then sends it. The
+classic ESP32 has no such bit and answers with an error.
+
 ## A host's session, after a flash
 
 1. The flasher resets the board into the new firmware and closes its port.

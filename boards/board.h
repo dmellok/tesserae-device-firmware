@@ -36,6 +36,8 @@
 #  include "gooddisplay_esp32_133c02.h"
 #elif defined(TESSERAE_BOARD_SOLDERED_INKPLATE_13SPECTRA)
 #  include "soldered_inkplate_13spectra.h"
+#elif defined(TESSERAE_BOARD_HUESSEN_EPF1301)
+#  include "huessen_epf1301.h"
 #elif defined(TESSERAE_BOARD_XIAO_EPAPER_75)
 #  include "seeed_xiao_epaper_75.h"
 #elif defined(TESSERAE_BOARD_XIAO_EPAPER_75_C3)
@@ -72,6 +74,8 @@
 #  include "epdiy_v7.h"
 #elif defined(TESSERAE_BOARD_ELECROW_CROWPANEL_579)
 #  include "elecrow_crowpanel_579.h"
+#elif defined(TESSERAE_BOARD_WAVESHARE_RLCD_42)
+#  include "waveshare_rlcd_42.h"
 #else
 #  error "No TESSERAE_BOARD_* selected. Set one in platformio.ini build_flags."
 #endif

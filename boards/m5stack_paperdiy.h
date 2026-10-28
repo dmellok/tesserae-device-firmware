@@ -20,10 +20,11 @@
  * flashed and verified on the same unit: Wi-Fi join, discover/status/frame over
  * HTTP against a real server, a composed 960x540 frame painted upright on the
  * glass, and timer deep-sleep wakes at the server's interval (`wakeup_cause=4`).
- * Still unverified: the two keys (no press has exercised them, so the left/right
- * assignment below is untested) and battery sag *under* paint - `battery_read_mv()`
- * never runs inside `frame_paint()`, so there is no instrument for it.
- * See notes/paperdiy-bringup-2026-10-26.md.
+ * Both keys were then verified (2026-10-28): KEY1 on GPIO4 is the left key
+ * (M5's "A") and KEY2 on GPIO3 the right ("B"), both waking the board from
+ * deep sleep through ext1 and reporting themselves. Still unmeasured: battery
+ * sag *under* paint - `battery_read_mv()` never runs inside `frame_paint()`,
+ * so there is no instrument for it. See notes/paperdiy-bringup-2026-10-26.md.
  */
 #pragma once
 
@@ -62,10 +63,10 @@
 
 /* Panel geometry, in the controller's own scan order: 960 across, 540 down.
  * 4bpp packed greyscale = 2 px/byte, so 259200 bytes a frame. Same as the
- * PaperS3 and the M5Paper. The portrait composition (server composes 540x960
- * and the renderer rotates into this stride) is carried over from the PaperS3:
- * M5GFX gives both the identical panel config, but which way up the owner
- * holds this board is judged on the first frame. */
+ * PaperS3 and the M5Paper. This board is used landscape: the server composes
+ * 960x540, the same shape as the scan, and the frame packs straight through
+ * with no rotation on the device (the catalog kind is landscape; the PaperS3
+ * kind stays portrait). A frame painted upright on the glass confirmed it. */
 #define EPD_WIDTH           960
 #define EPD_HEIGHT          540
 #define EPD_BUF_BYTES       ((EPD_WIDTH * EPD_HEIGHT) / 2)   /* 259200 */
@@ -164,8 +165,8 @@
  * Active low with external pull-ups to the always-on 3V3_L0 rail, so the
  * ESP32-S3's ext1 ANY_LOW wake covers BOTH keys in deep sleep. The power
  * button belongs to the PMIC (single press reset, double press off) and is not
- * a GPIO. Which key sits physically on the left is unverified: swapping the two
- * pin numbers is the whole fix if it reads backwards. */
+ * a GPIO. Verified on hardware: GPIO4 is the key on the left (M5 "A"), GPIO3
+ * the one on the right ("B"). */
 #define BOARD_BTN_REFRESH_PIN        4
 #define BOARD_BTN_REFRESH_WIRE_NAME  "left"
 #define BOARD_BTN_RIGHT_PIN          3

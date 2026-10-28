@@ -27,6 +27,9 @@
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_rom_sys.h"
+#include "esp_rom_crc.h"
+#include "soc/gpio_reg.h"
 #include "esp_partition.h"
 #include "esp_random.h"
 #include "esp_sleep.h"
@@ -648,6 +651,28 @@ static void sleep_park_rails(void)
     }
     gpio_deep_sleep_hold_en();
 #endif
+#ifdef BOARD_SLEEP_DRIVE_HIGH_MASK
+    /* Pins that must stay HIGH through the sleep: a display controller's
+     * reset and chip select on a panel that keeps showing its image only
+     * while it is powered and left alone (the Waveshare RLCD 4.2). Driven
+     * high BEFORE the old hold is released: a hold overrides the pad while
+     * it is on, so the release hands over to a pad already at the level, and
+     * a reset line never dips. This runs on every sleep, painted or not --
+     * a wake that found its frame unchanged never touched the panel driver,
+     * and without this its pins would isolate with everything else and the
+     * image would be gone by the next wake. */
+    uint64_t hmask = BOARD_SLEEP_DRIVE_HIGH_MASK;
+    for (int pin = 0; pin < 64; pin++) {
+        if (!(hmask & (1ULL << pin))) continue;
+        gpio_set_direction((gpio_num_t)pin, GPIO_MODE_OUTPUT);
+        gpio_set_pull_mode((gpio_num_t)pin, GPIO_FLOATING);
+        gpio_set_level((gpio_num_t)pin, 1);
+        gpio_hold_dis((gpio_num_t)pin);
+        gpio_set_level((gpio_num_t)pin, 1);
+        gpio_hold_en((gpio_num_t)pin);
+    }
+    gpio_deep_sleep_hold_en();
+#endif
 }
 
 #if BOARD_RTC_POWER_OFF
@@ -685,7 +710,9 @@ static void rtc_power_off_or_return(int interval_s)
 /* Rails that must be ON while awake and that sleep_park_rails() turns off:
  * release the hold left by the last sleep and drive them high, before any
  * peripheral behind them is touched. The M5Paper's 5 V boost (GPIO5) is one.
- * No-op without a mask. */
+ * BOARD_WAKE_DRIVE_LOW_MASK is the same for active-low enables, which a cold
+ * boot would otherwise leave at their reset state until the first sleep parks
+ * them (the Huessen frame's charger enables). No-op without a mask. */
 static void rails_wake(void)
 {
 #ifdef BOARD_WAKE_DRIVE_HIGH_MASK
@@ -696,6 +723,16 @@ static void rails_wake(void)
         gpio_set_level((gpio_num_t)pin, 1);
         gpio_hold_dis((gpio_num_t)pin);
         gpio_set_level((gpio_num_t)pin, 1);
+    }
+#endif
+#ifdef BOARD_WAKE_DRIVE_LOW_MASK
+    uint64_t low_mask = BOARD_WAKE_DRIVE_LOW_MASK;
+    for (int pin = 0; pin < 64; pin++) {
+        if (!(low_mask & (1ULL << pin))) continue;
+        gpio_set_direction((gpio_num_t)pin, GPIO_MODE_OUTPUT);
+        gpio_set_level((gpio_num_t)pin, 0);
+        gpio_hold_dis((gpio_num_t)pin);
+        gpio_set_level((gpio_num_t)pin, 0);
     }
 #endif
 }
@@ -1308,6 +1345,7 @@ typedef struct {
     uint8_t backend;
     char etag[80];
     char part_label[17];    /* the app slot holding the frame, OTA_SLOT backend only */
+    uint32_t crc;           /* CRC-32 of the frame as downloaded */
 } openpaper_l_cache_state_t;
 
 typedef enum {
@@ -1327,6 +1365,7 @@ typedef struct {
     const esp_partition_t *part;
     size_t offset;
     size_t total;
+    uint32_t crc;
     bool bad;
 } openpaper_l_cache_sink_t;
 
@@ -1379,12 +1418,18 @@ static esp_err_t openpaper_l_flash_wait_ready(void)
 {
     uint8_t tx[2] = {0x05, 0x00};
     uint8_t rx[2] = {0};
-    int64_t deadline = esp_timer_get_time() + 30000000LL;
+    /* A page program finishes in well under a millisecond and a block erase
+     * in a few hundred, so poll finely at first and only yield to the
+     * scheduler once the part has been busy for a while; a fixed 10 ms sleep
+     * per page made a 960000-byte frame take 50 s to write. */
+    const int64_t start = esp_timer_get_time();
+    const int64_t deadline = start + 30000000LL;
     do {
         esp_err_t err = openpaper_l_flash_txrx(tx, rx, sizeof tx);
         if (err != ESP_OK) return err;
         if ((rx[1] & 0x01) == 0) return ESP_OK;
-        vTaskDelay(pdMS_TO_TICKS(10));
+        if (esp_timer_get_time() - start < 4000) esp_rom_delay_us(50);
+        else vTaskDelay(1);
     } while (esp_timer_get_time() < deadline);
     return ESP_ERR_TIMEOUT;
 }
@@ -1409,9 +1454,107 @@ static esp_err_t openpaper_l_flash_read_jedec(uint8_t id[3])
     return err;
 }
 
+/* Park the other chip select on the shared bus. The SD card's select is a
+ * USB pad with no pull once the PHY is off; floating, the card answers the
+ * clock and holds MISO low, and every flash read comes back as zeros. */
+static void openpaper_l_bus_deselect_sd(void)
+{
+    gpio_config_t out = {
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = (1ULL << OPENPAPER_L_SD_CS),
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+    gpio_config(&out);
+    gpio_set_level(OPENPAPER_L_SD_CS, 1);
+}
+
+static spi_device_handle_t s_openpaper_l_sd_raw;   /* no chip select, 400 kHz */
+
+/* Put the SD NAND into SPI mode. It powers up in SD-bus mode every time the
+ * display rail comes on, and in that mode it listens on its command line,
+ * which is the bus MOSI, and answers on it whenever a passing bit pattern
+ * looks like a valid command: a frame streamed to the panel is megabytes of
+ * such patterns. CMD0 with its select low moves it to SPI mode, where it
+ * stays silent unless selected. The vendor firmware gets the same from its
+ * SD library's begin(). Requires the SPI bus to be up and the rail on. */
+static void openpaper_l_sd_quiesce(void)
+{
+    if (!s_openpaper_l_sd_raw) {
+        spi_device_interface_config_t dev = {
+            .clock_speed_hz = 400 * 1000,
+            .mode = 0,
+            .spics_io_num = -1,
+            .queue_size = 1,
+        };
+        if (spi_bus_add_device(EPD_SPI_HOST, &dev, &s_openpaper_l_sd_raw) != ESP_OK) {
+            s_openpaper_l_sd_raw = NULL;
+            ESP_LOGW(TAG, "sd nand: could not add a bus device; left in SD mode");
+            return;
+        }
+    }
+    openpaper_l_bus_deselect_sd();
+    uint8_t r1 = 0xFF;
+    /* A card just powered answers 0x7f or nothing to the first CMD0 when it
+     * has not finished its own power-up; give it a few goes 10 ms apart. */
+    for (int attempt = 1; attempt <= 4; attempt++) {
+        uint8_t ff[10]; memset(ff, 0xFF, sizeof ff);
+        spi_transaction_t t = { .length = sizeof ff * 8, .tx_buffer = ff };
+        spi_device_polling_transmit(s_openpaper_l_sd_raw, &t);   /* 80 clocks, deselected */
+        gpio_set_level(OPENPAPER_L_SD_CS, 0);
+        uint8_t cmd0[6] = {0x40, 0, 0, 0, 0, 0x95};
+        spi_transaction_t c = { .length = sizeof cmd0 * 8, .tx_buffer = cmd0 };
+        spi_device_polling_transmit(s_openpaper_l_sd_raw, &c);
+        r1 = 0xFF;
+        for (int i = 0; i < 8 && (r1 & 0x80); i++) {
+            uint8_t tx = 0xFF, rx = 0xFF;
+            spi_transaction_t r = { .length = 8, .tx_buffer = &tx, .rx_buffer = &rx };
+            spi_device_polling_transmit(s_openpaper_l_sd_raw, &r);
+            r1 = rx;
+        }
+        gpio_set_level(OPENPAPER_L_SD_CS, 1);
+        uint8_t one = 0xFF;
+        spi_transaction_t e = { .length = 8, .tx_buffer = &one };
+        spi_device_polling_transmit(s_openpaper_l_sd_raw, &e);
+        if (r1 == 0x01) {
+            ESP_LOGI(TAG, "sd nand: CMD0 -> R1 0x01 (idle, SPI mode) on attempt %d", attempt);
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    ESP_LOGW(TAG, "sd nand: CMD0 -> R1 0x%02x after 4 attempts (%s); it may still answer on the bus",
+             r1, r1 == 0xFF ? "no answer" : "unexpected");
+}
+
+/* The SD NAND that shares the bus is powered from the display rail; raise
+ * it before any flash transfer so the unpowered chip cannot clamp MISO, and
+ * settle the freshly powered chip into SPI mode. Returns true when it
+ * raised the rail (so a caller that only probed can drop it again). */
+static bool openpaper_l_bus_power_rail(void)
+{
+    gpio_config_t out = {
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = (1ULL << EPD_PIN_PWR),
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+    gpio_config(&out);
+    /* Read the driven level from the output register: gpio_get_level() on an
+     * output-only pad reads its disabled input buffer, which is always 0, and
+     * that re-settled the rail (100 ms plus a CMD0) on every flash transfer. */
+    if ((REG_READ(GPIO_OUT_REG) >> EPD_PIN_PWR) & 1u) return false;
+    gpio_set_level(EPD_PIN_PWR, 1);
+    vTaskDelay(pdMS_TO_TICKS(EPD_PWR_SETTLE_MS));
+    openpaper_l_sd_quiesce();
+    return true;
+}
+
 static bool openpaper_l_flash_init(void)
 {
-    if (s_openpaper_l_flash_ready) return true;
+    if (s_openpaper_l_flash_ready) { openpaper_l_bus_power_rail(); return true; }
+    openpaper_l_bus_deselect_sd();
     if (!s_openpaper_l_flash_bus_inited) {
         spi_bus_config_t bus = {
             .mosi_io_num = EPD_PIN_MOSI,
@@ -1428,6 +1571,7 @@ static bool openpaper_l_flash_init(void)
         }
         s_openpaper_l_flash_bus_inited = true;
     }
+    openpaper_l_bus_power_rail();
     spi_device_interface_config_t dev = {
         .clock_speed_hz = EPD_SPI_HZ,
         .mode = 0,
@@ -1439,6 +1583,10 @@ static bool openpaper_l_flash_init(void)
         ESP_LOGW(TAG, "external flash add device failed: %s", esp_err_to_name(err));
         return false;
     }
+    /* Release from deep power-down (0xAB) in case the previous firmware or a
+     * warm reset left the part asleep; a part that is awake ignores it. */
+    openpaper_l_flash_cmd(0xAB);
+    esp_rom_delay_us(50);
     uint8_t id[3] = {0};
     err = openpaper_l_flash_read_jedec(id);
     if (err != ESP_OK || id[0] == 0x00 || id[0] == 0xff) {
@@ -1451,6 +1599,20 @@ static bool openpaper_l_flash_init(void)
     ESP_LOGI(TAG, "external flash JEDEC id: %02x %02x %02x", id[0], id[1], id[2]);
     s_openpaper_l_flash_ready = true;
     return true;
+}
+
+/* Boot-time probe, logged on every wake so a unit's flash state is visible
+ * without waiting for a frame. */
+static void openpaper_l_flash_probe_log(void)
+{
+    const bool rail_was_off = !((REG_READ(GPIO_OUT_REG) >> EPD_PIN_PWR) & 1u);
+    if (openpaper_l_flash_init()) {
+        ESP_LOGI(TAG, "external flash present; frame cache uses it");
+    } else {
+        ESP_LOGW(TAG, "external flash absent or silent; frame cache uses the spare app slot");
+    }
+    /* Only a probe: do not leave the panel rail burning through the wake. */
+    if (rail_was_off) gpio_set_level(EPD_PIN_PWR, 0);
 }
 
 static esp_err_t openpaper_l_flash_read(size_t offset, void *dst, size_t len)
@@ -1485,11 +1647,14 @@ static esp_err_t openpaper_l_flash_read(size_t offset, void *dst, size_t len)
 static esp_err_t openpaper_l_flash_erase_frame(void)
 {
     if (!openpaper_l_flash_init()) return ESP_ERR_NOT_FOUND;
-    const size_t erase_bytes = ((size_t)EPD_BUF_BYTES + 4095u) & ~4095u;
-    for (size_t off = 0; off < erase_bytes; off += 4096) {
+    /* 64 KiB block erases (0xD8): 15 of them cover the frame, against 235
+     * sector erases, and each is far quicker than the sixteen sectors it
+     * replaces. The cache starts at offset 0, so the blocks are aligned. */
+    const size_t erase_bytes = ((size_t)EPD_BUF_BYTES + 65535u) & ~65535u;
+    for (size_t off = 0; off < erase_bytes; off += 65536) {
         esp_err_t err = openpaper_l_flash_write_enable();
         if (err != ESP_OK) return err;
-        uint8_t tx[4] = {0x20, (uint8_t)(off >> 16), (uint8_t)(off >> 8), (uint8_t)off};
+        uint8_t tx[4] = {0xD8, (uint8_t)(off >> 16), (uint8_t)(off >> 8), (uint8_t)off};
         err = openpaper_l_flash_txrx(tx, NULL, sizeof tx);
         if (err != ESP_OK) return err;
         err = openpaper_l_flash_wait_ready();
@@ -1570,6 +1735,7 @@ static esp_err_t openpaper_l_cache_sink(void *user, const uint8_t *data,
         c->bad = true;
         return err;
     }
+    c->crc = esp_rom_crc32_le(c->crc, data, len);
     c->offset += len;
     c->total += len;
     return ESP_OK;
@@ -1633,9 +1799,11 @@ static bool openpaper_l_cache_frame_backend(const char *url, const char *etag,
              "%s", part ? part->label : "");
     snprintf(s_openpaper_l_cache.etag, sizeof s_openpaper_l_cache.etag, "%s",
              etag ? etag : "");
+    s_openpaper_l_cache.crc = c.crc;
     s_openpaper_l_cache.magic = OPENPAPER_L_CACHE_MAGIC;
-    ESP_LOGI(TAG, "cached frame in %s; entering radio-free paint pass",
-             backend == OPENPAPER_L_CACHE_EXT_FLASH ? "external flash" : part->label);
+    ESP_LOGI(TAG, "cached frame in %s (crc %08x); entering radio-free paint pass",
+             backend == OPENPAPER_L_CACHE_EXT_FLASH ? "external flash" : part->label,
+             (unsigned)c.crc);
     return true;
 }
 
@@ -1741,12 +1909,15 @@ static bool openpaper_l_paint_cached_frame_if_pending(void)
     }
 
     ESP_LOGI(TAG, "painting cached OpenPaper L frame before WiFi...");
+    openpaper_l_bus_deselect_sd();
     openpaper_l_panel_hard_off();
     vTaskDelay(pdMS_TO_TICKS(OPENPAPER_L_PANEL_OFF_SETTLE_MS));
     ESP_ERROR_CHECK(epd_port_init());
     epd_init();
+    openpaper_l_sd_quiesce();   /* the rail came up again with the panel */
     vTaskDelay(pdMS_TO_TICKS(OPENPAPER_L_PAINT_SETTLE_MS));
     bool ok = epd_stream_begin();
+    uint32_t rb_crc = 0; size_t rb_zero = 0;
     for (int side = 0; ok && side < 2; side++) {
         for (int y = 0; ok && y < EPD_HEIGHT; y += EPD_STREAM_ROWS) {
             int rows = EPD_STREAM_ROWS;
@@ -1761,13 +1932,21 @@ static bool openpaper_l_paint_cached_frame_if_pending(void)
                 ok = false;
                 break;
             }
-            if (side == 0) stream_scan(&c, n);
+            if (side == 0) {
+                stream_scan(&c, n);
+                rb_crc = esp_rom_crc32_le(rb_crc, c.block, n);
+                for (size_t i = 0; i < n; i++) if (c.block[i] == 0x00) rb_zero++;
+            }
             ok = epd_stream_rows_side(side, c.block, y, rows);
         }
     }
     if (ok) {
         ESP_LOGI(TAG, "cached frame halves: non-white bytes left=%u right=%u",
                  (unsigned)c.nonwhite[0], (unsigned)c.nonwhite[1]);
+        ESP_LOGI(TAG, "cache readback crc %08x vs download %08x (%s); %u all-black bytes",
+                 (unsigned)rb_crc, (unsigned)s_openpaper_l_cache.crc,
+                 rb_crc == s_openpaper_l_cache.crc ? "match" : "MISMATCH",
+                 (unsigned)rb_zero);
     }
     epd_stream_end(ok);
     epd_sleep();
@@ -2175,6 +2354,7 @@ void app_main(void)
     ESP_LOGI(TAG, "boot; reset_reason=%d wakeup_cause=%d settings_mode=%d first_boot=%d",
              reset_reason, esp_sleep_get_wakeup_cause(), settings_mode, first_boot);
 #if defined(TESSERAE_STREAM_FRAMES) && defined(TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L)
+    openpaper_l_flash_probe_log();
     if (!settings_mode && openpaper_l_paint_cached_frame_if_pending()) {
         led_set(false);
         sleep_forever_or_until_timer();

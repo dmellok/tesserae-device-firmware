@@ -445,10 +445,74 @@ static void draw_portal_landscape(void)
     }
 }
 
+/* Draw `str` at scale `s`, left-aligned at x0. */
+static void draw_text_left(int x0, int y, const char *str, int s, uint8_t c)
+{
+    for (const char *p = str; *p; p++, x0 += 8 * s) draw_char(x0, y, *p, s, c);
+}
+
+/* Small landscape panels (the 400x300 4.2" class). The two-column layout
+ * above needs a left column wide enough for a 24-character line at a legible
+ * scale, and a 200-px column is not: at scale 2 the URL line is 384 px, so
+ * text_scale_to_fit drops it to 8-px glyphs, the 120-px logo and 32-px title
+ * push the block past the bottom, and the whole thing reads cramped. Here the
+ * text runs full width at scale 2 under a top row that pairs the logo and
+ * title on the left with the QR on the right, nothing shrunk, nothing clipped:
+ * 12 + ~90 (row) + 12 + 4 lines x 24 + 12 = ~222 of 300 px. */
+static void draw_portal_compact(void)
+{
+    uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
+    int qn = build_ap_qr(qr);
+
+    const int m  = 14;                                  /* page margin */
+    const int s  = 2;                                   /* body scale: 16-px glyphs */
+    const int lh = 8 * s + 8;                           /* line pitch */
+
+    /* QR at 3 px/module (~90 px, ~19 mm on this glass) on the right. */
+    int qscale = 3;
+    int qpix   = qn ? qn * qscale : 0;
+    int qz     = qn ? 4 * qscale : 0;
+    int row_h  = qn ? qpix : 84;
+    if (row_h < 84) row_h = 84;
+
+    int y = m + (qn ? qz : 0) / 2;
+    int logo = row_h;
+    blit_logo(m + logo / 2, y, logo);
+    int tx   = m + logo + 12;
+    int tmax = (qn ? s_W - m - qpix - qz : s_W - m) - tx;
+    int ts   = text_scale_to_fit("Tesserae", 3, tmax);
+    int ty   = y + (row_h - (8 * ts + 6 + 8 * s)) / 2;
+    draw_text_left(tx, ty, "Tesserae", ts, COL_BLK);
+    draw_text_left(tx, ty + 8 * ts + 6,
+                   s_portal_note ? s_portal_note : "Setup mode",
+                   text_scale_to_fit(s_portal_note ? s_portal_note : "Setup mode", s, tmax),
+                   COL_BLK);
+    if (qn) draw_qr(qr, s_W - m - qpix, y, qscale);
+    y += row_h + (qn ? qz : 0) / 2 + 12;
+
+    char line_ssid[64];
+    snprintf(line_ssid, sizeof line_ssid, "Wi-Fi:  %s", PROVISION_AP_SSID);
+    char line_pass[64];
+    snprintf(line_pass, sizeof line_pass, "Password:  %s", PROVISION_AP_PASS);
+    const int tw = s_W - 2 * m;
+    draw_text_left(m, y, line_ssid, text_scale_to_fit(line_ssid, s, tw), COL_BLK); y += lh;
+    if (SPLASH_AP_PASS_SHOWN) {
+        draw_text_left(m, y, line_pass, text_scale_to_fit(line_pass, s, tw), COL_BLK); y += lh;
+    }
+    draw_text_left(m, y, k_url, text_scale_to_fit(k_url, s, tw), COL_BLK); y += lh;
+    if (k_ble_hint) {
+        draw_text_left(m, y, k_ble_hint, text_scale_to_fit(k_ble_hint, s, tw), COL_BLK);
+    }
+}
+
 static void draw_portal(void)
 {
-    if (s_W > s_H) draw_portal_landscape();
-    else           draw_portal_portrait();
+    if (s_W > s_H) {
+        if (s_W <= 480 && s_H >= 240 && s_H <= 320) draw_portal_compact();
+        else                                        draw_portal_landscape();
+    } else {
+        draw_portal_portrait();
+    }
 }
 
 /* ---------- message (logo + title + wrapped body, no QR) ---------- */

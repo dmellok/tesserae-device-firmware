@@ -129,8 +129,9 @@ On the same unit, production env flashed, server on the LAN:
 
 ### Still not run on hardware
 
-- KEY1/KEY2 repaint and the ext1 button wake: no press has exercised either key,
-  so which key sits physically on the left is unverified.
+- (Resolved 2026-10-28, reported on PR #55: both keys verified. KEY1 = GPIO4 =
+  the left key, M5's "A"; KEY2 = GPIO3 = the right key, "B"; both wake from
+  ext1 and report themselves.)
 - OTA on this board.
 - Battery sag during a paint: `battery_read_mv()` does not run inside
   `frame_paint()`, so there is no instrument. The only battery data is per-wake

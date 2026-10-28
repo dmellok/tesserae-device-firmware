@@ -38,6 +38,12 @@ const epd_driver_t *epd_active_driver(void) { return &waveshare_1085g_dual_drive
 #elif defined(PANEL_DRIVER_SSD1683_DUAL)
 #  include "drivers/ssd1683_dual.h"
 const epd_driver_t *epd_active_driver(void) { return &ssd1683_dual_driver; }
+#elif defined(PANEL_DRIVER_HUESSEN_EPF1301_DUAL)
+#  include "drivers/huessen_epf1301_dual.h"
+const epd_driver_t *epd_active_driver(void) { return &huessen_epf1301_dual_driver; }
+#elif defined(PANEL_DRIVER_ST7305_RLCD)
+#  include "drivers/st7305_rlcd.h"
+const epd_driver_t *epd_active_driver(void) { return &st7305_rlcd_driver; }
 #else
 #  error "No PANEL_DRIVER_* selected by the board header."
 #endif
