@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.62.2] - 2026-10-30
+
 ### Fixed
 - Wi-Fi names in Chinese and other non-Latin scripts: the setup portal kept
   only the first three Chinese characters of a typed name, because it cut the
