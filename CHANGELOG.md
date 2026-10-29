@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Wi-Fi names in Chinese and other non-Latin scripts: the setup portal kept
+  only the first three Chinese characters of a typed name, because it cut the
+  percent-encoded form value to 32 bytes before decoding it. It now decodes
+  first. A name of exactly 32 bytes no longer loses its last byte when
+  joining.
+- Picking a network from the setup portal's list joins it by the name's exact
+  broadcast bytes, so a router that broadcasts its name in GBK rather than
+  UTF-8 can be joined. Scanned names with non-ASCII bytes are logged as hex.
+
 ## [1.62.1] - 2026-10-29
 
 ### Fixed

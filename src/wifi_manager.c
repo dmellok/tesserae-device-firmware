@@ -399,7 +399,9 @@ static esp_err_t connect_once(const char *ssid, const char *pass,
     if (!ensure_sta_netif()) return ESP_ERR_NO_MEM;
 
     wifi_config_t wc = {0};
-    strncpy((char *)wc.sta.ssid,     ssid, sizeof(wc.sta.ssid)     - 1);
+    /* sta.ssid is 32 raw bytes with no terminator required: a full-length
+     * name (ten Chinese characters and a digit, say) keeps its last byte. */
+    memcpy(wc.sta.ssid, ssid, strnlen(ssid, sizeof(wc.sta.ssid)));
     strncpy((char *)wc.sta.password, pass, sizeof(wc.sta.password) - 1);
     wc.sta.threshold.authmode = pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
     if (bssid) {

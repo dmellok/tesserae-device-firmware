@@ -8,6 +8,7 @@
 #include "wifi_manager.h"
 #include "memory_diag.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -397,10 +398,13 @@ static const char k_tail[] =
 "});"
 "});"
 "const pick=document.getElementById('ssid-pick');"
-"if(pick){pick.addEventListener('change',e=>{"
+"if(pick){const si=document.getElementById('ssid-idx');"
+"pick.addEventListener('change',e=>{"
+"const o=e.target.selectedOptions[0];if(si)si.value=o&&o.dataset.i||'';"
 "if(e.target.value){document.getElementById('ssid').value=e.target.value;"
 "document.getElementById('wifi-pw').focus();}"
-"});}"
+"});"
+"document.getElementById('ssid').addEventListener('input',()=>{if(si)si.value='';});}"
 /* Local, Cloud or Relay: show one card, and move the `required` attribute onto
    the field that mode actually needs. Without this the browser refused to submit a
    relay-only setup because the server URL was permanently required. */
@@ -468,22 +472,10 @@ static void html_escape(const char *src, char *dst, size_t dst_sz)
     dst[o] = '\0';
 }
 
-/* URL-decode %xx and '+' in-place. Caller-owned buffer. */
-static void url_decode(char *s)
-{
-    char *o = s;
-    for (char *p = s; *p; p++) {
-        if (*p == '+') { *o++ = ' '; }
-        else if (*p == '%' && p[1] && p[2]) {
-            char hex[3] = { p[1], p[2], 0 };
-            *o++ = (char)strtol(hex, NULL, 16);
-            p += 2;
-        } else *o++ = *p;
-    }
-    *o = '\0';
-}
-
-/* Pull a named field out of x-www-form-urlencoded body into dst. */
+/* Pull a named field out of x-www-form-urlencoded body into dst, decoding
+ * %xx and '+' as it copies. The bound applies to the decoded bytes: a
+ * Chinese SSID is 3 bytes per character but 9 percent-encoded, so cutting
+ * the raw value to dst_sz first lost everything past the third character. */
 static bool form_field(const char *body, const char *key, char *dst, size_t dst_sz)
 {
     size_t klen = strlen(key);
@@ -491,12 +483,16 @@ static bool form_field(const char *body, const char *key, char *dst, size_t dst_
     while (p && *p) {
         if (strncmp(p, key, klen) == 0 && p[klen] == '=') {
             const char *v = p + klen + 1;
-            const char *end = strchr(v, '&');
-            size_t len = end ? (size_t)(end - v) : strlen(v);
-            if (len >= dst_sz) len = dst_sz - 1;
-            memcpy(dst, v, len);
-            dst[len] = '\0';
-            url_decode(dst);
+            size_t o = 0;
+            for (; *v && *v != '&' && o + 1 < dst_sz; v++) {
+                if (*v == '+') dst[o++] = ' ';
+                else if (*v == '%' && isxdigit((unsigned char)v[1]) && isxdigit((unsigned char)v[2])) {
+                    char hex[3] = { v[1], v[2], 0 };
+                    dst[o++] = (char)strtol(hex, NULL, 16);
+                    v += 2;
+                } else dst[o++] = *v;
+            }
+            dst[o] = '\0';
             return true;
         }
         p = strchr(p, '&');
@@ -594,13 +590,17 @@ static esp_err_t render_form(httpd_req_t *req, const char *error)
             char esc[96];
             html_escape(s_scan[i].ssid, esc, sizeof esc);
             int n = snprintf(picker + o, sizeof picker - o,
-                "<option value=\"%s\">%s (%d dBm%s)</option>",
-                esc, esc, s_scan[i].rssi, s_scan[i].secure ? "" : ", open");
+                "<option value=\"%s\" data-i=\"%d\">%s (%d dBm%s)</option>",
+                esc, i, esc, s_scan[i].rssi, s_scan[i].secure ? "" : ", open");
             if (n < 0 || (size_t)n >= sizeof picker - o) break;
             o += (size_t)n;
         }
-        if (o + 16 < sizeof picker) {
-            snprintf(picker + o, sizeof picker - o, "</select></div>");
+        /* ssid_idx carries the picked entry so /save joins the network by
+         * its raw scanned bytes. A router broadcasting its name in GBK
+         * shows as mangled text that the browser can't post back intact. */
+        if (o + 80 < sizeof picker) {
+            snprintf(picker + o, sizeof picker - o,
+                "</select><input type=\"hidden\" id=\"ssid-idx\" name=\"ssid_idx\"></div>");
         }
     }
 
@@ -676,6 +676,16 @@ static esp_err_t h_save(httpd_req_t *req)
     setup_fields_t f;
     memset(&f, 0, sizeof f);
     form_field(body, "ssid", f.ssid, sizeof f.ssid);
+    /* Picked from the scan list: use the network's name exactly as it was
+     * broadcast, whatever its encoding. Typing in the box clears ssid_idx. */
+    char pick[4] = {0};
+    if (form_field(body, "ssid_idx", pick, sizeof pick) && pick[0]) {
+        int i = atoi(pick);
+        if (i >= 0 && i < s_scan_count) {
+            memcpy(f.ssid, s_scan[i].ssid, sizeof f.ssid);
+            f.ssid[sizeof f.ssid - 1] = '\0';
+        }
+    }
     /* Blank WiFi password means "keep what's stored", so editing just the
      * server via the always-on portal doesn't wipe creds. */
     f.have_pass = form_field(body, "pass", f.pass, sizeof f.pass) && f.pass[0];
@@ -861,6 +871,16 @@ static void do_wifi_scan(void)
         s_scan[s_scan_count].ssid[32] = '\0';
         s_scan[s_scan_count].rssi = records[i].rssi;
         s_scan[s_scan_count].secure = (records[i].authmode != WIFI_AUTH_OPEN);
+        /* Non-ASCII names logged as hex too, so a serial log tells a UTF-8
+         * name from a GBK one. */
+        for (const char *c = ssid; *c; c++) {
+            if ((unsigned char)*c >= 0x80) {
+                char hex[65] = {0};
+                for (int k = 0; ssid[k] && k < 32; k++) snprintf(hex + 2 * k, 3, "%02x", (unsigned char)ssid[k]);
+                ESP_LOGI(TAG, "scan: non-ASCII ssid bytes %s", hex);
+                break;
+            }
+        }
         s_scan_count++;
     }
     ESP_LOGI(TAG, "scan: %d unique nearby networks", s_scan_count);
