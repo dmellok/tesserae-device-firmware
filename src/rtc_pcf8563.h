@@ -62,6 +62,10 @@ bool rtc_pcf8563_present(void);
  * programmed, 0 on failure. */
 uint32_t rtc_pcf8563_arm_wake_timer(uint32_t seconds);
 
+/* Countdown timer off and its flag cleared, for a power-off that should last
+ * until a person presses the button. Returns false if the RTC did not answer. */
+bool rtc_pcf8563_disarm_wake_timer(void);
+
 /* Whether the countdown timer had fired when this boot first looked (the TF
  * flag in CTRL2). On a board that powers on from INT, true means this
  * power-on was the timer's, not a person's. Read once and cached; every init
@@ -75,6 +79,7 @@ static inline bool rtc_pcf8563_seed_clock(void)  { return false; }
 static inline bool rtc_pcf8563_store_clock(void) { return false; }
 static inline bool rtc_pcf8563_present(void)     { return false; }
 static inline uint32_t rtc_pcf8563_arm_wake_timer(uint32_t seconds) { (void)seconds; return 0; }
+static inline bool rtc_pcf8563_disarm_wake_timer(void) { return false; }
 static inline bool rtc_pcf8563_woke_by_timer(void) { return false; }
 
 #endif

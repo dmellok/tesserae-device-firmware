@@ -177,6 +177,13 @@ uint32_t rtc_pcf8563_arm_wake_timer(uint32_t seconds)
     return armed;
 }
 
+bool rtc_pcf8563_disarm_wake_timer(void)
+{
+    if (!rtc_pcf8563_present()) return false;
+    return rtc_write_reg(PCF_REG_TIMER_CTL, PCF_TIMER_OFF) &&
+           rtc_write_reg(PCF_REG_CTRL2, 0x00);
+}
+
 /* Days since 1970-01-01 for a proleptic Gregorian civil date. Avoids timegm(),
  * which newlib does not promise, and mktime(), which would apply the TZ. */
 static int64_t days_from_civil(int y, unsigned m, unsigned d)

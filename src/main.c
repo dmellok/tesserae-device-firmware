@@ -963,7 +963,11 @@ static void run_provisioning_then_reboot(const char *note)
     sleep_park_rails();
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     /* No wake source at all, so on a latched board drop the rail: a real
-     * power-off, not an indefinite trickle. No-op elsewhere. */
+     * power-off, not an indefinite trickle. No-op elsewhere. The boot's
+     * fallback RTC timer goes first, or it would switch the board back on. */
+#if BOARD_RTC_POWER_OFF
+    rtc_pcf8563_disarm_wake_timer();
+#endif
     power_latch_release();
     esp_deep_sleep_start();
     /* not reached */
@@ -2373,6 +2377,15 @@ void app_main(void)
         ESP_LOGI(TAG, "clock seeded from the board RTC: %04d-%02d-%02d %02d:%02d:%02dZ",
                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
     }
+#if BOARD_RTC_POWER_OFF
+    /* The seed above switched the countdown off, so from here to the sleep
+     * entry's re-arm nothing would switch the board back on if the rail went
+     * (a brownout the latch hold cannot ride out). Arm a fallback now: a wake
+     * that dies comes back in RTC_FALLBACK_WAKE_S instead of never. A wake
+     * that outlasts it only leaves INT asserted, which keeps the rail up
+     * until the sleep entry re-arms the timer and clears the flag. */
+    rtc_pcf8563_arm_wake_timer(RTC_FALLBACK_WAKE_S);
+#endif
     /* After the clock seed, so a brownout / panic / watchdog latch carries a
      * real time where the board has one. */
     diag_run_boot();

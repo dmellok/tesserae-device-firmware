@@ -175,6 +175,13 @@
 #define WIFI_OUTAGE_BACKOFF_AFTER   10
 #define WIFI_OUTAGE_RETRY_SLOW_S    (30 * 60)
 
+/* RTC-powered boards (M5Paper): how long after a wake starts the RTC switches
+ * the board back on if the wake dies before its sleep entry re-arms the timer
+ * with the real interval. Longer than a normal wake, short enough that a
+ * crash costs one missed cycle or two rather than everything until the power
+ * button. */
+#define RTC_FALLBACK_WAKE_S         (10 * 60)
+
 /* SoftAP credentials shown to the user during provisioning. */
 #define PROVISION_AP_SSID    "Tesserae-Setup"
 #define PROVISION_AP_PASS    "tesserae"     /* >= 8 chars or use open AP */

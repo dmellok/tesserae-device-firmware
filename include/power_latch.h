@@ -32,7 +32,13 @@
  * microseconds until the output is configured, and on a board whose latch
  * follows the pin that is a dip on the rail. So configure the output high
  * while the hold still pins the pad, then release: the pad goes straight
- * from held-high to driven-high. Harmless on units that do self-latch. */
+ * from held-high to driven-high. Harmless on units that do self-latch.
+ *
+ * The pad is then held high for the rest of the wake. A panic, a watchdog or
+ * an esp_restart() hands every unheld pad back to its reset state, which on
+ * the M5Paper is the pull-down that drops the rail: the board went off
+ * mid-wake with no RTC timer armed and stayed off until the power button. A
+ * hold survives those resets, and the next boot's call above takes it off. */
 static inline void power_latch_hold(void)
 {
     gpio_set_direction((gpio_num_t)BOARD_POWER_LATCH_PIN, GPIO_MODE_OUTPUT);
@@ -41,6 +47,7 @@ static inline void power_latch_hold(void)
     /* Re-assert now that the pad is ours: a cold boot had no hold, so the
      * write above already took; after a sleep this is the one that does. */
     gpio_set_level((gpio_num_t)BOARD_POWER_LATCH_PIN, 1);
+    gpio_hold_en((gpio_num_t)BOARD_POWER_LATCH_PIN);
 }
 
 /* Latch HIGH across deep sleep, so the rail survives and the wake source has an

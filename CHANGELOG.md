@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- M5Paper on battery: a wake that reset partway through (a panic, a watchdog,
+  a brownout or a software restart) switched the board off with no RTC timer
+  armed, so it stopped checking in until the power button was pressed. The
+  power-latch pin is now held through the whole wake, so a reset no longer
+  drops the rail, and each wake arms a 10-minute fallback RTC timer that
+  switches the board back on if the rail drops anyway. The normal sleep entry
+  replaces it with the real interval, and the setup portal's power-off clears
+  it.
+
 ## [1.62.2] - 2026-10-30
 
 ### Fixed
