@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.62.3] - 2026-10-31
+
 ### Fixed
 - M5Paper on battery: a wake that reset partway through (a panic, a watchdog,
   a brownout or a software restart) switched the board off with no RTC timer
