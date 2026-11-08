@@ -44,6 +44,22 @@ CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
 CONFIG_ESP_TLS_USING_MBEDTLS=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+#
+# Certificate validity dates.
+#
+# ESP-IDF ships this OFF (components/mbedtls/Kconfig: "default n", help text:
+# "If this option is disabled (default) then X.509 certificate 'valid from' and
+# 'valid to' timestamp fields are ignored"). With it off the panel validated the
+# chain and the hostname but accepted an expired certificate for ever -- which
+# matters most in the case rotation exists for: a key compromised after its
+# certificate expired.
+#
+# Turning it on makes the system clock load-bearing, so it is paired with the
+# gate in src/time_ready.c: no TLS request is made until the clock reads inside
+# a plausible window (RTC first, one bounded SNTP sync second, otherwise the
+# wake does nothing network-facing and the last frame stays on the glass).
+CONFIG_MBEDTLS_HAVE_TIME_DATE=y
+CONFIG_MBEDTLS_HAVE_TIME=y
 # Allocate mbedTLS buffers from PSRAM instead of internal DRAM.
 #
 # mbedtls_ssl_setup() takes SSL_IN_CONTENT_LEN + SSL_OUT_CONTENT_LEN, which is

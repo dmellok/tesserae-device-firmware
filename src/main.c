@@ -65,6 +65,7 @@
 #include "battery.h"
 #include "led.h"          /* green status LED (no-op without one) */
 #include "rtc_pcf8563.h"  /* board RTC seed at boot (no-op without one) */
+#include "time_ready.h"   /* clock gate before any TLS request */
 #include "panel/busy_sleep.h" /* light sleep gate while radios are down */
 #include "ble_setup.h"
 #include "ble_photo_mode.h"
@@ -3561,6 +3562,20 @@ void app_main(void)
             esp_restart();
         }
         ESP_LOGI(TAG, "settings editor timed out; back to sleep");
+        wifi_sta_stop();
+        sleep_forever_or_until_timer();
+        return;
+    }
+
+    /* Certificate validation now includes the validity window
+     * (CONFIG_MBEDTLS_HAVE_TIME_DATE), so the system clock has to be right
+     * before the first handshake -- and the Date header that would fix the
+     * clock only arrives on the far side of that handshake. A panel whose RTC
+     * never ran reads 1970 and would fail every certificate as "not yet
+     * valid", for ever. So: take the RTC if it is plausible, else one bounded
+     * SNTP sync, else make no TLS request this wake and keep the frame that is
+     * already on the glass. Never relax the certificate check to get past it. */
+    if (!time_ready_ensure(TIME_READY_TIMEOUT_MS, NULL)) {
         wifi_sta_stop();
         sleep_forever_or_until_timer();
         return;

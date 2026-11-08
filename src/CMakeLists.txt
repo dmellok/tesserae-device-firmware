@@ -31,6 +31,7 @@ idf_component_register(
         "panel/drivers/st7305_rlcd.c"
         "panel/busy_sleep.c"
         "rtc_pcf8563.c"
+        "time_ready.c"
         "sy6974.c"
         "led.c"
         "battery.c"
