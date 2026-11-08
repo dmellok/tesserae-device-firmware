@@ -36,6 +36,7 @@ idf_component_register(
         "battery.c"
         "pmic.c"
         "bq27220.c"
+        "max17048.c"
         "m5ioe1.c"
         "m5pm1.c"
         "sht4x.c"

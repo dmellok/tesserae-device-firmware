@@ -1,6 +1,7 @@
 #include "battery.h"
 #include "app_config.h"   /* pulls board.h -> BOARD_BATTERY_* */
 #include "bq27220.h"
+#include "max17048.h"
 #include "m5pm1.h"
 #include <stdint.h>
 #include "esp_timer.h"
@@ -12,6 +13,10 @@ bool battery_present(void)
      * gauge is certainly fitted, but it NACKs while busy or unconfigured, and
      * publishing 0 mV in that window reads as a flat cell. See bq27220.h. */
     return bq27220_available();
+#elif defined(BOARD_BATTERY_MAX17048)
+    /* Optional gauge: false on a board that was never given one, so it
+     * reports no battery exactly as before. See max17048.h. */
+    return max17048_available();
 #elif defined(BOARD_BATTERY_M5PM1)
     /* Same shape as the gauge: the PMIC is fitted, but a NACKed read is
      * "unknown", never "flat". See m5pm1.h. */
@@ -138,6 +143,9 @@ int battery_read_pct(void)
      * and for the pack's actual capacity; battery_pct() can only read a resting
      * voltage off a generic curve and is wrong under load in both directions. */
     return bq27220_battery_pct();
+#elif defined(BOARD_BATTERY_MAX17048)
+    /* Same reasoning: the gauge's ModelGauge SOC beats the generic curve. */
+    return max17048_battery_pct();
 #else
     return battery_pct(battery_read_mv());
 #endif
@@ -170,6 +178,16 @@ bool power_can_stay_awake(void)
 int battery_read_mv(void)
 {
     return bq27220_battery_mv();
+}
+
+#elif defined(BOARD_BATTERY_MAX17048)
+
+/* Optional MAX17048 gauge (XIAO 7.5" C3 panel, issue #61): 0 mV when no gauge
+ * answered, which every caller already reads as "no battery". */
+
+int battery_read_mv(void)
+{
+    return max17048_battery_mv();
 }
 
 #elif defined(BOARD_BATTERY_M5PM1)

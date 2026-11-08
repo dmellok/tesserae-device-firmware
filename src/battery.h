@@ -8,6 +8,7 @@
  *                               BOARD_BATTERY_DIVIDER, BOARD_VBAT_SWITCH_PIN)
  *   BOARD_BATTERY_PMIC          AXP2101 PMIC over I2C  (pmic.c)
  *   BOARD_BATTERY_GAUGE_I2C     BQ27220 fuel gauge over I2C  (bq27220.c)
+ *   BOARD_BATTERY_MAX17048      optional MAX17048 gauge over I2C  (max17048.c)
  *
  * A board that defines none of them reports no battery at all, which is a real
  * configuration rather than a gap: see battery_present().

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- XIAO 7.5" ePaper panel (ESP32-C3): battery reporting from an optional MAX17048 fuel gauge wired to D4 (SDA) and D5 (SCL) at 0x36. The board probes for it each wake and sends its voltage and charge in the heartbeat. Panels without a gauge report no battery, as before. (#61)
+
 ### Changed
 
 - The setup portal (Wi-Fi, server, cloud and relay) uses Tesserae's Paper theme and the current logo, matching tesserae.ink and the other Tesserae devices: paper ground, cream cards with hairline edges, red-ink section labels and button, 2 px corners. Layout, fields and behaviour are unchanged.
