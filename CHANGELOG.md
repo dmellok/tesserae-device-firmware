@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The setup portal (Wi-Fi, server, cloud and relay) uses Tesserae's Paper theme and the current logo, matching tesserae.ink and the other Tesserae devices: paper ground, cream cards with hairline edges, red-ink section labels and button, 2 px corners. Layout, fields and behaviour are unchanged.
+
 ## [1.62.3] - 2026-10-31
 
 ### Fixed
