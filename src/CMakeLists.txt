@@ -32,6 +32,7 @@ idf_component_register(
         "panel/busy_sleep.c"
         "rtc_pcf8563.c"
         "time_ready.c"
+        "clock_floor.c"
         "sy6974.c"
         "led.c"
         "battery.c"

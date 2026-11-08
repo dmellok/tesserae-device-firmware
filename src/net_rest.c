@@ -9,6 +9,7 @@
  */
 #include "net_rest.h"
 #include "rtc_pcf8563.h"
+#include "clock_floor.h"   /* monotonic floor for certificate dates */
 #include "sy6974.h"
 #include "rest_config.h"
 #include "app_config.h"
@@ -418,6 +419,11 @@ static rest_status_t do_request_body(esp_http_client_method_t method,
          * two I2C transactions for nothing. */
         int64_t moved_s = (int64_t)s_server_date - (int64_t)old_tv.tv_sec;
         if (moved_s > 2 || moved_s < -2) rtc_pcf8563_store_clock();
+        /* Advance the persisted high-water mark, but only from a response we
+         * actually authenticated: an http:// Date header is anyone's to write.
+         * The mark is written at most once a day (see clock_floor.c). */
+        if (strncmp(rest_config_get()->server_url, "https://", 8) == 0)
+            clock_floor_advance((int64_t)s_server_date);
     }
 
     ESP_LOGI(TAG, "<- %d (%u bytes)", http, (unsigned)s_rx_len);

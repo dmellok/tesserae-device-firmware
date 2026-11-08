@@ -59,6 +59,7 @@ bool time_ready_evaluate(const time_ready_sources_t *sources, int timeout_ms,
 #ifdef ESP_PLATFORM
 /* ---- firmware glue: the same decision, with the real sources ---------- */
 
+#include "clock_floor.h"
 #include "esp_netif_sntp.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -105,7 +106,29 @@ bool time_ready_ensure(int timeout_ms, time_ready_result_t *result)
         .sync_from_network = sntp_sync,
     };
     time_ready_result_t got = TIME_READY_NO_TIME;
-    const bool ok = time_ready_evaluate(&sources, timeout_ms, &got);
+    bool ok = time_ready_evaluate(&sources, timeout_ms, &got);
+
+    if (ok) {
+        /* Plausible is not the same as not-rolled-back. Compare against the
+         * highest time this device has ever seen from a verified response; a
+         * clock below it cannot make an expired certificate look current, but
+         * it can still be a clock that was reset. One bounded sync, then
+         * either accept or refuse -- never a second guess. */
+        const clock_floor_t floor = clock_floor_load();
+        if (!clock_floor_accepts(floor, system_now())) {
+            ESP_LOGW(TAG, "clock %lld is below the last verified time %lld",
+                     (long long)system_now(), (long long)floor.epoch);
+            if (sources.sync_from_network(timeout_ms) &&
+                clock_floor_accepts(floor, system_now())) {
+                got = TIME_READY_FROM_SNTP;
+            } else {
+                ESP_LOGW(TAG, "clock still behind the mark; no TLS this wake");
+                ok = false;
+                got = TIME_READY_NO_TIME;
+            }
+        }
+    }
+
     if (result) *result = got;
     if (ok) {
         ESP_LOGI(TAG, "clock ready (%s): %lld", time_ready_result_name(got),
