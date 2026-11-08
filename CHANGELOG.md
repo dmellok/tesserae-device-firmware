@@ -17,10 +17,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   put the ETag back. The server answered 304 and nothing was painted. The
   ETags are now dropped after the settings load, so the first fetch after the
   logo always paints. Deep-sleep wakes still send the ETag (#21).
-- M5Stack PaperS3 touch: taps landed in a 540x960 portrait frame, with the
-  long axis reversed, while the device composes 960x540 landscape. Touches
-  now map to the 960x540 frame, with the axes swapped and only X reversed
-  (#21).
+- M5Stack PaperS3: the device registered its 960x540 buffer as the canvas,
+  so the server composed landscape for a panel held portrait. It now
+  registers with a 90 degree turn, so dashboards are composed 540x960 and
+  turned onto the panel. A PaperS3 that already paired keeps its landscape
+  canvas until its orientation is set to Portrait on the
+  device page. Touches map onto the 540x960 canvas with no axis swap and
+  both axes reversed (#21).
 
 ## [1.62.3] - 2026-10-31
 
