@@ -163,9 +163,20 @@
  *
  *   TP INT   GPIO48        I2C SDA  GPIO41      I2C SCL  GPIO42 @ 200 kHz
  *
- * Frame dims are the 540x960 composition. The axis mapping is the starting
- * guess from firmware #21 (the reporter's ESPHome config mirrors both axes);
- * nothing here has been checked against corner taps yet.
+ * Frame dims are the 960x540 composition the device registers with (panel_w
+ * x panel_h from EPD_WIDTH/EPD_HEIGHT, rotation 0): the orientation card
+ * paints upright in landscape at that size. The first guess here, a 540x960
+ * frame mirrored on both axes, came back on corner taps (firmware #21) with
+ * the long glass axis squeezed into x 0..540, running right to left, and the
+ * short axis stretched into y 0..960. The digitiser is mounted 90 degrees to
+ * the scan, so SWAP_XY stays; after the swap, frame x follows raw y in the
+ * same direction (no Y invert) and frame y follows raw x reversed (X invert).
+ * Checked against the four reported corner taps, mapped back through the old
+ * transform and forward through this one: TL (408,249) -> (233,140), TR
+ * (128,273) -> (731,154), BL (407,732) -> (235,411), BR (125,714) -> (736,401),
+ * against digit centres (330,135), (720,135), (245,410), (720,410). The
+ * mapping holds whether the GT911 reports a 540x960 or a 960x540 maximum.
+ * Not yet re-checked on the glass.
  *
  * GPIO48 is not an RTC pad, so a tap cannot wake the board from deep sleep:
  * as on the M5Paper, touch only registers while it is awake, so it needs
@@ -178,11 +189,11 @@
 #define BOARD_TOUCH_I2C_HZ        BOARD_PAPERS3_I2C_HZ
 #define BOARD_TOUCH_I2C_ADDR      0x5d
 #define BOARD_TOUCH_INT_PIN       48
-#define BOARD_TOUCH_FRAME_W       540
-#define BOARD_TOUCH_FRAME_H       960
+#define BOARD_TOUCH_FRAME_W       EPD_WIDTH    /* 960 */
+#define BOARD_TOUCH_FRAME_H       EPD_HEIGHT   /* 540 */
 #define BOARD_TOUCH_SWAP_XY       1
 #define BOARD_TOUCH_INVERT_X      1
-#define BOARD_TOUCH_INVERT_Y      1
+#define BOARD_TOUCH_INVERT_Y      0
 
 /* ------------------------------------------------------------------ */
 /* Buttons                                                             */

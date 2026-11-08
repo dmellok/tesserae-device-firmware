@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   put the ETag back. The server answered 304 and nothing was painted. The
   ETags are now dropped after the settings load, so the first fetch after the
   logo always paints. Deep-sleep wakes still send the ETag (#21).
+- M5Stack PaperS3 touch: taps landed in a 540x960 portrait frame, with the
+  long axis reversed, while the device composes 960x540 landscape. Touches
+  now map to the 960x540 frame, with the axes swapped and only X reversed
+  (#21).
 
 ## [1.62.3] - 2026-10-31
 
