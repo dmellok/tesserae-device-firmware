@@ -981,29 +981,42 @@ static void run_provisioning_then_reboot(const char *note)
  * If we'll be going straight to the captive portal anyway (no creds), skip
  * the logo splash -- run_provisioning_then_reboot() paints the portal splash
  * instead, avoiding a wasted second ~30 s refresh on the no-creds path. */
-static void maybe_show_splash(esp_reset_reason_t reset_reason, bool has_creds)
+static bool maybe_show_splash(esp_reset_reason_t reset_reason, bool has_creds)
 {
 #ifdef TESSERAE_BOARD_PAPERLESSPAPER_OPENPAPER_L
     /* The 13.3" dual-controller glass already needs a full refresh for the
      * real frame; a cold-boot logo costs another ~30 s and can leave one half
      * stale on this board. Skip the cosmetic logo and let the real frame paint. */
-    return;
+    return false;
 #endif
     if (reset_reason != ESP_RST_POWERON && reset_reason != ESP_RST_EXT) {
-        return;
+        return false;
     }
     if (!has_creds) {
-        return;
+        return false;
     }
     ESP_LOGI(TAG, "cold boot; showing logo splash");
     splash_show_logo();
-    /* The logo replaced the last frame on the glass. Forget the held ETag so
-     * this cycle's fetch cannot 304 and leave the logo up until the dashboard
-     * next changes (bench 2026-09-14: a RESET press on an EE03 with an
-     * unchanged frame stayed on the logo for half an hour). Same treatment as
-     * the BLE maintenance screen; RAM only, the paint stores the new ETag.
-     * A relay-only panel dedups on its own relay ETag instead, so drop that
-     * one too (the button-wake path clears both the same way). */
+    return true;
+}
+
+/* The logo replaced the last frame on the glass. Forget the held ETags so
+ * this cycle's fetch cannot 304 and leave the logo up until the dashboard
+ * next changes (bench 2026-09-14: a RESET press on an EE03 with an unchanged
+ * frame stayed on the logo for half an hour; firmware #21: a PaperS3 power
+ * cycle did the same). Same treatment as the BLE maintenance screen; RAM
+ * only, the paint stores the new ETag. A relay-only panel dedups on its own
+ * relay ETag instead, so drop that one too (the button-wake path clears both
+ * the same way).
+ *
+ * This MUST run after the boot's rest_config_load(): the load re-reads both
+ * ETags from NVS, so clearing them before it (as maybe_show_splash did once
+ * the splash moved ahead of the Wi-Fi start) silently undid the clear. Only
+ * a boot that painted the logo calls this; a deep-sleep wake never does, so
+ * a timer wake with the last frame still on the glass keeps its 304. */
+static void forget_etags_after_splash(void)
+{
+    ESP_LOGI(TAG, "logo on glass; dropping the held ETags so the first fetch paints");
     rest_config_set_frame_etag("");
     rest_config_set_relay_etag("");
 }
@@ -3240,12 +3253,14 @@ void app_main(void)
      * board drops its power latch. Painting first costs the ~1.5 s the
      * connect used to overlap with the splash, once per cold boot. Settings
      * mode skips it as before: the user is waiting on the editor. */
+    bool splash_shown = false;
     if (!settings_mode) {
-        maybe_show_splash(reset_reason, wifi_creds_present());
+        splash_shown = maybe_show_splash(reset_reason, wifi_creds_present());
     }
 
     ESP_ERROR_CHECK(wifi_manager_init());
     rest_config_load();
+    if (splash_shown) forget_etags_after_splash();
 
     if (maintenance_requested) {
         /* The entry/exit gesture belongs to the local session, not a server

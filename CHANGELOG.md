@@ -10,6 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The setup portal (Wi-Fi, server, cloud and relay) uses Tesserae's Paper theme and the current logo, matching tesserae.ink and the other Tesserae devices: paper ground, cream cards with hairline edges, red-ink section labels and button, 2 px corners. Layout, fields and behaviour are unchanged.
 
+### Fixed
+- After a power cycle or a RESET press the panel could stay on the Tesserae
+  logo until the dashboard changed. The boot dropped the stored frame ETag
+  when it painted the logo, but then reloaded its settings from flash, which
+  put the ETag back. The server answered 304 and nothing was painted. The
+  ETags are now dropped after the settings load, so the first fetch after the
+  logo always paints. Deep-sleep wakes still send the ETag (#21).
+
 ## [1.62.3] - 2026-10-31
 
 ### Fixed
