@@ -17,6 +17,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "clock_floor.h"
+
 /* 2025-01-01T00:00:00Z. Below this the clock was never set: the PCF8563 powers
  * up at 2000-01-01 and a wiped system clock reads 1970. */
 #define TIME_READY_MIN_EPOCH 1735689600LL
@@ -41,6 +43,12 @@ const char *time_ready_result_name(time_ready_result_t result);
 
 /* True when `epoch` could be a real "now" for this device. */
 bool time_ready_epoch_ok(int64_t epoch);
+
+/* Everything a clock must satisfy before a TLS request is made: inside the
+ * plausible window AND not below the persisted mark. One function, because the
+ * two paths that need it drifted apart once -- the rollback branch re-checked
+ * only the lower bound and would accept a timestamp from the year 2200. */
+bool time_ready_clock_acceptable(int64_t epoch, clock_floor_t floor);
 
 /* The sources, injected so the decision below can be exercised on a host with
  * no ESP-IDF, no radio and no RTC. Any of them may be NULL. */

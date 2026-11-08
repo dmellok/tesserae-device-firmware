@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "time_ready.h"
+#include "clock_floor.h"
 
 static int checks;
 static int failures;
@@ -90,6 +91,35 @@ static void test_epoch_window(void)
     CHECK(time_ready_epoch_ok(TIME_READY_MAX_EPOCH));
     CHECK(!time_ready_epoch_ok(TIME_READY_MAX_EPOCH + 1));
     CHECK(!time_ready_epoch_ok(-1));
+}
+
+/* ---- the combined condition (the H2E defect) --------------------------- */
+
+static void test_clock_acceptable_window_and_floor(void)
+{
+    const clock_floor_t none = clock_floor_none();
+    const clock_floor_t marked_2026_06 = { .present = true, .epoch = 1780272000LL };
+
+    /* H2E B3: a rollback clock plus an SNTP reply from the year 2200. The
+     * rollback branch used to check only the floor, which 2200 satisfies. */
+    CHECK(!time_ready_clock_acceptable(7258118400LL, marked_2026_06));
+    CHECK(!time_ready_clock_acceptable(7258118400LL, none));
+
+    /* window edges, no mark */
+    CHECK(!time_ready_clock_acceptable(TIME_READY_MIN_EPOCH - 1, none));
+    CHECK(time_ready_clock_acceptable(TIME_READY_MIN_EPOCH, none));
+    CHECK(time_ready_clock_acceptable(TIME_READY_MAX_EPOCH, none));
+    CHECK(!time_ready_clock_acceptable(TIME_READY_MAX_EPOCH + 1, none));
+
+    /* floor edges, plausible window */
+    CHECK(time_ready_clock_acceptable(marked_2026_06.epoch, marked_2026_06));
+    CHECK(time_ready_clock_acceptable(marked_2026_06.epoch - CLOCK_FLOOR_TOLERANCE_S, marked_2026_06));
+    CHECK(!time_ready_clock_acceptable(marked_2026_06.epoch - CLOCK_FLOOR_TOLERANCE_S - 1, marked_2026_06));
+
+    /* both failures at once, and plain junk */
+    CHECK(!time_ready_clock_acceptable(0, marked_2026_06));
+    CHECK(!time_ready_clock_acceptable(0, none));
+    CHECK(!time_ready_clock_acceptable(946684800LL, none));   /* 2000 */
 }
 
 /* ---- the decision ------------------------------------------------------ */
@@ -217,6 +247,7 @@ static void test_result_names_are_distinct(void)
 int main(void)
 {
     test_epoch_window();
+    test_clock_acceptable_window_and_floor();
     test_already_plausible_touches_nothing();
     test_rtc_path();
     test_rtc_that_seeds_an_implausible_date_falls_through();

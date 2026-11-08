@@ -18,6 +18,11 @@ bool time_ready_epoch_ok(int64_t epoch)
     return epoch >= TIME_READY_MIN_EPOCH && epoch <= TIME_READY_MAX_EPOCH;
 }
 
+bool time_ready_clock_acceptable(int64_t epoch, clock_floor_t floor)
+{
+    return time_ready_epoch_ok(epoch) && clock_floor_accepts(floor, epoch);
+}
+
 bool time_ready_evaluate(const time_ready_sources_t *sources, int timeout_ms,
                          time_ready_result_t *result)
 {
@@ -115,14 +120,20 @@ bool time_ready_ensure(int timeout_ms, time_ready_result_t *result)
          * it can still be a clock that was reset. One bounded sync, then
          * either accept or refuse -- never a second guess. */
         const clock_floor_t floor = clock_floor_load();
-        if (!clock_floor_accepts(floor, system_now())) {
+        const int64_t before = system_now();
+        if (!time_ready_clock_acceptable(before, floor)) {
             ESP_LOGW(TAG, "clock %lld is below the last verified time %lld",
-                     (long long)system_now(), (long long)floor.epoch);
-            if (sources.sync_from_network(timeout_ms) &&
-                clock_floor_accepts(floor, system_now())) {
+                     (long long)before, (long long)floor.epoch);
+            const bool synced = sources.sync_from_network(timeout_ms);
+            /* One captured reading, judged by both conditions. Checking only the
+             * floor here is what let a year-2200 SNTP reply through: it is not
+             * below the mark, and nothing asked whether it was plausible. */
+            const int64_t after = system_now();
+            if (synced && time_ready_clock_acceptable(after, floor)) {
                 got = TIME_READY_FROM_SNTP;
             } else {
-                ESP_LOGW(TAG, "clock still behind the mark; no TLS this wake");
+                ESP_LOGW(TAG, "clock still unusable (%lld); no TLS this wake",
+                         (long long)after);
                 ok = false;
                 got = TIME_READY_NO_TIME;
             }
