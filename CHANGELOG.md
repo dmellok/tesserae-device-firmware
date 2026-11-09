@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.63.1] - 2026-11-09
+
 ### Fixed
 
 - reTerminal Sticky: the setup portal, the setup splash and the "Bluetooth closed" message said to hold Refresh, a button the Sticky doesn't have. On the Sticky that role is the power button, and the text now says Power. Boards name the button through `BOARD_BTN_REFRESH_LABEL`, which defaults to Refresh.
