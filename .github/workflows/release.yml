@@ -124,8 +124,12 @@ jobs:
           path: |
             ~/.platformio
             ~/.cache/pip
-          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini', 'sdkconfig.defaults') }}
-          restore-keys: pio-${{ runner.os }}-
+          # Same per-env key as firmware.yml, so a release restores the cache
+          # its CI build of the same tree saved.
+          key: pio-${{ runner.os }}-${{ matrix.env }}-${{ hashFiles('platformio.ini', 'sdkconfig.defaults') }}
+          restore-keys: |
+            pio-${{ runner.os }}-${{ matrix.env }}-
+            pio-${{ runner.os }}-
 
       - name: Install tools
         # Pin esptool to v4: its `merge_bin` subcommand + underscore flags
@@ -134,10 +138,15 @@ jobs:
         # SCons.Tool.FortranCommon and breaks the espressif32 builder script.
         run: pip install "platformio<6.2" && pip install "esptool<5"
 
+      # Retried, as in firmware.yml: pioarduino's GitHub release downloads
+      # return 504 now and then, and a release shouldn't fail on one.
+      - name: Install packages for ${{ matrix.env }}
+        run: sh tools/ci_retry.sh pio pkg install -e ${{ matrix.env }}
+
       - name: Build ${{ matrix.env }}
         env:
           PLATFORMIO_BUILD_FLAGS: '-DFW_VERSION=\"${{ steps.ver.outputs.fw_version }}\"'
-        run: pio run -e ${{ matrix.env }}
+        run: sh tools/ci_retry.sh pio run -e ${{ matrix.env }}
 
       # Merge the built images into one factory image flashed at offset 0, and
       # stage the same images as individual parts (offset-addressed) so the

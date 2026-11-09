@@ -31,10 +31,25 @@ jobs:
         with:
           python-version: '3.11'
 
+      # The OTA, relay-crypto and Bluetooth Photo tests compile against the
+      # E1004's ESP-IDF packages. Uncached, every run downloaded them from
+      # pioarduino's GitHub releases, and a 504 there failed the job.
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-host-${{ runner.os }}-${{ hashFiles('platformio.ini', 'sdkconfig.defaults') }}
+          restore-keys: pio-host-${{ runner.os }}-
+
       - name: Install PlatformIO
         # Pinned below 6.2: PlatformIO 6.2.0 moves to tool-scons 4.11, which drops
         # SCons.Tool.FortranCommon and breaks the espressif32 builder script.
         run: pip install "platformio==6.1.19"
+
+      - name: Install the E1004 packages the host tests build against
+        run: sh tools/ci_retry.sh pio pkg install -e seeed-reterminal-e1004
 
       - name: Touch coordinate tests
         run: cc -I src test/test_touch_coords.c src/touch_coords.c -o /tmp/touch-coords && /tmp/touch-coords
@@ -156,20 +171,30 @@ jobs:
           path: |
             ~/.platformio
             ~/.cache/pip
-          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini', 'sdkconfig.defaults') }}
-          restore-keys: pio-${{ runner.os }}-
+          # One key per env: a shared key is saved by whichever job finishes
+          # first, so the other boards' toolchains (RISC-V for the C3/C6
+          # boards, say) were never in it and downloaded fresh every run.
+          key: pio-${{ runner.os }}-${{ matrix.env }}-${{ hashFiles('platformio.ini', 'sdkconfig.defaults') }}
+          restore-keys: |
+            pio-${{ runner.os }}-${{ matrix.env }}-
+            pio-${{ runner.os }}-
 
       - name: Install PlatformIO
         # Pinned below 6.2: PlatformIO 6.2.0 moves to tool-scons 4.11, which drops
         # SCons.Tool.FortranCommon and breaks the espressif32 builder script.
         run: pip install "platformio==6.1.19"
 
+      - name: Install packages for ${{ matrix.env }}
+        run: sh tools/ci_retry.sh pio pkg install -e ${{ matrix.env }}
+
       - name: Build ${{ matrix.env }}
         env:
           # Single-quoted so the backslash-quotes survive into PlatformIO, which
           # strips one level and hands gcc -DFW_VERSION="0.0.N" (a C string).
           PLATFORMIO_BUILD_FLAGS: '-DFW_VERSION=\"${{ steps.ver.outputs.version }}\"'
-        run: pio run -e ${{ matrix.env }}
+        # Retried: the first build also installs the ESP-IDF tools, a download
+        # that fails on its own now and then (idf_tools.py rc=1).
+        run: sh tools/ci_retry.sh pio run -e ${{ matrix.env }}
 
       # PlatformIO emits three flashable images per build (no combined factory
       # bin): app at 0x10000, bootloader at 0x0, partition table at 0x8000.
@@ -214,8 +239,10 @@ jobs:
           path: |
             ~/.platformio
             ~/.cache/pip
-          key: pio-photo-${{ runner.os }}-${{ hashFiles('platformio.ini', 'sdkconfig*.defaults') }}
-          restore-keys: pio-photo-${{ runner.os }}-
+          key: pio-photo-${{ runner.os }}-${{ matrix.env }}-${{ hashFiles('platformio.ini', 'sdkconfig*.defaults') }}
+          restore-keys: |
+            pio-photo-${{ runner.os }}-${{ matrix.env }}-
+            pio-photo-${{ runner.os }}-
 
       - name: Install PlatformIO
         run: pip install "platformio==6.1.19"
@@ -223,5 +250,8 @@ jobs:
       # Compile-only validation. These opt-in environments disable automatic
       # OTA and must stay outside the normal versioned/release artifact path:
       # they share device kinds with production firmware.
+      - name: Install packages for ${{ matrix.env }}
+        run: sh tools/ci_retry.sh pio pkg install -e ${{ matrix.env }}
+
       - name: Build ${{ matrix.env }}
-        run: pio run -e ${{ matrix.env }}
+        run: sh tools/ci_retry.sh pio run -e ${{ matrix.env }}
