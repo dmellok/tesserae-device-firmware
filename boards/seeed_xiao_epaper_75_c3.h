@@ -84,7 +84,7 @@
 #define TESSERAE_RELAY_MODEL   "esp32_bw_client"
 #define TESSERAE_RELAY_GAMUT   "mono"
 
-/* NO battery sense, deliberately. The schematic charges through an ETA9740E8A
+/* NO built-in battery sense. The schematic charges through an ETA9740E8A
  * (U1, 0.5 A) with the cell on CN_BAT behind a mechanical slide switch, and
  * there is no divider to any ADC pin: all eleven A0-A10 nets are consumed by
  * the display interface, the charger's LED1/2/3 outputs are unconnected, and
@@ -92,7 +92,19 @@
  *
  * Leaving BOARD_BATTERY_ADC_CHANNEL undefined makes battery_read_mv() return 0,
  * which the server reads as "unknown" rather than "empty" (see battery.h).
- * Do not invent a channel here; there is nothing on the other end of it. */
+ * Do not invent a channel here; there is nothing on the other end of it.
+ *
+ * What an owner CAN add is a MAX17048 fuel gauge (Adafruit 5580) on the free
+ * D4/D5 pads: SDA to D4 (GPIO6), SCL to D5 (GPIO7), plus 3V3 and GND (issue
+ * #61). Neither pin is used by the display above. The driver probes 0x36 on
+ * the first battery read of each wake; if nothing answers, the board reports
+ * no battery, exactly as without this block. */
+#define BOARD_BATTERY_MAX17048   1
+#define BOARD_MAX17048_PORT      0
+#define BOARD_MAX17048_SDA       6    /* XIAO D4 */
+#define BOARD_MAX17048_SCL       7    /* XIAO D5 */
+#define BOARD_MAX17048_ADDR      0x36
+#define BOARD_MAX17048_HZ        100000
 
 /* No user buttons. The panel exposes only the XIAO's Boot and Reset buttons,
  * behind the stand and documented for entering the bootloader, so there is no
