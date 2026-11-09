@@ -192,6 +192,21 @@ rest_status_t rest_post_status(int rssi, const char *ip,
  * answer 204). */
 rest_status_t rest_post_log(const char *body, size_t len, uint32_t timeout_ms);
 
+/* What a tagged log batch is (docs/ota/contract.md "OTA logs"). kind "ota"
+ * files it apart from routine uploads; phase / target / attempt are the OTA
+ * report's phase, target_fw and attempt_id, each optional (NULL or ""). */
+typedef struct {
+    const char *kind;
+    const char *phase;
+    const char *target;
+    const char *attempt;
+} rest_log_tag_t;
+
+/* As rest_post_log(), with the tag as X-Tesserae-Log-Kind / X-Tesserae-Ota-*
+ * headers. A NULL tag (or kind) sends a routine batch. */
+rest_status_t rest_post_log_tagged(const char *body, size_t len, uint32_t timeout_ms,
+                                   const rest_log_tag_t *tag);
+
 /* ---- deck cache (SD card; see deck.h / deck_cache.h) ---- */
 
 /* Advertise the deck_cache capability with the next register/status bodies.

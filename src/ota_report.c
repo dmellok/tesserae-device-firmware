@@ -4,6 +4,7 @@
 
 #if TESSERAE_OTA_CAPABILITY_ENABLED
 
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -17,6 +18,7 @@ static const char *TAG = "ota_report";
 #define NVS_KEY_TARGET    "target"
 #define NVS_KEY_ATTEMPT   "attempt"
 #define NVS_KEY_DETAIL    "detail"
+#define NVS_KEY_LOGSENT   "logsent"   /* report the last OTA log was sent for */
 
 typedef struct {
     uint8_t phase;
@@ -121,6 +123,61 @@ void ota_report_resolve_boot(const char *running_fw)
         ota_report_set(OTA_REPORT_ROLLED_BACK, "boot_failed",
                        s_state.target_fw, s_state.attempt_id);
     }
+}
+
+/* The state an OTA log is keyed on: one log per change of these. */
+static void log_key(char *out, size_t cap)
+{
+    snprintf(out, cap, "%s|%u|%s", s_state.attempt_id, (unsigned)s_state.phase,
+             s_state.reason);
+}
+
+bool ota_report_log_due(void)
+{
+    ensure_loaded();
+    switch (s_state.phase) {
+    case OTA_REPORT_PENDING_CONFIRM:   /* about to reboot into the new image */
+    case OTA_REPORT_CONFIRMED:
+    case OTA_REPORT_FAILED:
+    case OTA_REPORT_ROLLED_BACK:
+        break;
+    case OTA_REPORT_REJECTED:
+        /* Only the apply-time gate is an attempt. A verify refusal
+         * (already_current, kind_mismatch, a bad signature) is not, and
+         * already_current would otherwise log on every wake after an update. */
+        if (strncmp(s_state.reason, "battery_", 8) == 0) break;
+        return false;
+    default:
+        return false;
+    }
+    char key[48], sent[48];
+    log_key(key, sizeof key);
+    sent[0] = '\0';
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS_OTA, NVS_READONLY, &h) == ESP_OK) {
+        load_str(h, NVS_KEY_LOGSENT, sent, sizeof sent);
+        nvs_close(h);
+    }
+    return strcmp(key, sent) != 0;
+}
+
+void ota_report_log_tag(const char **phase, const char **target, const char **attempt)
+{
+    ensure_loaded();
+    if (phase)   *phase   = phase_name(s_state.phase);
+    if (target)  *target  = s_state.target_fw;
+    if (attempt) *attempt = s_state.attempt_id;
+}
+
+void ota_report_log_sent(void)
+{
+    ensure_loaded();
+    char key[48];
+    log_key(key, sizeof key);
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS_OTA, NVS_READWRITE, &h) != ESP_OK) return;
+    if (nvs_set_str(h, NVS_KEY_LOGSENT, key) == ESP_OK) nvs_commit(h);
+    nvs_close(h);
 }
 
 void ota_report_fill(cJSON *ota_obj)

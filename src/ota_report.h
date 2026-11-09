@@ -17,6 +17,8 @@
 
 #if TESSERAE_OTA_CAPABILITY_ENABLED
 
+#include <stdbool.h>
+
 #include "cJSON.h"
 
 /* Contract phases (subset this single-wake firmware can be in). `idle` is
@@ -52,6 +54,19 @@ void ota_report_set_detailed(ota_report_phase_t phase, const char *reason,
  * target version -> confirmed/ok; pending_confirm + running anything else ->
  * rolled_back/boot_failed (the bootloader reverted the slot). */
 void ota_report_resolve_boot(const char *running_fw);
+
+/* OTA logs (docs/ota/contract.md "OTA logs"). Due when the current report is
+ * one an OTA log goes with -- pending_confirm (before the reboot), confirmed,
+ * failed, rolled_back, or a battery-gate rejected -- and no log has been sent
+ * for this (attempt_id, phase, reason) yet. Mark it with ota_report_log_sent()
+ * after a 2xx, so a panel that refuses battery_low every wake logs once. */
+bool ota_report_log_due(void);
+
+/* The current report's phase name, target_fw and attempt_id, for the OTA
+ * log's headers. Valid until the next ota_report_set*(). */
+void ota_report_log_tag(const char **phase, const char **target, const char **attempt);
+
+void ota_report_log_sent(void);
 
 /* Add the report fields (phase/reason/target_fw/attempt_id) to the heartbeat's
  * `ota` object. Adds nothing when idle -- the schema field alone means idle. */

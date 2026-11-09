@@ -89,6 +89,24 @@
 
 static const char *TAG = "main";
 
+/* ---------- OTA logs (docs/ota/contract.md "OTA logs") ---------- */
+
+/* Send this wake's log as an OTA log when the OTA report is at a point one
+ * goes with and none has been sent for it yet (ota_report_log_due()). Call it
+ * with the link up: right after an attempt ends in this wake, before the reboot
+ * into a new image, and after a heartbeat that carried a confirmed/rolled_back.
+ * Best-effort: a failure leaves it due for a later wake, and nothing here
+ * blocks the install, the reboot or the report. */
+static void ota_log_flush_if_due(void)
+{
+#if TESSERAE_OTA_CAPABILITY_ENABLED
+    if (!ota_report_log_due()) return;
+    const char *phase = NULL, *target = NULL, *attempt = NULL;
+    ota_report_log_tag(&phase, &target, &attempt);
+    if (log_capture_upload_ota(phase, target, attempt)) ota_report_log_sent();
+#endif
+}
+
 /* ---------- double-tap-reset -> settings mode ---------- */
 
 /* The tap counter lives in RTC slow memory so it survives the RESET button
@@ -553,6 +571,7 @@ static void always_on_loop(void)
             if (rest_post_status(current_rssi(), ip, EPD_WIDTH, EPD_HEIGHT,
                                  0, 0, FW_VERSION, &so, 8000) == REST_OK) {
                 if (so.logs_upload) log_capture_upload();
+                ota_log_flush_if_due();
 #if defined(BOARD_OVERLAY_PARTIAL)
                 /* proto2/touch3 calls are no-op stubs on a board without
                  * touch; values and patches still reach the overlay engine. */
@@ -1870,6 +1889,7 @@ static void openpaper_l_post_presleep_status(int pw, int ph)
     if (ss == REST_OK) {
         ESP_LOGI(TAG, "pre-paint status heartbeat posted");
         if (so.logs_upload) log_capture_upload();
+        ota_log_flush_if_due();
         if (so.sleep_interval_s > 0) rest_config_set_sleep_s(so.sleep_interval_s);
         wake_align_set_target(so.wake_at);
     } else {
@@ -3979,6 +3999,9 @@ void app_main(void)
              * already have and before the radio goes down for the paint. It
              * carries the previous wake's tail, paint included. */
             if (so.logs_upload) log_capture_upload();
+            /* A confirmed / rolled_back resolved at boot went out with this
+             * heartbeat; its OTA log follows. */
+            ota_log_flush_if_due();
             if (so.sleep_interval_s > 0 && so.sleep_interval_s != rest_config_get()->sleep_s) {
                 rest_config_set_sleep_s(so.sleep_interval_s);
                 cfg_dirty = true;
@@ -4111,11 +4134,16 @@ void app_main(void)
                         free(frame);
                         frame = NULL;
                         ESP_LOGI(TAG, "rebooting into verified OTA image");
+                        /* The download, the checks and the slot switch, while
+                         * the link is still up. If it doesn't go, the next
+                         * boot's confirmed/rolled_back log carries the tail. */
+                        ota_log_flush_if_due();
                         esp_restart();
                     }
                     ota_report_install_failure(&so.ota_manifest, install, attempt);
                     ESP_LOGW(TAG, "OTA install failed: %s",
                              ota_install_result_name(install));
+                    ota_log_flush_if_due();
                 } else {
                     /* Verify-time refusals are `rejected`; the verifier's
                      * reason names are the contract vocabulary. The manifest

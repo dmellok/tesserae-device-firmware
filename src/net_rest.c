@@ -1406,6 +1406,12 @@ rest_status_t rest_post_status(int rssi, const char *ip,
 
 rest_status_t rest_post_log(const char *body, size_t len, uint32_t timeout_ms)
 {
+    return rest_post_log_tagged(body, len, timeout_ms, NULL);
+}
+
+rest_status_t rest_post_log_tagged(const char *body, size_t len, uint32_t timeout_ms,
+                                   const rest_log_tag_t *tag)
+{
     const rest_config_t *c = rest_config_get();
     if (!c->server_url[0] || !c->device_token[0]) return REST_HTTP_ERR;
     char url[256];
@@ -1413,8 +1419,18 @@ rest_status_t rest_post_log(const char *body, size_t len, uint32_t timeout_ms)
              rest_config_device_id());
     char auth[300];
     snprintf(auth, sizeof auth, "Bearer %s", c->device_token);
-    rest_hdr_t hdrs[] = { { "Authorization", auth } };
-    rest_status_t st = do_request_body(HTTP_METHOD_POST, url, hdrs, 1, body, len,
+    rest_hdr_t hdrs[5] = { { "Authorization", auth } };
+    int nh = 1;
+    if (tag != NULL && tag->kind != NULL && tag->kind[0]) {
+        hdrs[nh++] = (rest_hdr_t){ "X-Tesserae-Log-Kind", tag->kind };
+        if (tag->phase && tag->phase[0])
+            hdrs[nh++] = (rest_hdr_t){ "X-Tesserae-Ota-Phase", tag->phase };
+        if (tag->target && tag->target[0])
+            hdrs[nh++] = (rest_hdr_t){ "X-Tesserae-Ota-Target", tag->target };
+        if (tag->attempt && tag->attempt[0])
+            hdrs[nh++] = (rest_hdr_t){ "X-Tesserae-Ota-Attempt", tag->attempt };
+    }
+    rest_status_t st = do_request_body(HTTP_METHOD_POST, url, hdrs, nh, body, len,
                                        "text/plain; charset=utf-8", NULL,
                                        timeout_ms);
     return last_was_2xx() ? REST_OK : st;
