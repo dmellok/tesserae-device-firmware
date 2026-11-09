@@ -65,6 +65,9 @@ ble_setup_result_t ble_setup_run(ble_setup_mode_t mode, uint32_t timeout_s)
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
+#define BLE_STR2(x) #x
+#define BLE_STR(x)  BLE_STR2(x)
+
 #ifndef BOARD_BTN_REFRESH_PIN
 #error "BLE setup requires a board with a Refresh button"
 #endif
@@ -1494,7 +1497,9 @@ ble_setup_result_t ble_setup_run(ble_setup_mode_t mode, uint32_t timeout_s)
     if (mode == BLE_SETUP_MODE_MAINTENANCE &&
         (s_result == BLE_SETUP_RESULT_CANCELLED || s_result == BLE_SETUP_RESULT_TIMEOUT)) {
         // An offline server cannot replace the now-expired authentication QR.
-        splash_show_message("Bluetooth closed", "Hold Refresh for 3 seconds to reconnect.");
+        splash_show_message("Bluetooth closed",
+                            "Hold " BOARD_BTN_REFRESH_LABEL " for " BLE_STR(BLE_MAINTENANCE_HOLD_S)
+                            " seconds to reconnect.");
     }
     return s_result;
 }

@@ -176,6 +176,9 @@
 #define BOARD_POWER_LATCH_CLK_PIN  46
 
 #define BOARD_BTN_REFRESH_PIN  4    /* AI / power */
+/* The key in the Refresh role is the power button here, so setup text that
+ * says "hold Refresh" names a button this board doesn't have. */
+#define BOARD_BTN_REFRESH_LABEL "Power"
 #define BOARD_BTN_LEFT_PIN     5    /* up   */
 #define BOARD_BTN_RIGHT_PIN    6    /* down */
 
