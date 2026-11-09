@@ -30,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   canvas until its orientation is set to Portrait on the
   device page. Touches map onto the 540x960 canvas with no axis swap and
   both axes reversed (#21).
+- SD card on the reTerminals, M5Paper and Xteink X4: since 1.56.0 the card didn't mount on a boot that drew the logo, so the first wake after a power cycle ran without its frame cache. The panel was setting up the shared SPI bus before the card, without the card's data line. The card now claims the bus first, as it already did on wakes from deep sleep.
 
 ## [1.62.3] - 2026-10-31
 
