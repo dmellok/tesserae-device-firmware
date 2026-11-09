@@ -1,6 +1,7 @@
 #include "image_fetcher.h"
 #include "app_config.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_crt_bundle.h"
@@ -13,6 +14,7 @@ static const char *TAG = "fetch";
 typedef struct {
     fetched_image_t *out;
     size_t cap;          /* current buffer capacity */
+    size_t content_len;  /* Content-Length from the response, 0 if not sent */
     bool   oom;          /* set if any realloc fails */
     char  *etag;         /* optional: response ETag, quotes stripped */
     size_t etag_cap;
@@ -43,6 +45,12 @@ static esp_err_t on_http(esp_http_client_event_t *e)
                     sizeof(ctx->out->content_type) - 1);
         } else if (strcasecmp(e->header_key, "ETag") == 0) {
             copy_etag(ctx, e->header_value);
+        } else if (strcasecmp(e->header_key, "Content-Length") == 0) {
+            char *end = NULL;
+            unsigned long n = strtoul(e->header_value, &end, 10);
+            if (end && end != e->header_value && n > 0 && n <= IMAGE_FETCH_MAX_BYTES) {
+                ctx->content_len = (size_t)n;
+            }
         }
         break;
 
@@ -57,7 +65,18 @@ static esp_err_t on_http(esp_http_client_event_t *e)
             return ESP_FAIL;
         }
 
-        /* Grow geometrically; start at 64KB. */
+        /* The server says how big the body is: allocate exactly that, once.
+         * Doubling past it can ask for twice the frame (a 96000-byte
+         * four-grey frame asked for 128K on a C3 with no PSRAM, #59). */
+        if (need > ctx->cap && !ctx->cap && ctx->content_len >= need) {
+            uint8_t *exact = heap_caps_malloc(ctx->content_len, TESSERAE_FB_CAPS);
+            if (exact) {
+                ctx->out->data = exact;
+                ctx->cap = ctx->content_len;
+            }
+        }
+
+        /* No length (or it was wrong): grow geometrically; start at 64KB. */
         if (need > ctx->cap) {
             size_t new_cap = ctx->cap ? ctx->cap : 65536;
 #if !CONFIG_SPIRAM
@@ -72,6 +91,11 @@ static esp_err_t on_http(esp_http_client_event_t *e)
             if (new_cap > IMAGE_FETCH_MAX_BYTES) new_cap = IMAGE_FETCH_MAX_BYTES;
 
             uint8_t *grown = heap_caps_realloc(ctx->out->data, new_cap, TESSERAE_FB_CAPS);
+            if (!grown && new_cap > need) {
+                /* The doubled block didn't fit; try just what this chunk needs. */
+                new_cap = need;
+                grown = heap_caps_realloc(ctx->out->data, new_cap, TESSERAE_FB_CAPS);
+            }
             if (!grown) {
                 ESP_LOGE(TAG, "PSRAM realloc(%u) failed", (unsigned)new_cap);
                 ctx->oom = true;

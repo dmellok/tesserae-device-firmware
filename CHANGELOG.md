@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The setup portal (Wi-Fi, server, cloud and relay) uses Tesserae's Paper theme and the current logo, matching tesserae.ink and the other Tesserae devices: paper ground, cream cards with hairline edges, red-ink section labels and button, 2 px corners. Layout, fields and behaviour are unchanged.
 
+### Fixed
+
+- Frame fetch: the buffer is sized from the response's Content-Length in one allocation, instead of doubling from 64K. A four-grey 800x480 frame (96000 bytes) on the XIAO 7.5" C3, which has no PSRAM, asked for 128K and failed (#59). When a doubled block doesn't fit, the fetch retries with just what it needs.
+
 ## [1.62.3] - 2026-10-31
 
 ### Fixed
