@@ -10,7 +10,6 @@
 static const char *TAG = "rest_cfg";
 
 /* NVS namespace + keys for the REST transport. */
-#define NVS_NS_REST        "rest"
 #define NVS_KEY_SERVER     "server"
 #define NVS_KEY_TOKEN      "token"
 #define NVS_KEY_PAIRING    "pairing"

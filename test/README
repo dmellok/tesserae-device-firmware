@@ -16,6 +16,16 @@ Physical-button frame/status delivery contract:
 
     cc -std=c11 -Wall -Wextra -Werror -I src test/test_button_report.c src/button_report.c -o /tmp/tbr && /tmp/tbr
 
+Persisted clock high-water mark (the mark that stops a clock being wound back
+below a time the device has already seen from a verified response):
+
+    cc -std=c11 -Wall -Wextra -Werror -I src test/test_clock_floor.c src/clock_floor.c -o /tmp/tcf && /tmp/tcf
+
+Clock readiness before the first TLS request (the gate that makes
+CONFIG_MBEDTLS_HAVE_TIME_DATE safe to enable):
+
+    cc -std=c11 -Wall -Wextra -Werror -I src test/test_time_ready.c src/time_ready.c src/clock_floor.c -o /tmp/ttr && /tmp/ttr
+
 Signed OTA descriptor + manifest verification (installs the pinned Monocypher
 dependency, then runs RFC 8032 + Tesserae fixture vectors):
 

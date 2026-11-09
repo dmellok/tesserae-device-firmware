@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- HTTPS: certificates are now checked for their validity dates as well as their chain and hostname, so an expired or not-yet-valid certificate is refused. Before a wake that talks to an https:// server or relay, the clock must be plausible (the board RTC, else one short time sync) and not earlier than the latest time seen from a verified response. Otherwise the panel makes no request and keeps its picture. Panels on a plain http:// server are not gated and set their clock from the server as before. Thanks to BenFong10 (#60).
 - The setup portal (Wi-Fi, server, cloud and relay) uses Tesserae's Paper theme and the current logo, matching tesserae.ink and the other Tesserae devices: paper ground, cream cards with hairline edges, red-ink section labels and button, 2 px corners. Layout, fields and behaviour are unchanged.
 
 ### Fixed

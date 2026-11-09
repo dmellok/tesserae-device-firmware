@@ -226,6 +226,8 @@
 #define NVS_NS_WIFI        "wifi"
 #define NVS_KEY_SSID       "ssid"
 #define NVS_KEY_PASS       "pass"
+#define NVS_NS_REST        "rest"   /* the one namespace for device settings */
+#define NVS_KEY_CLK_FLOOR  "clkflr"  /* highest time seen from a verified response */
 #define NVS_KEY_BSSID      "bssid"   /* last AP BSSID (6-byte blob), fast-connect hint */
 #define NVS_KEY_CHAN       "chan"    /* last AP primary channel (u8), fast-connect hint */
 
