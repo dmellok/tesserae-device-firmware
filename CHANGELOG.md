@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The setup portal (Wi-Fi, server, cloud and relay) uses Tesserae's Paper theme and the current logo, matching tesserae.ink and the other Tesserae devices: paper ground, cream cards with hairline edges, red-ink section labels and button, 2 px corners. Layout, fields and behaviour are unchanged.
 
+### Fixed
+
+- SD card on the reTerminals, M5Paper and Xteink X4: since 1.56.0 the card didn't mount on a boot that drew the logo, so the first wake after a power cycle ran without its frame cache. The panel was setting up the shared SPI bus before the card, without the card's data line. The card now claims the bus first, as it already did on wakes from deep sleep.
+
 ## [1.62.3] - 2026-10-31
 
 ### Fixed

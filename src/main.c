@@ -2315,6 +2315,9 @@ void app_main(void)
      * bus (selftests included) -- a floating CS with a card fitted disturbs
      * panel refreshes. No-op on boards without a slot. See sdcard.h. */
     sdcard_quiesce();
+    /* ...and claim the shared bus with the card's MISO before the splash or
+     * any other paint sets it up without one. See sdcard.h. */
+    sdcard_reserve_bus();
 
     /* NVS up front, because the button beep below is the first thing that asks
      * rest_config_get() for an answer and it cannot get a true one otherwise:

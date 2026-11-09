@@ -120,6 +120,55 @@ static void slot_power_cycle(void)
 #endif
 }
 
+#if !defined(SD_USE_SDMMC)
+/* The SPI bus the card sits on, set up with the card's MISO. On boards where
+ * the card shares the panel's bus, whichever side initialises it first decides
+ * its pins; the other gets ESP_ERR_INVALID_STATE and inherits it. The panel
+ * drivers configure the bus without a MISO (the panel never answers), so if the
+ * panel came first the card could not reply and every mount timed out. */
+static esp_err_t sd_bus_init(void)
+{
+    /* Shared panel bus: initialise it with the panel's own geometry so the
+     * panel driver's later spi_bus_initialize() (which tolerates
+     * ESP_ERR_INVALID_STATE) inherits a bus that fits full frames. */
+    spi_bus_config_t bus = {
+#ifdef SD_USE_DEDICATED_SPI
+        .mosi_io_num = SD_PIN_MOSI,
+        .miso_io_num = SD_PIN_MISO,
+        .sclk_io_num = SD_PIN_SCLK,
+        .max_transfer_sz = 4096,
+#else
+        .mosi_io_num = EPD_PIN_MOSI,
+        .miso_io_num = SD_PIN_MISO,
+        .sclk_io_num = EPD_PIN_SCLK,
+        .max_transfer_sz = EPD_BUF_BYTES,
+#endif
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+    };
+#ifdef SD_USE_DEDICATED_SPI
+    return spi_bus_initialize(SD_SPI_HOST, &bus, SPI_DMA_CH_AUTO);
+#else
+    return spi_bus_initialize(EPD_SPI_HOST, &bus, SPI_DMA_CH_AUTO);
+#endif
+}
+#endif /* !SD_USE_SDMMC */
+
+void sdcard_reserve_bus(void)
+{
+#if !defined(SD_USE_SDMMC) && !defined(SD_USE_DEDICATED_SPI)
+    /* Claim the shared bus before anything can paint: since the cold-boot
+     * splash moved ahead of the Wi-Fi start (v1.56.0), the panel was setting
+     * the bus up first, and the card stopped mounting on every boot that drew
+     * the logo. A deep-sleep wake mounts before the panel and was unaffected;
+     * this makes a cold boot match it. No card power, no mount. */
+    esp_err_t err = sd_bus_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "reserving the shared bus: %s", esp_err_to_name(err));
+    }
+#endif
+}
+
 bool sdcard_mount(void)
 {
     if (s_card) return true;
@@ -259,30 +308,12 @@ bool sdcard_mount(void)
         }
     }
 
-    /* Shared panel bus: initialise it with the panel's own geometry so the
-     * panel driver's later spi_bus_initialize() (which tolerates
-     * ESP_ERR_INVALID_STATE) inherits a bus that fits full frames. */
-    spi_bus_config_t bus = {
-#ifdef SD_USE_DEDICATED_SPI
-        .mosi_io_num = SD_PIN_MOSI,
-        .miso_io_num = SD_PIN_MISO,
-        .sclk_io_num = SD_PIN_SCLK,
-        .max_transfer_sz = 4096,
-#else
-        .mosi_io_num = EPD_PIN_MOSI,
-        .miso_io_num = SD_PIN_MISO,
-        .sclk_io_num = EPD_PIN_SCLK,
-        .max_transfer_sz = EPD_BUF_BYTES,
-#endif
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-    };
 #ifdef SD_USE_DEDICATED_SPI
     const spi_host_device_t sd_host = SD_SPI_HOST;
 #else
     const spi_host_device_t sd_host = EPD_SPI_HOST;
 #endif
-    err = spi_bus_initialize(sd_host, &bus, SPI_DMA_CH_AUTO);
+    err = sd_bus_init();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "spi_bus_initialize: %s", esp_err_to_name(err));
         goto fail_power;

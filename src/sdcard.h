@@ -54,6 +54,13 @@
  * ink until the card was pulled. Harmless no-op on dedicated-pin boards. */
 void sdcard_quiesce(void);
 
+/* Set the shared SPI bus up with the card's pins (MISO included), without
+ * powering or mounting the card. Call it right after sdcard_quiesce(), before
+ * anything paints: the panel drivers set the bus up without a MISO, so if a
+ * panel refresh comes first the card can't answer and the mount times out.
+ * No-op on SDMMC and dedicated-SPI boards. */
+void sdcard_reserve_bus(void);
+
 /* Probe + mount the card (idempotent). False when no card is present, the
  * mount fails, or FATFS is unreadable -- callers just skip the cache. */
 bool sdcard_mount(void);
@@ -84,6 +91,7 @@ void *sdcard_handle(void);
 #else /* no slot wired: compile the feature out cold */
 
 static inline void     sdcard_quiesce(void)    { }
+static inline void     sdcard_reserve_bus(void) { }
 static inline bool     sdcard_mount(void)      { return false; }
 static inline bool     sdcard_mounted(void)    { return false; }
 static inline void     sdcard_unmount(void)    { }
