@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.63.0] - 2026-11-09
+
 ### Added
 
 - XIAO 7.5" ePaper panel (ESP32-C3): battery reporting from an optional MAX17048 fuel gauge wired to D4 (SDA) and D5 (SCL) at 0x36. The board probes for it each wake and sends its voltage and charge in the heartbeat. Panels without a gauge report no battery, as before. (#61)
