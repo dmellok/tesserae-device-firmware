@@ -21,6 +21,15 @@ static const char *TAG = "ota_install";
 #define OTA_DOWNLOAD_BUFFER_BYTES 8192
 #define OTA_DOWNLOAD_TIMEOUT_MS  30000
 
+/* Human-readable why for the last refused install (the battery gate today),
+ * carried to the server as the report's `detail`. "" when there is none. */
+static char s_last_detail[64];
+
+const char *ota_install_last_detail(void)
+{
+    return s_last_detail;
+}
+
 static void close_client(esp_http_client_handle_t client)
 {
     if (client == NULL) return;
@@ -36,13 +45,28 @@ ota_install_result_t ota_install_apply(const ota_manifest_t *manifest)
     /* Only gate on charge where there is a cell to read. A board with no sense
      * reports 0 mV, which is below any threshold, so gating on it unconditionally
      * refuses every update forever and reports it as a flat battery. */
+    s_last_detail[0] = '\0';
     if (battery_present()) {
         int battery_mv = battery_read_mv();
+#ifdef TESSERAE_OTA_MIN_BATTERY_MV
+        /* Board-set voltage floor (app_config.h). */
         if (battery_mv < TESSERAE_OTA_MIN_BATTERY_MV) {
-            ESP_LOGW(TAG, "update deferred: battery=%d mV, minimum=%d mV",
+            snprintf(s_last_detail, sizeof s_last_detail,
+                     "battery %d mV, minimum %d mV",
                      battery_mv, TESSERAE_OTA_MIN_BATTERY_MV);
+            ESP_LOGW(TAG, "update deferred: %s", s_last_detail);
             return OTA_INSTALL_LOW_BATTERY;
         }
+#else
+        int pct = battery_read_pct();
+        if (pct < TESSERAE_OTA_MIN_BATTERY_PCT) {
+            snprintf(s_last_detail, sizeof s_last_detail,
+                     "battery %d%% (%d mV), minimum %d%%",
+                     pct, battery_mv, TESSERAE_OTA_MIN_BATTERY_PCT);
+            ESP_LOGW(TAG, "update deferred: %s", s_last_detail);
+            return OTA_INSTALL_LOW_BATTERY;
+        }
+#endif
     }
 
     const esp_partition_t *running = esp_ota_get_running_partition();

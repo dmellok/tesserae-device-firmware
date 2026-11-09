@@ -72,11 +72,22 @@
 #define TESSERAE_OTA_CAPABILITY_ENABLED 0
 #endif
 
-/* Conservative floor for starting a flash write when external power cannot be
- * detected. E1004 has a battery ADC but its CH340 USB bridge does not expose
- * VBUS state to the ESP32-S3, so an unknown reading is rejected too. */
-#ifndef TESSERAE_OTA_MIN_BATTERY_MV
-#define TESSERAE_OTA_MIN_BATTERY_MV 3600
+/* Floor for starting an OTA download when external power cannot be detected,
+ * as a state of charge. The E1004's CH340 USB bridge does not expose VBUS to
+ * the ESP32-S3, so an unknown reading (0 percent) is rejected too.
+ *
+ * A percentage, not a voltage: each board reads its charge through its own
+ * table (battery.c), so one voltage meant something different on each. The old
+ * 3600 mV floor was about 20 percent on the generic curve it was chosen
+ * against, but 43 percent on the E1001/E1002 table and 50 on the E1004, so an
+ * E1004 at 44 percent refused every update. The install is A/B: a brownout
+ * mid-download leaves the running slot untouched and retries on a later wake,
+ * so the floor only has to keep a wake from failing, not protect the panel.
+ *
+ * A board can still set TESSERAE_OTA_MIN_BATTERY_MV in its header instead, and
+ * that voltage floor then replaces this one (0 turns the gate off). */
+#ifndef TESSERAE_OTA_MIN_BATTERY_PCT
+#define TESSERAE_OTA_MIN_BATTERY_PCT 20
 #endif
 
 /* Front-button factory reset: hold the refresh button (Key1) this long to

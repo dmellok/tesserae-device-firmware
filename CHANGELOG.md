@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- OTA battery gate: an update now waits for 20 percent charge, read through the board's own charge table, instead of a fixed 3600 mV. Since the reTerminals moved to Seeed's per-model tables, 3600 mV meant about 43 percent on the E1001 and E1002 and 50 on the E1004, so an E1004 at 44 percent refused every update with `battery_low`. Updates are A/B, so a low cell mid-download only costs a retry. A board can still set its own voltage floor with `TESSERAE_OTA_MIN_BATTERY_MV` (the OpenPaper 7 and L keep theirs).
+- A `battery_low` report now carries a `detail` with the reading and the floor, such as `battery 44% (3566 mV), minimum 20%`, which the device page shows on the OTA pill.
+
 ## [1.63.1] - 2026-11-09
 
 ### Fixed

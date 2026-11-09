@@ -39,6 +39,14 @@ typedef enum {
 void ota_report_set(ota_report_phase_t phase, const char *reason,
                     const char *target_fw, const char *attempt_id);
 
+/* As ota_report_set(), plus an optional human-readable `detail` (NULL or ""
+ * for none; cut at 63 bytes) that the server shows beside the reason, e.g.
+ * "battery 44% (3566 mV), minimum 20%". Each set replaces the previous
+ * detail, so a later state never carries a stale one. */
+void ota_report_set_detailed(ota_report_phase_t phase, const char *reason,
+                             const char *target_fw, const char *attempt_id,
+                             const char *detail);
+
 /* Resolve a cross-reboot pending_confirm into its terminal state. Call once
  * per boot after the rollback gate has run: pending_confirm + running the
  * target version -> confirmed/ok; pending_confirm + running anything else ->

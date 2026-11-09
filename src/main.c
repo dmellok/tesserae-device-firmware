@@ -2017,7 +2017,8 @@ static void ota_report_install_failure(const ota_manifest_t *m,
 {
     switch (r) {
     case OTA_INSTALL_LOW_BATTERY:
-        ota_report_set(OTA_REPORT_REJECTED, "battery_low", m->fw_version, attempt);
+        ota_report_set_detailed(OTA_REPORT_REJECTED, "battery_low", m->fw_version,
+                                attempt, ota_install_last_detail());
         break;
     case OTA_INSTALL_HTTP_INIT_FAILED:
     case OTA_INSTALL_HTTP_FAILED:
