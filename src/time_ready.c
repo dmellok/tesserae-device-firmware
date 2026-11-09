@@ -13,6 +13,23 @@ const char *time_ready_result_name(time_ready_result_t result)
     return "unknown";
 }
 
+static bool is_https(const char *url)
+{
+    if (!url) return false;
+    const char *p = "https://";
+    for (int i = 0; p[i]; i++) {
+        char c = url[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c != p[i]) return false;
+    }
+    return true;
+}
+
+bool time_ready_needed(const char *server_url, const char *relay_url)
+{
+    return is_https(server_url) || is_https(relay_url);
+}
+
 bool time_ready_epoch_ok(int64_t epoch)
 {
     return epoch >= TIME_READY_MIN_EPOCH && epoch <= TIME_READY_MAX_EPOCH;

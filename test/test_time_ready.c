@@ -81,6 +81,23 @@ static bool evaluate(fake_t *f, int timeout_ms, time_ready_result_t *res)
 
 /* ---- epoch policy ------------------------------------------------------ */
 
+static void test_gate_only_for_tls(void)
+{
+    /* A LAN server over http:// never needs the gate. */
+    CHECK(!time_ready_needed("http://tesserae.local:8765", ""));
+    CHECK(!time_ready_needed("http://192.168.1.20:8765", NULL));
+    CHECK(!time_ready_needed(NULL, NULL));
+    CHECK(!time_ready_needed("", ""));
+    /* Anything that will handshake does. */
+    CHECK(time_ready_needed("https://cloud.tesserae.ink", ""));
+    CHECK(time_ready_needed("HTTPS://cloud.tesserae.ink", ""));
+    CHECK(time_ready_needed("", "https://relay.tesserae.ink"));
+    CHECK(time_ready_needed("http://tesserae.local", "https://relay.tesserae.ink"));
+    /* Prefixes that only look like https are not. */
+    CHECK(!time_ready_needed("https:/x", ""));
+    CHECK(!time_ready_needed("http", ""));
+}
+
 static void test_epoch_window(void)
 {
     CHECK(!time_ready_epoch_ok(0));                       /* wiped clock */
@@ -258,6 +275,7 @@ int main(void)
     test_rtc_voltage_loss_flag_means_ask_the_network();
     test_null_result_and_sources_are_safe();
     test_result_names_are_distinct();
+    test_gate_only_for_tls();
 
     printf("time_ready: %d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

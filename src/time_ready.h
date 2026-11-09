@@ -67,5 +67,13 @@ typedef struct {
 bool time_ready_evaluate(const time_ready_sources_t *sources, int timeout_ms,
                          time_ready_result_t *result);
 
+/* Whether this wake needs the gate at all: true when it will talk TLS, i.e. the
+ * server URL or the relay URL is https://. A plain http:// server needs no
+ * certificate dates, and its first response's Date header sets the clock as it
+ * always has. Gating it too would leave a panel with no battery-backed RTC on
+ * a network without internet access (no SNTP) making no request ever again
+ * after a power loss. NULL or empty URLs count as not https. */
+bool time_ready_needed(const char *server_url, const char *relay_url);
+
 /* Firmware entry point: the real sources (system clock, PCF8563, SNTP). */
 bool time_ready_ensure(int timeout_ms, time_ready_result_t *result);

@@ -3575,10 +3575,18 @@ void app_main(void)
      * valid", for ever. So: take the RTC if it is plausible, else one bounded
      * SNTP sync, else make no TLS request this wake and keep the frame that is
      * already on the glass. Never relax the certificate check to get past it. */
-    if (!time_ready_ensure(TIME_READY_TIMEOUT_MS, NULL)) {
-        wifi_sta_stop();
-        sleep_forever_or_until_timer();
-        return;
+    /* Only a wake that will talk TLS needs it. A plain http:// server sets the
+     * clock from its first response's Date header, as it always has; gating it
+     * would strand a panel with no battery-backed RTC on a network without
+     * internet (no SNTP) after its first power loss. */
+    {
+        const rest_config_t *gc = rest_config_get();
+        if (time_ready_needed(gc->server_url, gc->relay_url) &&
+            !time_ready_ensure(TIME_READY_TIMEOUT_MS, NULL)) {
+            wifi_sta_stop();
+            sleep_forever_or_until_timer();
+            return;
+        }
     }
 
     /* ---- one Tesserae cycle over the REST API ----
