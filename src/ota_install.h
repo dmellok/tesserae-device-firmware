@@ -26,3 +26,8 @@ typedef enum {
 ota_install_result_t ota_install_apply(const ota_manifest_t *manifest);
 
 const char *ota_install_result_name(ota_install_result_t result);
+
+/* Why the last ota_install_apply() call refused, for people to read (e.g.
+ * "battery 44% (3566 mV), minimum 20%"), or "" when it gave no reason. Valid
+ * until the next ota_install_apply() call. */
+const char *ota_install_last_detail(void);

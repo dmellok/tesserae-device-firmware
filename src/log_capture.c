@@ -243,7 +243,21 @@ uint32_t log_capture_ring_bytes(void)
     return LOG_CAPTURE_RING_BYTES;
 }
 
+static bool upload_batch(const rest_log_tag_t *tag);
+
 bool log_capture_upload(void)
+{
+    return upload_batch(NULL);
+}
+
+bool log_capture_upload_ota(const char *phase, const char *target, const char *attempt)
+{
+    rest_log_tag_t tag = { .kind = "ota", .phase = phase, .target = target,
+                           .attempt = attempt };
+    return upload_batch(&tag);
+}
+
+static bool upload_batch(const rest_log_tag_t *tag)
 {
     if (!s_ready || !rest_config_has_server()) return false;
 
@@ -294,7 +308,7 @@ bool log_capture_upload(void)
         free(buf);
         return true;
     }
-    rest_status_t st = rest_post_log(buf, len, LOG_UPLOAD_TIMEOUT_MS);
+    rest_status_t st = rest_post_log_tagged(buf, len, LOG_UPLOAD_TIMEOUT_MS, tag);
     free(buf);
     if (st != REST_OK) {
         ESP_LOGW(TAG, "upload of %u B failed (%d); kept for the next request",
@@ -309,6 +323,6 @@ bool log_capture_upload(void)
     free(s_carry);
     s_carry = NULL;
     s_carry_len = 0;
-    ESP_LOGI(TAG, "uploaded %u B", (unsigned)len);
+    ESP_LOGI(TAG, "uploaded %u B%s", (unsigned)len, tag ? " (OTA log)" : "");
     return true;
 }

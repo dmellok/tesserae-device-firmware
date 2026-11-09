@@ -38,3 +38,10 @@ uint32_t log_capture_ring_bytes(void);
  * else they stay eligible for the next request. No retry. A panel without a
  * home server URL (relay only) never uploads. Returns true on a 2xx. */
 bool log_capture_upload(void);
+
+/* As log_capture_upload(), sent as an OTA log (docs/ota/contract.md "OTA
+ * logs"): the server files it apart from routine uploads. phase / target /
+ * attempt are the OTA report's fields, each optional. The bytes count as
+ * uploaded either way, so a routine upload after it doesn't resend them.
+ * Returns true on a 2xx. */
+bool log_capture_upload_ota(const char *phase, const char *target, const char *attempt);

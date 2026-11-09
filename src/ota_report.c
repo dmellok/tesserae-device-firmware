@@ -4,6 +4,7 @@
 
 #if TESSERAE_OTA_CAPABILITY_ENABLED
 
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -16,12 +17,15 @@ static const char *TAG = "ota_report";
 #define NVS_KEY_REASON    "reason"
 #define NVS_KEY_TARGET    "target"
 #define NVS_KEY_ATTEMPT   "attempt"
+#define NVS_KEY_DETAIL    "detail"
+#define NVS_KEY_LOGSENT   "logsent"   /* report the last OTA log was sent for */
 
 typedef struct {
     uint8_t phase;
     char    reason[24];
     char    target_fw[32];
     char    attempt_id[8];
+    char    detail[64];     /* optional human-readable why; "" for none */
 } ota_report_state_t;
 
 static ota_report_state_t s_state;
@@ -45,6 +49,7 @@ static void ensure_loaded(void)
         load_str(h, NVS_KEY_REASON,  s_state.reason,     sizeof s_state.reason);
         load_str(h, NVS_KEY_TARGET,  s_state.target_fw,  sizeof s_state.target_fw);
         load_str(h, NVS_KEY_ATTEMPT, s_state.attempt_id, sizeof s_state.attempt_id);
+        load_str(h, NVS_KEY_DETAIL,  s_state.detail,     sizeof s_state.detail);
         nvs_close(h);
     }
     s_loaded = true;
@@ -75,11 +80,19 @@ static void copy_field(char *out, size_t cap, const char *value)
 void ota_report_set(ota_report_phase_t phase, const char *reason,
                     const char *target_fw, const char *attempt_id)
 {
+    ota_report_set_detailed(phase, reason, target_fw, attempt_id, NULL);
+}
+
+void ota_report_set_detailed(ota_report_phase_t phase, const char *reason,
+                             const char *target_fw, const char *attempt_id,
+                             const char *detail)
+{
     ensure_loaded();
     s_state.phase = (uint8_t)phase;
     copy_field(s_state.reason,     sizeof s_state.reason,     reason);
     copy_field(s_state.target_fw,  sizeof s_state.target_fw,  target_fw);
     copy_field(s_state.attempt_id, sizeof s_state.attempt_id, attempt_id);
+    copy_field(s_state.detail,     sizeof s_state.detail,     detail);
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS_OTA, NVS_READWRITE, &h);
@@ -88,6 +101,7 @@ void ota_report_set(ota_report_phase_t phase, const char *reason,
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_REASON,  s_state.reason);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_TARGET,  s_state.target_fw);
     if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_ATTEMPT, s_state.attempt_id);
+    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_DETAIL,  s_state.detail);
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     if (err != ESP_OK) ESP_LOGW(TAG, "nvs write: %s", esp_err_to_name(err));
@@ -111,6 +125,61 @@ void ota_report_resolve_boot(const char *running_fw)
     }
 }
 
+/* The state an OTA log is keyed on: one log per change of these. */
+static void log_key(char *out, size_t cap)
+{
+    snprintf(out, cap, "%s|%u|%s", s_state.attempt_id, (unsigned)s_state.phase,
+             s_state.reason);
+}
+
+bool ota_report_log_due(void)
+{
+    ensure_loaded();
+    switch (s_state.phase) {
+    case OTA_REPORT_PENDING_CONFIRM:   /* about to reboot into the new image */
+    case OTA_REPORT_CONFIRMED:
+    case OTA_REPORT_FAILED:
+    case OTA_REPORT_ROLLED_BACK:
+        break;
+    case OTA_REPORT_REJECTED:
+        /* Only the apply-time gate is an attempt. A verify refusal
+         * (already_current, kind_mismatch, a bad signature) is not, and
+         * already_current would otherwise log on every wake after an update. */
+        if (strncmp(s_state.reason, "battery_", 8) == 0) break;
+        return false;
+    default:
+        return false;
+    }
+    char key[48], sent[48];
+    log_key(key, sizeof key);
+    sent[0] = '\0';
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS_OTA, NVS_READONLY, &h) == ESP_OK) {
+        load_str(h, NVS_KEY_LOGSENT, sent, sizeof sent);
+        nvs_close(h);
+    }
+    return strcmp(key, sent) != 0;
+}
+
+void ota_report_log_tag(const char **phase, const char **target, const char **attempt)
+{
+    ensure_loaded();
+    if (phase)   *phase   = phase_name(s_state.phase);
+    if (target)  *target  = s_state.target_fw;
+    if (attempt) *attempt = s_state.attempt_id;
+}
+
+void ota_report_log_sent(void)
+{
+    ensure_loaded();
+    char key[48];
+    log_key(key, sizeof key);
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS_OTA, NVS_READWRITE, &h) != ESP_OK) return;
+    if (nvs_set_str(h, NVS_KEY_LOGSENT, key) == ESP_OK) nvs_commit(h);
+    nvs_close(h);
+}
+
 void ota_report_fill(cJSON *ota_obj)
 {
     ensure_loaded();
@@ -120,6 +189,7 @@ void ota_report_fill(cJSON *ota_obj)
     if (s_state.reason[0])     cJSON_AddStringToObject(ota_obj, "reason", s_state.reason);
     if (s_state.target_fw[0])  cJSON_AddStringToObject(ota_obj, "target_fw", s_state.target_fw);
     if (s_state.attempt_id[0]) cJSON_AddStringToObject(ota_obj, "attempt_id", s_state.attempt_id);
+    if (s_state.detail[0])     cJSON_AddStringToObject(ota_obj, "detail", s_state.detail);
 }
 
 #endif /* TESSERAE_OTA_CAPABILITY_ENABLED */
