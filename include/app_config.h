@@ -89,6 +89,15 @@
 /* On supported Seeed displays, a Refresh hold shorter than factory reset opens
  * the bounded BLE channel. A no-credentials boot remains AP-first. */
 #define BLE_MAINTENANCE_HOLD_S 3
+
+/* What the user-facing text calls the button in the Refresh role (Key1): the
+ * maintenance / factory-reset hold above. "Refresh" on the reTerminal E
+ * series; a board whose key in that role is printed differently overrides it
+ * in its board header (the Sticky's is the AI / power key). Keep it short:
+ * the setup splash fits it into a ~26-character line. */
+#ifndef BOARD_BTN_REFRESH_LABEL
+#define BOARD_BTN_REFRESH_LABEL "Refresh"
+#endif
 #define BLE_SETUP_TIMEOUT_S    (5 * 60)
 
 /* Low-battery goodbye: below GOODBYE mV the device paints a "battery empty"

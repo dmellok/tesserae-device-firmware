@@ -554,7 +554,7 @@ static esp_err_t render_form(httpd_req_t *req, const char *error)
         "stroke-width=\"2\" aria-hidden=\"true\"><path d=\"M7 7l10 10-5 5V2l5 5L7 17\"/>"
         "</svg><span><strong>Prefer the Tesserae app?</strong> Hold %s for %d "
         "seconds to switch to Bluetooth setup.</span></div>",
-        "Refresh", BLE_MAINTENANCE_HOLD_S);
+        BOARD_BTN_REFRESH_LABEL, BLE_MAINTENANCE_HOLD_S);
     httpd_resp_sendstr_chunk(req, ble_switch);
 #endif
 

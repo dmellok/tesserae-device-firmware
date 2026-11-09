@@ -329,7 +329,7 @@ static const char *k_url = "Open  http://192.168.4.1";
 #define SPLASH_STR2(x) #x
 #define SPLASH_STR(x)  SPLASH_STR2(x)
 #ifdef TESSERAE_BLE_SETUP_AVAILABLE
-static const char *k_ble_hint = "Or hold Refresh " SPLASH_STR(BLE_MAINTENANCE_HOLD_S) "s";
+static const char *k_ble_hint = "Or hold " BOARD_BTN_REFRESH_LABEL " " SPLASH_STR(BLE_MAINTENANCE_HOLD_S) "s";
 #else
 static const char *k_ble_hint = NULL;
 #endif
