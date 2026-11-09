@@ -54,6 +54,12 @@
  * into this stride. See the catalog entry's notes_md. */
 #define EPD_WIDTH           960
 #define EPD_HEIGHT          540
+
+/* Register the 960x540 buffer with a 90 degree turn to the canvas, so the
+ * server composes 540x960 portrait and rotates it onto this stride. Without
+ * it the server takes the reported 960x540 as the canvas and composes
+ * landscape (firmware #21). */
+#define BOARD_FRAMEBUFFER_ROTATION 90
 #define EPD_BUF_BYTES       ((EPD_WIDTH * EPD_HEIGHT) / 2)   /* 259200 */
 
 /* Grey nibbles: 0x0 = black ... 0xF = white, matching the shared 4bpp splash
@@ -163,9 +169,16 @@
  *
  *   TP INT   GPIO48        I2C SDA  GPIO41      I2C SCL  GPIO42 @ 200 kHz
  *
- * Frame dims are the 540x960 composition. The axis mapping is the starting
- * guess from firmware #21 (the reporter's ESPHome config mirrors both axes);
- * nothing here has been checked against corner taps yet.
+ * Frame dims are the 540x960 portrait canvas the server composes (the
+ * device registers its 960x540 buffer with BOARD_FRAMEBUFFER_ROTATION 90,
+ * and the renderer turns the canvas 90 degrees clockwise onto it). Corner
+ * taps from firmware #21 were taken on a frame composed 960x540 landscape;
+ * recovered to raw GT911 values and run through every swap/invert choice
+ * against the same corners in the portrait canvas, only no swap with both
+ * axes inverted fits: TL -> (140,726), TR -> (154,228), BL -> (411,724),
+ * BR -> (401,223), against (135,629), (135,239), (410,714), (410,239).
+ * It holds whether the GT911 reports a 540x960 or a 960x540 maximum.
+ * Not yet re-checked on the glass.
  *
  * GPIO48 is not an RTC pad, so a tap cannot wake the board from deep sleep:
  * as on the M5Paper, touch only registers while it is awake, so it needs
@@ -178,9 +191,9 @@
 #define BOARD_TOUCH_I2C_HZ        BOARD_PAPERS3_I2C_HZ
 #define BOARD_TOUCH_I2C_ADDR      0x5d
 #define BOARD_TOUCH_INT_PIN       48
-#define BOARD_TOUCH_FRAME_W       540
-#define BOARD_TOUCH_FRAME_H       960
-#define BOARD_TOUCH_SWAP_XY       1
+#define BOARD_TOUCH_FRAME_W       EPD_HEIGHT   /* 540, portrait canvas */
+#define BOARD_TOUCH_FRAME_H       EPD_WIDTH    /* 960 */
+#define BOARD_TOUCH_SWAP_XY       0
 #define BOARD_TOUCH_INVERT_X      1
 #define BOARD_TOUCH_INVERT_Y      1
 

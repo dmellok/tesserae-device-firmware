@@ -17,6 +17,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Frame fetch: the buffer is sized from the response's Content-Length in one allocation, instead of doubling from 64K. A four-grey 800x480 frame (96000 bytes) on the XIAO 7.5" C3, which has no PSRAM, asked for 128K and failed (#59). When a doubled block doesn't fit, the fetch retries with just what it needs.
+- After a power cycle or a RESET press the panel could stay on the Tesserae
+  logo until the dashboard changed. The boot dropped the stored frame ETag
+  when it painted the logo, but then reloaded its settings from flash, which
+  put the ETag back. The server answered 304 and nothing was painted. The
+  ETags are now dropped after the settings load, so the first fetch after the
+  logo always paints. Deep-sleep wakes still send the ETag (#21).
+- M5Stack PaperS3: the device registered its 960x540 buffer as the canvas,
+  so the server composed landscape for a panel held portrait. It now
+  registers with a 90 degree turn, so dashboards are composed 540x960 and
+  turned onto the panel. A PaperS3 that already paired keeps its landscape
+  canvas until its orientation is set to Portrait on the
+  device page. Touches map onto the 540x960 canvas with no axis swap and
+  both axes reversed (#21).
 
 ## [1.62.3] - 2026-10-31
 

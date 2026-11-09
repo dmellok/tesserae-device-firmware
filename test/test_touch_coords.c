@@ -58,6 +58,15 @@ int main(void)
     expect(1404, 0, 1404, 1872, W, H, 1, 0, 0, 0, H - 1);
     expect(0, 1872, 1404, 1872, W, H, 1, 0, 0, W - 1, 0);
 
+    /* M5Stack PaperS3 (firmware #21): the 540x960 portrait canvas, no swap,
+     * both axes inverted. The raw points are the report's four corner taps,
+     * recovered from what the old swap+invert-both mapping posted. Each lands
+     * in its quadrant of the portrait canvas. */
+    expect(400, 233, 540, 960, 540, 960, 0, 1, 1, 140, 726);   /* TL */
+    expect(386, 732, 540, 960, 540, 960, 0, 1, 1, 154, 228);   /* TR */
+    expect(128, 235, 540, 960, 540, 960, 0, 1, 1, 411, 724);   /* BL */
+    expect(138, 737, 540, 960, 540, 960, 0, 1, 1, 401, 223);   /* BR */
+
     /* Clamp: raw beyond the configured max is pinned to the frame edge. */
     expect(9999, 9999, W, H, W, H, 0, 0, 0, W - 1, H - 1);
     expect(-5,   -5,   W, H, W, H, 0, 0, 0, 0,     0);
