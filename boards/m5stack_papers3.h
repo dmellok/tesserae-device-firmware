@@ -169,16 +169,24 @@
  *
  *   TP INT   GPIO48        I2C SDA  GPIO41      I2C SCL  GPIO42 @ 200 kHz
  *
- * Frame dims are the 540x960 portrait canvas the server composes (the
- * device registers its 960x540 buffer with BOARD_FRAMEBUFFER_ROTATION 90,
- * and the renderer turns the canvas 90 degrees clockwise onto it). Corner
- * taps from firmware #21 were taken on a frame composed 960x540 landscape;
- * recovered to raw GT911 values and run through every swap/invert choice
- * against the same corners in the portrait canvas, only no swap with both
- * axes inverted fits: TL -> (140,726), TR -> (154,228), BL -> (411,724),
- * BR -> (401,223), against (135,629), (135,239), (410,714), (410,239).
- * It holds whether the GT911 reports a 540x960 or a 960x540 maximum.
- * Not yet re-checked on the glass.
+ * Taps are reported in the 960x540 FRAMEBUFFER, not the dashboard canvas,
+ * and the frame request says so (touch_space=fb). The glass never moves
+ * relative to the buffer, so this mapping is fixed; the server turns each
+ * point back through the same rotate/flip it used to draw the frame, so
+ * touch follows whatever orientation the device page is set to (portrait,
+ * landscape or either flipped). Firmware 1.63.0-1.64.0 mapped onto the
+ * portrait canvas instead, which put every tap in the wrong place once the
+ * operator chose landscape (firmware #21).
+ *
+ * The digitiser is mounted 90 degrees to the scan: SWAP_XY, then buffer x
+ * follows raw y in the same direction and buffer y follows raw x reversed.
+ * Checked against the four corner taps reported on firmware #21 (taken on
+ * a 960x540 composition with no rotation, i.e. the buffer itself): TL ->
+ * (233,140), TR -> (731,154), BL -> (235,411), BR -> (736,401), against
+ * digit centres (330,135), (720,135), (245,410), (720,410). Turned 90
+ * degrees clockwise these are exactly the points the 1.63.0 portrait
+ * mapping produced, so the two agree. Holds whether the GT911 reports a
+ * 540x960 or a 960x540 maximum. Not yet re-checked on the glass.
  *
  * GPIO48 is not an RTC pad, so a tap cannot wake the board from deep sleep:
  * as on the M5Paper, touch only registers while it is awake, so it needs
@@ -191,11 +199,14 @@
 #define BOARD_TOUCH_I2C_HZ        BOARD_PAPERS3_I2C_HZ
 #define BOARD_TOUCH_I2C_ADDR      0x5d
 #define BOARD_TOUCH_INT_PIN       48
-#define BOARD_TOUCH_FRAME_W       EPD_HEIGHT   /* 540, portrait canvas */
-#define BOARD_TOUCH_FRAME_H       EPD_WIDTH    /* 960 */
-#define BOARD_TOUCH_SWAP_XY       0
+#define BOARD_TOUCH_FRAME_W       EPD_WIDTH    /* 960, the framebuffer */
+#define BOARD_TOUCH_FRAME_H       EPD_HEIGHT   /* 540 */
+#define BOARD_TOUCH_SWAP_XY       1
 #define BOARD_TOUCH_INVERT_X      1
-#define BOARD_TOUCH_INVERT_Y      1
+#define BOARD_TOUCH_INVERT_Y      0
+/* Coordinates above are framebuffer pixels; tell the server (touch_space=fb)
+ * so it maps them onto the canvas for the current orientation. */
+#define BOARD_TOUCH_SPACE_FRAMEBUFFER 1
 
 /* ------------------------------------------------------------------ */
 /* Buttons                                                             */

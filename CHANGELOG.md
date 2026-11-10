@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- M5Stack PaperS3: touch now follows the orientation chosen on the device page. Since 1.63.0 taps were mapped onto the 540x960 portrait canvas, so in landscape (or either flipped orientation) every tap landed in the wrong place. Taps are now reported in the panel's fixed 960x540 framebuffer with `touch_space=fb` on the frame request, and the server turns them onto whichever canvas it composed (Tesserae 0.510.0 or later; an older server reads them as landscape, so portrait taps land wrong there until it is updated). (#21)
+
 ## [1.64.0] - 2026-11-10
 
 ### Added
