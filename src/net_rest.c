@@ -757,7 +757,7 @@ rest_status_t rest_get_frame(rest_frame_out_t *out, uint32_t timeout_ms)
     memset(out, 0, sizeof *out);
     out->button_wake_s = -1;   /* only a 200 body can carry it */
     const rest_config_t *c = rest_config_get();
-    char url[256];
+    char url[320];   /* touch + deck query on a long server URL */
     int un = snprintf(url, sizeof url, "%s/api/v1/device/%s/frame", c->server_url, rest_config_device_id());
     /* A wake action is dispatched on the GET so the server acts before it
      * responds. button_event_id dedups a retried request. A wake is button XOR
@@ -768,13 +768,22 @@ rest_status_t rest_get_frame(rest_frame_out_t *out, uint32_t timeout_ms)
 #if BOARD_HAS_TOUCH
     else if (s_touch_on && un > 0 && un < (int)sizeof url) {
         /* Coordinates are in the served frame's pixel space; the server
-         * classifies tap/swipe/slide and repaints in the same response. */
+         * classifies tap/swipe/slide and repaints in the same response.
+         * A board whose touch maps onto its framebuffer rather than the
+         * dashboard canvas says so with touch_space=fb, and the server
+         * turns the points onto the canvas for the device's current
+         * orientation (firmware #21). */
+#if defined(BOARD_TOUCH_SPACE_FRAMEBUFFER) && BOARD_TOUCH_SPACE_FRAMEBUFFER
+        static const char touch_space[] = "&touch_space=fb";
+#else
+        static const char touch_space[] = "";
+#endif
         snprintf(url + un, sizeof url - un,
                  "?touch_x0=%d&touch_y0=%d&touch_x1=%d&touch_y1=%d"
-                 "&touch_ms=%u&touch_digest=%s&touch_event_id=%llu",
+                 "&touch_ms=%u&touch_digest=%s&touch_event_id=%llu%s",
                  s_touch_x0, s_touch_y0, s_touch_x1, s_touch_y1,
                  (unsigned)s_touch_ms, s_touch_digest,
-                 (unsigned long long)s_touch_event);
+                 (unsigned long long)s_touch_event, touch_space);
     }
 #endif
     /* SD-paint report rides the same-wake frame GET too (contract). */
