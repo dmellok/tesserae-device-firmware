@@ -103,6 +103,43 @@ static const char *TAG = "epd_ssd1677";
 static spi_device_handle_t s_spi;
 static bool s_port_inited = false;
 
+/* A board whose glass ships with either an SSD1677 or an SSD2677 (the Sticky)
+ * sets EPD_SSD2677_AUTODETECT. The driver then identifies the controller at
+ * the first init and routes every entry point to the matching sequence. The
+ * SSD2677 half lives in its own section near the end of this file. 4-gray
+ * builds only: no mono board carries the part. */
+#if defined(EPD_SSD2677_AUTODETECT) && EPD_SSD2677_AUTODETECT && !defined(EPD_MONO)
+#  define EPD_HAVE_SSD2677 1
+#else
+#  define EPD_HAVE_SSD2677 0
+#endif
+
+#if EPD_HAVE_SSD2677
+#include "esp_attr.h"
+#ifdef BOARD_HAS_SHT4X
+#include "sht4x.h"
+#endif
+
+enum { IC_UNKNOWN = 0, IC_SSD1677 = 1, IC_SSD2677 = 2 };
+static uint8_t s_ic = IC_UNKNOWN;
+/* Kept across deep sleep so a timer wake skips the probe (and the extra panel
+ * reset it costs). Any other reset clears it and the board asks again. */
+static RTC_DATA_ATTR uint8_t s_ic_rtc = IC_UNKNOWN;
+/* Second handle on the same bus, half-duplex on the data line, for the one
+ * read the probe makes. NULL when the bus would not give us one. */
+static spi_device_handle_t s_spi_rd;
+
+static bool ssd2677_detect(void);
+static void ssd2677_init(void);
+static void ssd2677_display(const uint8_t *image);
+static void ssd2677_clear(uint8_t color);
+static void ssd2677_partial_two_tone(const uint8_t *image, int x, int y, int w, int h);
+static void ssd2677_sleep_cmds(void);
+#  define IS_SSD2677() (s_ic == IC_SSD2677)
+#else
+#  define IS_SSD2677() (0)
+#endif
+
 /* Reset and power-enable lines. On most boards they are MCU GPIOs: EPD_PIN_RST
  * and the optional EPD_PIN_EN. The M5Stack PaperMono routes both through an
  * M5IOE1 I2C expander instead, so a board may name expander pin indices
@@ -453,6 +490,23 @@ static esp_err_t ssd1677_port_init(void)
     }
     ESP_ERROR_CHECK(spi_bus_add_device(EPD_SPI_HOST, &dev, &s_spi));
 
+#if EPD_HAVE_SSD2677
+    /* The panel has no data-out pin: it answers a read on the data line
+     * itself. A 3-wire half-duplex device on the same bus reads it there.
+     * Failing to get one is not fatal, the probe then goes by BUSY alone. */
+    spi_device_interface_config_t rd = {
+        .clock_speed_hz = 1 * 1000 * 1000,
+        .mode = 0,
+        .spics_io_num = -1,
+        .queue_size = 1,
+        .flags = SPI_DEVICE_3WIRE | SPI_DEVICE_HALFDUPLEX,
+    };
+    if (spi_bus_add_device(EPD_SPI_HOST, &rd, &s_spi_rd) != ESP_OK) {
+        ESP_LOGW(TAG, "no read handle on the panel bus; probing by BUSY only");
+        s_spi_rd = NULL;
+    }
+#endif
+
     s_port_inited = true;
     return ESP_OK;
 }
@@ -472,6 +526,9 @@ static void ssd1677_init(void)
 #if EPD_HAVE_EN
     EN_SET(1);    /* panel power */
     vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+#if EPD_HAVE_SSD2677
+    if (ssd2677_detect()) { ssd2677_init(); return; }
 #endif
     hw_reset();
     wait_idle();
@@ -620,6 +677,9 @@ static void panel_condition_white(void)
 
 static void ssd1677_display(const uint8_t *image)
 {
+#if EPD_HAVE_SSD2677
+    if (IS_SSD2677()) { ssd2677_display(image); return; }
+#endif
     bus_hold();
 #ifdef EPD_MONO
     mono_bypass_second_plane();
@@ -671,6 +731,9 @@ static void ssd1677_display_gray(const uint8_t *image)
 
 static void ssd1677_clear(uint8_t color)
 {
+#if EPD_HAVE_SSD2677
+    if (IS_SSD2677()) { ssd2677_clear(color); return; }
+#endif
     bus_hold();
 #ifdef EPD_MONO
     mono_bypass_second_plane();
@@ -854,8 +917,15 @@ static void ssd1677_show_palette_sweep(void)
 
 static void ssd1677_sleep(void)
 {
-    static const uint8_t DEEP[] = {0x01};
-    cmd_data(SSD_SLEEP, DEEP, sizeof DEEP);
+#if EPD_HAVE_SSD2677
+    if (IS_SSD2677()) {
+        ssd2677_sleep_cmds();
+    } else
+#endif
+    {
+        static const uint8_t DEEP[] = {0x01};
+        cmd_data(SSD_SLEEP, DEEP, sizeof DEEP);
+    }
     vTaskDelay(pdMS_TO_TICKS(100));
 #if EPD_HAVE_EN
 #  ifdef BOARD_FRONTLIGHT_M5PM1
@@ -952,6 +1022,9 @@ static void set_ram_window(int cx0, int cx1, int cy0, int cy1)
 
 static void ssd1677_partial_two_tone(const uint8_t *image, int x, int y, int w, int h)
 {
+#if EPD_HAVE_SSD2677
+    if (IS_SSD2677()) { ssd2677_partial_two_tone(image, x, y, w, h); return; }
+#endif
     /* Clamp to the frame. */
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
@@ -1073,6 +1146,447 @@ static bool ssd1677_partial_rect_safe(epd_refresh_t mode)
     return (mode == EPD_RF_A2 || mode == EPD_RF_DU) && s_shadow_valid;
 }
 #endif /* !EPD_MONO */
+
+#if EPD_HAVE_SSD2677
+/* ---------- SSD2677 (later Sticky units) ----------
+ *
+ * Same glass, same pins, a different controller. Despite the name it does not
+ * speak the SSD16xx command set at all. It is driven like a UC8179: panel
+ * setting 0x00, power on 0x04, one data command 0x10, refresh 0x12, power off
+ * 0x02, deep sleep 0x07. The differences that matter here:
+ *
+ *   BUSY     active LOW (0 = busy), the opposite of the SSD1677.
+ *   Data     ONE stream of 2 bits per pixel, 4 px/byte MSB-first, 200 bytes a
+ *            row, where the SSD1677 takes two 1bpp planes.
+ *   Waveform chosen from OTP by a code written to 0xE6 and latched with 0xA5,
+ *            in temperature buckets. Nothing is uploaded.
+ *   Partial  the same 0x10 stream, each pixel carrying (old bit, new bit).
+ *            The whole frame is sent; a pixel whose two bits match is left
+ *            alone. No RAM window.
+ *
+ * Sequences and constants follow Seeed's own driver for this part: the init
+ * table, the reset timing (20 ms low, 10 ms high), the waveform codes and
+ * their temperature buckets, and the 0x70 identity read.
+ *
+ * NOT YET RUN ON HARDWARE. Three things are inferred and each has a switch:
+ * orientation (EPD_SSD2677_MIRROR_X / _Y), the order of the two mid greys
+ * (EPD_SSD2677_GRAY_MID_SWAP), and partial polarity (SSD1677_PARTIAL_INVERT,
+ * shared with the SSD1677 path). The -selftest env judges the first two, the
+ * -overlaytest env the third. */
+
+/* Orientation relative to the SSD1677 path's mapping (controller row cy,
+ * column cx reads frame pixel fx = cy, fy = cx on the Sticky). The glass is
+ * the same, so the default is no extra mirror. */
+#ifndef EPD_SSD2677_MIRROR_X
+#define EPD_SSD2677_MIRROR_X 0
+#endif
+#ifndef EPD_SSD2677_MIRROR_Y
+#define EPD_SSD2677_MIRROR_Y 0
+#endif
+
+/* The 4-gray waveform's pixel codes are 0 = black, 3 = white, with the mid
+ * greys crossed: 2 = dark, 1 = light. The frame is linear (1 = dark, 2 =
+ * light), so the two swap on the way out. Set to 0 if the selftest's middle
+ * bands come out in the wrong order. */
+#ifndef EPD_SSD2677_GRAY_MID_SWAP
+#define EPD_SSD2677_GRAY_MID_SWAP 1
+#endif
+
+/* Force the choice and skip the probe, for the bench: 1677 or 2677. */
+#ifndef EPD_SSD_FORCE_IC
+#define EPD_SSD_FORCE_IC 0
+#endif
+
+#define S26_PANEL_SETTING 0x00
+#define S26_POWER_OFF     0x02
+#define S26_POWER_ON      0x04
+#define S26_BOOSTER       0x06
+#define S26_DEEP_SLEEP    0x07
+#define S26_DATA          0x10
+#define S26_REFRESH       0x12
+#define S26_PLL           0x30
+#define S26_CDI           0x50
+#define S26_RESOLUTION    0x61
+#define S26_TIMING        0x62
+#define S26_GSST          0x65
+#define S26_READ_ID       0x70
+#define S26_WF_LATCH      0xa5
+#define S26_WF_MODE       0xe0
+#define S26_WF_CODE       0xe6
+#define S26_ID            0x07   /* what an SSD2677 answers to 0x70 */
+
+#define S26_ROW_BYTES     (EPD_PANEL_SCAN_W / 4)
+#define S26_BUSY_TIMEOUT_MS 45000
+
+static bool s26_powered;   /* high voltage on: a partial leaves it up */
+
+/* BUSY low = busy. Bounded like wait_idle(), for the same reason. */
+static bool s26_wait_ready(void)
+{
+    int waited = 0;
+    bool warned = false;
+    while (gpio_get_level(EPD_PIN_BUSY) == 0) {
+        waited += epd_busy_sleep(EPD_PIN_BUSY, 1, 10);
+        if (!warned && waited >= 10000) {
+            ESP_LOGW(TAG, "SSD2677: BUSY still low after 10 s; panel may be stuck");
+            warned = true;
+        }
+        if (waited >= S26_BUSY_TIMEOUT_MS) {
+            ESP_LOGE(TAG, "SSD2677: BUSY never released in %d ms; continuing so "
+                          "the panel still gets powered down", S26_BUSY_TIMEOUT_MS);
+            diag_note_paint(DIAG_PAINT_READY_TIMEOUT);
+            return false;
+        }
+    }
+    return true;
+}
+
+static void s26_reset(void)
+{
+    RST_SET(0); vTaskDelay(pdMS_TO_TICKS(20));
+    RST_SET(1); vTaskDelay(pdMS_TO_TICKS(10));
+}
+
+/* Send 0x70 and read one byte back on the data line. 0 when the bus gave us
+ * no read handle or the transfer failed, which the caller treats as "no
+ * answer" and settles by BUSY instead. */
+static uint8_t s26_read_id(void)
+{
+    if (!s_spi_rd) return 0;
+    uint8_t id = 0;
+
+    spi_device_acquire_bus(s_spi_rd, portMAX_DELAY);
+    gpio_set_level(EPD_PIN_CS, 0);
+    gpio_set_level(EPD_PIN_DC, 0);
+    spi_transaction_t tx = {
+        .flags = SPI_TRANS_USE_TXDATA,
+        .length = 8,
+        .tx_data = {S26_READ_ID},
+    };
+    esp_err_t err = spi_device_polling_transmit(s_spi_rd, &tx);
+    if (err == ESP_OK) {
+        gpio_set_level(EPD_PIN_DC, 1);
+        spi_transaction_t rx = {
+            .flags = SPI_TRANS_USE_RXDATA,
+            .rxlength = 8,
+        };
+        err = spi_device_polling_transmit(s_spi_rd, &rx);
+        if (err == ESP_OK) id = rx.rx_data[0];
+    }
+    gpio_set_level(EPD_PIN_CS, 1);
+    gpio_set_level(EPD_PIN_DC, 0);
+    spi_device_release_bus(s_spi_rd);
+
+    if (err != ESP_OK) ESP_LOGW(TAG, "identity read failed: %s", esp_err_to_name(err));
+    return id;
+}
+
+/* Which controller is behind the glass? Panel power must already be up.
+ *
+ * Two independent signs, either of which selects the SSD2677:
+ *   - it answers 0x07 to command 0x70 (Seeed's own test);
+ *   - BUSY rests HIGH once the reset has settled. The SSD1677 rests LOW,
+ *     because the two parts use opposite BUSY polarity.
+ * The second covers a read that returns nothing, and it is the same symptom
+ * the SSD1677 sequence shows on the new part ("BUSY still high after 10 s").
+ * Sampled 150 ms after reset so neither part is still in its reset busy
+ * phase, where each looks like the other. */
+static bool ssd2677_detect(void)
+{
+    if (s_ic != IC_UNKNOWN) return s_ic == IC_SSD2677;
+
+#if EPD_SSD_FORCE_IC == 2677
+    s_ic = IC_SSD2677;
+    ESP_LOGW(TAG, "controller forced to SSD2677 at build time");
+#elif EPD_SSD_FORCE_IC == 1677
+    s_ic = IC_SSD1677;
+    ESP_LOGW(TAG, "controller forced to SSD1677 at build time");
+#else
+    if (s_ic_rtc == IC_SSD1677 || s_ic_rtc == IC_SSD2677) {
+        s_ic = s_ic_rtc;
+        return s_ic == IC_SSD2677;
+    }
+    s26_reset();
+    const uint8_t id = s26_read_id();
+    vTaskDelay(pdMS_TO_TICKS(150));
+    const int busy = gpio_get_level(EPD_PIN_BUSY);
+    s_ic = (id == S26_ID || busy) ? IC_SSD2677 : IC_SSD1677;
+    /* Always logged: a wrong pick shows up as a BUSY timeout, and this line
+     * is what says why. */
+    ESP_LOGI(TAG, "controller probe: 0x70 -> 0x%02x, BUSY rests %s: %s",
+             id, busy ? "high" : "low",
+             s_ic == IC_SSD2677 ? "SSD2677" : "SSD1677");
+#endif
+    s_ic_rtc = s_ic;
+    return s_ic == IC_SSD2677;
+}
+
+static void ssd2677_init(void)
+{
+    s26_reset();
+    s26_wait_ready();
+
+    static const uint8_t PSR[]     = {0x2f, 0x0e};
+    static const uint8_t BOOSTER[] = {0x0f, 0x8b, 0x93, 0xc1};
+    static const uint8_t E7[]      = {0xc1};
+    static const uint8_t PLL[]     = {0x08};
+    static const uint8_t CDI[]     = {0x77};
+    static const uint8_t TIMING[]  = {0x76, 0x76, 0x76, 0x5a, 0x9d, 0x8a, 0x76, 0x62};
+    /* 800 x 680 as Seeed writes it, although 480 rows are sent. The value is
+     * theirs and is kept as is. */
+    static const uint8_t RES[]     = {0x03, 0x20, 0x02, 0xa8};
+    static const uint8_t WF_INIT[] = {0x10};
+    static const uint8_t GSST[]    = {0x00, 0x00, 0x00, 0x00};
+    static const uint8_t E9[]      = {0x01};
+
+    cmd_data(S26_PANEL_SETTING, PSR, sizeof PSR);
+    s26_wait_ready();
+    cmd_data(S26_BOOSTER, BOOSTER, sizeof BOOSTER);
+    cmd_data(0xe7, E7, sizeof E7);
+    cmd_data(S26_PLL, PLL, sizeof PLL);
+    cmd_data(S26_CDI, CDI, sizeof CDI);
+    cmd_data(S26_TIMING, TIMING, sizeof TIMING);
+    cmd_data(S26_RESOLUTION, RES, sizeof RES);
+    cmd_data(S26_WF_MODE, WF_INIT, sizeof WF_INIT);
+    cmd_data(S26_GSST, GSST, sizeof GSST);
+    cmd_data(0xe9, E9, sizeof E9);
+    s26_wait_ready();
+
+    s26_powered = false;
+    s_partial_since_full = false;   /* the shadow survives; see ssd1677_init() */
+    ESP_LOGI(TAG, "init complete (SSD2677 4-gray, scan %dx%d, frame %dx%d)",
+             EPD_PANEL_SCAN_W, EPD_PANEL_SCAN_H, EPD_WIDTH, EPD_HEIGHT);
+}
+
+/* Ambient temperature for the waveform bucket, whole degrees, 0..127. From
+ * the board's SHT40 rather than the controller's own sensor (command 0x40),
+ * which would need a second read on the data line in the middle of a paint.
+ * Seeed's driver takes an external reading the same way when it is given one.
+ * 25 when the sensor does not answer, which lands in the room-temperature
+ * bucket of every table below. */
+static uint8_t s26_temperature(void)
+{
+#ifdef BOARD_HAS_SHT4X
+    sht4x_sample_t s;
+    if (sht4x_read(&s) == ESP_OK) {
+        if (!(s.temperature_c > 0.0f)) return 0;
+        if (s.temperature_c >= 127.0f) return 127;
+        return (uint8_t)(s.temperature_c + 0.5f);
+    }
+#endif
+    return 25;
+}
+
+static uint8_t s26_gray_code(uint8_t t)    { return t <= 15 ? 0xf1 : 0xfa; }
+static uint8_t s26_partial_code(uint8_t t)
+{
+    if (t <= 10) return 0x08;
+    if (t <= 20) return 0x0f;
+    if (t <= 30) return 0x19;
+    return 0x23;
+}
+
+/* Select the OTP waveform for the frame that follows. */
+static void s26_latch_waveform(uint8_t code)
+{
+    static const uint8_t MODE[] = {0x12};
+    cmd_data(S26_WF_MODE, MODE, sizeof MODE);
+    cmd_data(S26_WF_CODE, &code, 1);
+    cmd_data(S26_WF_LATCH, NULL, 0);
+    s26_wait_ready();
+    vTaskDelay(pdMS_TO_TICKS(10));
+}
+
+/* Power on if needed, refresh, and optionally power off again. A partial
+ * keeps the high voltage up so the next one starts sooner; sleep drops it. */
+static void s26_refresh(bool power_off, const char *what)
+{
+    static const uint8_t ZERO[] = {0x00};
+    int64_t t0 = esp_timer_get_time();
+    if (!s26_powered) {
+        cmd_data(S26_POWER_ON, NULL, 0);
+        s26_wait_ready();
+        s26_powered = true;
+    }
+    cmd_data(S26_REFRESH, ZERO, sizeof ZERO);
+    s26_wait_ready();
+    if (power_off) {
+        cmd_data(S26_POWER_OFF, ZERO, sizeof ZERO);
+        s26_wait_ready();
+        s26_powered = false;
+    }
+    ESP_LOGI(TAG, "SSD2677 %s done (%lld ms)", what,
+             (long long)((esp_timer_get_time() - t0) / 1000));
+}
+
+/* Frame coordinates of controller pixel (cx, cy). */
+static inline void s26_frame_xy(int cx, int cy, int *fx, int *fy)
+{
+    const int mx = EPD_SSD2677_MIRROR_X ? (EPD_PANEL_SCAN_W - 1 - cx) : cx;
+    const int my = EPD_SSD2677_MIRROR_Y ? (EPD_PANEL_SCAN_H - 1 - cy) : cy;
+#if EPD_SSD1677_TRANSPOSE
+    *fx = my; *fy = mx;
+#else
+    *fx = mx; *fy = my;
+#endif
+}
+
+/* Frame level (0 = black .. 3 = white) to the waveform's pixel code. */
+static inline uint8_t s26_level(uint8_t g)
+{
+#if EPD_SSD2677_GRAY_MID_SWAP
+    static const uint8_t MAP[4] = {0, 2, 1, 3};
+    return MAP[g & 3];
+#else
+    return (uint8_t)(g & 3);
+#endif
+}
+
+/* Rebuild the 1bpp shadow (controller layout, 1 = white) from a frame that
+ * has just been painted in full, through THIS controller's mapping. */
+static void s26_shadow_rebuild(const uint8_t *image)
+{
+    if (!s_shadow) {
+        s_shadow = heap_caps_malloc(SHADOW_BYTES, TESSERAE_FB_CAPS);
+        if (!s_shadow) { ESP_LOGW(TAG, "no memory for the partial shadow"); return; }
+    }
+    for (int cy = 0; cy < EPD_PANEL_SCAN_H; cy++) {
+        uint8_t *row = s_shadow + (size_t)cy * SHADOW_STRIDE;
+        for (int b = 0; b < SHADOW_STRIDE; b++) {
+            uint8_t o = 0;
+            for (int k = 0; k < 8; k++) {
+                int fx, fy;
+                s26_frame_xy(b * 8 + k, cy, &fx, &fy);
+                o = (uint8_t)((o << 1) | mono_bit_of_gray(frame_px(image, fx, fy)));
+            }
+            row[b] = o;
+        }
+    }
+    s_shadow_valid = true;
+}
+
+static void ssd2677_display(const uint8_t *image)
+{
+    uint8_t row[S26_ROW_BYTES];
+
+    bus_hold();
+    s26_latch_waveform(s26_gray_code(s26_temperature()));
+
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(S26_DATA);
+    for (int cy = 0; cy < EPD_PANEL_SCAN_H; cy++) {
+        for (int b = 0; b < S26_ROW_BYTES; b++) {
+            uint8_t o = 0;
+            for (int k = 0; k < 4; k++) {
+                int fx, fy;
+                s26_frame_xy(b * 4 + k, cy, &fx, &fy);
+                o = (uint8_t)((o << 2) | s26_level(frame_px(image, fx, fy)));
+            }
+            row[b] = o;
+        }
+        send_data(row, sizeof row);
+    }
+    gpio_set_level(EPD_PIN_CS, 1);
+
+    s26_refresh(true, "refresh");
+    s26_shadow_rebuild(image);
+    s_partial_since_full = false;
+    bus_release();
+}
+
+static void ssd2677_clear(uint8_t color)
+{
+    const uint8_t g = (uint8_t)(color & 0x3);
+    uint8_t row[S26_ROW_BYTES];
+    memset(row, (uint8_t)(s26_level(g) * 0x55), sizeof row);
+
+    bus_hold();
+    s26_latch_waveform(s26_gray_code(s26_temperature()));
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(S26_DATA);
+    for (int cy = 0; cy < EPD_PANEL_SCAN_H; cy++) send_data(row, sizeof row);
+    gpio_set_level(EPD_PIN_CS, 1);
+    s26_refresh(true, "clear");
+    if (s_shadow) {
+        memset(s_shadow, mono_bit_of_gray(g) ? 0xff : 0x00, SHADOW_BYTES);
+        s_shadow_valid = true;
+    }
+    s_partial_since_full = false;
+    bus_release();
+}
+
+/* Two-tone repaint of a frame rect. The controller takes the whole frame as
+ * (old, new) bit pairs and drives only the pixels whose pair differs, so
+ * outside the rect both bits come from the shadow and the glass keeps
+ * whatever grey it shows. */
+static void ssd2677_partial_two_tone(const uint8_t *image, int x, int y, int w, int h)
+{
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > EPD_WIDTH)  w = EPD_WIDTH - x;
+    if (y + h > EPD_HEIGHT) h = EPD_HEIGHT - y;
+    if (w <= 0 || h <= 0) return;
+
+    if (!s_shadow_valid) {
+        ESP_LOGW(TAG, "partial without a shadow; full repaint");
+        ssd2677_display(image);
+        return;
+    }
+
+    int64_t t0 = esp_timer_get_time();
+    uint8_t row[S26_ROW_BYTES];
+
+    bus_hold();
+    s26_latch_waveform(s26_partial_code(s26_temperature()));
+
+    gpio_set_level(EPD_PIN_CS, 0);
+    send_cmd(S26_DATA);
+    for (int cy = 0; cy < EPD_PANEL_SCAN_H; cy++) {
+        uint8_t *sh = s_shadow + (size_t)cy * SHADOW_STRIDE;
+        for (int b = 0; b < SHADOW_STRIDE; b++) {
+            const uint8_t oldb = sh[b];
+            uint8_t newb = oldb;
+            for (int k = 0; k < 8; k++) {
+                int fx, fy;
+                s26_frame_xy(b * 8 + k, cy, &fx, &fy);
+                if (fx < x || fx >= x + w || fy < y || fy >= y + h) continue;
+                const uint8_t m = (uint8_t)(0x80 >> k);
+                if (mono_bit_of_gray(frame_px(image, fx, fy))) newb |= m;
+                else                                           newb &= (uint8_t)~m;
+            }
+            /* 8 pixels of old + new -> 16 bits, old in the high bit of each
+             * pair, first pixel in the top bits. */
+            uint16_t v = 0;
+            for (int i = 7; i >= 0; i--)
+                v = (uint16_t)((v << 2) | (((oldb >> i) & 1) << 1) | ((newb >> i) & 1));
+            row[b * 2]     = (uint8_t)(v >> 8);
+            row[b * 2 + 1] = (uint8_t)v;
+            sh[b] = newb;
+        }
+        send_data(row, sizeof row);
+    }
+    gpio_set_level(EPD_PIN_CS, 1);
+
+    s26_refresh(false, "partial");
+    bus_release();
+    s_partial_since_full = true;
+    ESP_LOGI(TAG, "SSD2677 partial (%d,%d %dx%d) in %lld ms", x, y, w, h,
+             (long long)((esp_timer_get_time() - t0) / 1000));
+}
+
+/* Controller half of sleep; the caller drops the panel rail afterwards. */
+static void ssd2677_sleep_cmds(void)
+{
+    static const uint8_t ZERO[]  = {0x00};
+    static const uint8_t CHECK[] = {0xa5};
+    if (s26_powered) {
+        cmd_data(S26_POWER_OFF, ZERO, sizeof ZERO);
+        s26_wait_ready();
+        s26_powered = false;
+    }
+    cmd_data(S26_DEEP_SLEEP, CHECK, sizeof CHECK);
+}
+#endif /* EPD_HAVE_SSD2677 */
 
 /* ---------- exported vtable ---------- */
 
