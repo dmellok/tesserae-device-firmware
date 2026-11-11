@@ -197,7 +197,11 @@ jobs:
         run: sh tools/ci_retry.sh pio run -e ${{ matrix.env }}
 
       # PlatformIO emits three flashable images per build (no combined factory
-      # bin): app at 0x10000, bootloader at 0x0, partition table at 0x8000.
+      # bin): bootloader at 0x0, partition table at 0x8000, and the app at the
+      # offset its partition table gives. That is 0x20000 on the OTA layouts
+      # (partitions_*ota.csv, where otadata sits at 0x10000) and 0x10000 on
+      # the factory layouts and the Xteink X4. Check the env's
+      # board_build.partitions before flashing the three files by hand.
       - name: Stage versioned binaries
         run: |
           v='${{ steps.ver.outputs.version }}'
