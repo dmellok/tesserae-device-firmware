@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.66.0] - 2026-11-13
+
 ### Added
 
 - reTerminal Sticky: support for the SSD2677 display controller. The firmware checks which controller is fitted at boot and drives either, so the same image runs on SSD1677 and SSD2677 units, and the choice is remembered across deep sleep. Before this an SSD2677 unit never painted and logged `BUSY stuck after 10 s`. On the SSD2677 every update is a full four-grey refresh of about 1.3 s. Its partial waveform is meant for black-and-white content and shifts the greys on the rest of the panel, so partial refresh and the local tap echo are off on that controller, and a tap is answered by the next frame from the server. SSD1677 units behave as before. Thanks to pablohc for the testing. (#71)
