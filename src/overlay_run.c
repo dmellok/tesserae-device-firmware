@@ -374,8 +374,26 @@ void overlay_boot(void)
 
 /* ---------- echo + slots ---------- */
 
+/* A partial the driver cannot keep inside its rect is a repaint of the whole
+ * frame from s_work (SSD2677: always; SSD1677: GC16, or any mode once deep
+ * sleep has dropped its shadow of the glass). That is slow but correct from a
+ * full buffer. From a sparse one it would blank everything outside the slot
+ * patches, so refuse it and only flag the refetch, as a patch with no frame
+ * to composite into does: the linger loop repaints (someone is watching), a
+ * timer wake lets it lapse rather than pay a full repaint per changed value.
+ * Returns true when the partial may go ahead. */
+static bool sparse_partial_ok(epd_refresh_t mode)
+{
+    if (!s_sparse || epd_partial_is_rect_safe(mode)) return true;
+    ESP_LOGI(TAG, "no rect-only refresh and no full frame in RAM; "
+                  "linger may refetch");
+    s_refetch = true;
+    return false;
+}
+
 static void hygiene_or_partial(int x, int y, int w, int h, bool fast)
 {
+    if (!sparse_partial_ok(fast ? EPD_RF_DU : EPD_RF_GC16)) return;
     if (overlay_hygiene_tick(&s_hygiene)) {
         if (!s_sparse && s_work) {
             ESP_LOGI(TAG, "hygiene: full-quality repaint");
@@ -404,6 +422,11 @@ bool overlay_try_echo(int x, int y)
      * no pixel source, so a true invert is impossible -- skip the echo and
      * let the normal dispatch provide the feedback. See the patch comment. */
     if (s_sparse) return false;
+    /* No rect-only refresh (SSD2677, partials off): the echo would be a full
+     * repaint of the frame with the target inverted, and an action that then
+     * answers 304 leaves that on the glass (#71). Skip it; the dispatch below
+     * is the feedback. */
+    if (!epd_partial_is_rect_safe(EPD_RF_DU)) return false;
 
     const overlay_target_t *t = overlay_hit_target(&s_spec, x, y);
     if (!t) return false;
@@ -680,6 +703,7 @@ void overlay_partial_refresh_mode(int x, int y, int w, int h,
     if (!s_work) return;
     if (epd_port_init() != ESP_OK) return;
     epd_init();
+    if (!sparse_partial_ok(mode)) return;
     /* Share the hygiene counter with the DU callers: A2 ghosts MORE, so it
      * must not get its own budget -- one counter over both keeps the forced
      * GC16 honest whichever waveform painted the partials. */

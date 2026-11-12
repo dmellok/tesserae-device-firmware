@@ -668,6 +668,10 @@ static bool invert_rect(t3_prim_t *p, t3_rect_t r)
      * one, which has no image behind it to invert. */
     uint8_t *fb = redraw_prim(p, &real);
     if (!fb) return false;
+    /* No rect-only refresh (SSD2677, partials off): the press would be a full
+     * repaint, and a tier-2 one stays inverted if the frame answers 304
+     * (#71). Leave the buffer un-inverted and skip the affordance. */
+    if (!epd_partial_is_rect_safe(EPD_RF_DU)) return false;
     overlay_invert_rect(fb, EPD_WIDTH, EPD_HEIGHT, panel_bpp(),
                         r.x, r.y, r.w, r.h);
     return refresh_prim(p, r, fb, real);
