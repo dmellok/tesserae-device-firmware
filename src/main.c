@@ -3874,6 +3874,11 @@ void app_main(void)
      * that keep their own image (IT8951) answer true here and keep the 304. */
     if (touch3_tap && !epd_partial_is_rect_safe(EPD_RF_DU))
         rest_config_set_frame_etag("");
+    /* A v2 wake tap reports before the radio is up, fails and queues. Send
+     * it now, ahead of the frame GET, so the server has the action before it
+     * answers with a frame; left to the linger loop it arrived after this
+     * wake's paint (#71). One bounded attempt; a failure stays queued. */
+    proto2_flush_reports();
 #endif
 
     /* 2. Frame metadata, with If-None-Match for the ETag/304 dedup. */

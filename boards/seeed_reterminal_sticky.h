@@ -32,8 +32,16 @@
 #define EPD_PIN_CS     15
 #define EPD_PIN_DC     16
 #define EPD_PIN_RST    17
-#define EPD_PIN_BUSY   18   /* active HIGH: 1 = busy (opposite of UC8179) */
+#define EPD_PIN_BUSY   18   /* SSD1677: 1 = busy. SSD2677: 0 = busy. */
 #define EPD_PIN_EN     47   /* panel power enable */
+
+/* Two controllers ship behind this glass. Units up to late 2026 carry an
+ * SSD1677; later ones an SSD2677, which shares nothing with it on the wire
+ * (UC8179-style commands, one 2bpp data stream, BUSY the other way up). The
+ * driver asks the controller which it is at boot and picks the sequence to
+ * match, so one firmware runs on both. See the SSD2677 section of
+ * ssd1677_gray.c. */
+#define EPD_SSD2677_AUTODETECT 1
 
 #define EPD_SPI_HOST   SPI2_HOST
 #define EPD_SPI_HZ     (4 * 1000 * 1000)

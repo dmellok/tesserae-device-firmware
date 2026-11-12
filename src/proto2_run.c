@@ -687,6 +687,9 @@ static bool apply_feedback(int region_idx, const p2_region_t *r)
     bool full = false;
     uint8_t *work = overlay_work_fb(&full);
     if (!work || !full) return false;   /* cold wake: no pixel source */
+    /* No rect-only refresh (SSD2677, partials off): an invert would repaint
+     * the whole frame and can outlive an action that answers 304 (#71). */
+    if (!epd_partial_is_rect_safe(EPD_RF_DU)) return false;
 
     int64_t t0 = esp_timer_get_time();
     overlay_invert_rect(work, EPD_WIDTH, EPD_HEIGHT,
