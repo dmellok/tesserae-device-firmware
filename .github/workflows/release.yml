@@ -13,6 +13,8 @@ name: release
 # Requires repo secrets: CLOUDFLARE_API_TOKEN (R2 edit), CLOUDFLARE_ACCOUNT_ID;
 # and, in the `ota-signing` ENVIRONMENT's secrets (not repo-wide): OTA_SIGN_TOKEN.
 # Optional repo variable OTA_SIGN_URL overrides the signer base URL.
+# Optional repo secret PLAYGROUND_PR_TOKEN lets the `playground` job draft the
+# matching update for Seeed's Sticky Playground registry (see that job).
 # The version is the release tag (e.g. v1.0.0), baked into FW_VERSION and the
 # image filenames.
 
@@ -461,4 +463,121 @@ jobs:
             # workflow_dispatch against a tag with no GitHub Release: the
             # descriptors are still published as the ota-descriptors artifact.
             echo "no GitHub release for $tag; skipping asset attach"
+          fi
+
+  # Draft a version update for the Tesserae entry in Seeed's reTerminal Sticky
+  # Playground registry. tools/playground_update.py does the mechanical part
+  # (images, manifest, version, README sections, PR description); this job
+  # pushes the result to a fork and opens the pull request as a DRAFT, because
+  # the registry wants an on-device test recorded before review and CI cannot
+  # do that. Fill in the test record, trim the "New since" list, then mark it
+  # ready by hand.
+  #
+  # One rolling branch: if the previous draft is still open when the next
+  # release lands, it is rebuilt on the registry's main and updated in place
+  # (and put back to draft), so Seeed never has two Tesserae updates queued.
+  #
+  # Needs repo secret PLAYGROUND_PR_TOKEN: a classic personal access token with
+  # the `public_repo` scope, from the account that owns the fork. Without it the
+  # job logs a notice and does nothing. Optional repo variable PLAYGROUND_FORK
+  # names the fork (default dmellok/reterminal-sticky-playground-registry).
+  #
+  # The registry's own scripts (validate, tests) are third-party code, so the
+  # token is handed only to the push and pull request steps, never to them.
+  playground:
+    name: draft Sticky Playground PR
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'release' && github.event.release.prerelease == false) ||
+      (github.event_name == 'workflow_dispatch' && !contains(inputs.tag, '-'))
+    permissions:
+      contents: read
+    env:
+      REGISTRY: Seeed-Projects/reterminal-sticky-playground-registry
+      FORK: ${{ vars.PLAYGROUND_FORK || 'dmellok/reterminal-sticky-playground-registry' }}
+      BRANCH: update-tesserae
+    steps:
+      - name: Check for the token
+        id: gate
+        env:
+          TOKEN: ${{ secrets.PLAYGROUND_PR_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::notice::PLAYGROUND_PR_TOKEN is not set; skipping the Playground draft"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - uses: actions/download-artifact@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          name: fw-seeed-reterminal-sticky
+          path: artifacts
+
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          node-version: '20'
+
+      - name: Prepare the update
+        id: prep
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          v='${{ github.event.release.tag_name || inputs.tag }}'
+          git clone --quiet "https://github.com/$REGISTRY.git" registry
+          git -C registry checkout --quiet -B "$BRANCH" origin/main
+          rc=0
+          python3 tools/playground_update.py \
+            --registry registry --artifacts artifacts \
+            --version "${v#v}" --commit "$(git rev-parse HEAD)" \
+            --changelog CHANGELOG.md --pr-body pr-body.md || rc=$?
+          if [ "$rc" = 3 ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$rc" = 0 ] || exit "$rc"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "fw_version=${v#v}" >> "$GITHUB_OUTPUT"
+          # The same two checks the registry's CI runs on the pull request.
+          cd registry
+          node scripts/validate-registry.mjs
+          node --test scripts/*.test.mjs
+
+      - name: Push the branch and open or update the draft
+        if: steps.prep.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PLAYGROUND_PR_TOKEN }}
+        run: |
+          set -euo pipefail
+          v='${{ steps.prep.outputs.fw_version }}'
+          title="Update Tesserae to $v"
+          login=$(gh api user --jq .login)
+          uid=$(gh api user --jq .id)
+          cd registry
+          git config user.name "$login"
+          git config user.email "$uid+$login@users.noreply.github.com"
+          git add -A firmwares/tesserae
+          git commit --quiet -m "$title"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.https://github.com/.extraheader=Authorization: Basic $auth" \
+            push --force "https://github.com/$FORK.git" "$BRANCH"
+          head="${FORK%%/*}:$BRANCH"
+          pr=$(gh pr list -R "$REGISTRY" --head "$BRANCH" --author "$login" \
+                 --state open --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" -R "$REGISTRY" --title "$title" --body-file ../pr-body.md
+            # A new package needs a new device test, so it goes back to draft.
+            gh pr ready "$pr" -R "$REGISTRY" --undo || true
+            echo "updated draft: https://github.com/$REGISTRY/pull/$pr"
+          else
+            gh pr create -R "$REGISTRY" --draft --base main --head "$head" \
+              --title "$title" --body-file ../pr-body.md
           fi
