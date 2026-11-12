@@ -634,6 +634,11 @@ setup AP:
 4. It reboots, onboards over REST, and appears in Tesserae → Settings → Devices
    for approval. Once approved it fetches and paints frames.
 
+If the portal page does not open on its own, browse to `http://192.168.4.1/`.
+If it still will not load, try another browser: Brave on Android has been seen
+to fail with `ERR_TOO_MANY_RETRIES` where Chrome on the same phone loads the
+page (#75).
+
 Development shortcut: copy `include/secrets.example.h` to `include/secrets.h`
 (git-ignored) and set `WIFI_DEFAULT_*` / `REST_DEFAULT_SERVER_URL` to skip the
 portal while iterating.
