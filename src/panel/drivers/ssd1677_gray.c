@@ -120,6 +120,17 @@ static bool s_port_inited = false;
 #include "sht4x.h"
 #endif
 
+/* The SSD2677's two-tone partial is OFF. Its polarity is right, but on glass
+ * (#71) the first partial after a 4-gray paint also drove every pixel outside
+ * the rect: one mid grey went to black and the other lightened, across the
+ * whole panel. Seeed's driver only runs this waveform over 1bpp content, so
+ * it has no answer for greys. Until there is one, a partial request on this
+ * controller is a full 4-gray repaint (about 1.3 s) and partial_rect_safe()
+ * says so. Set to 1 to get the two-tone path back on the bench. */
+#ifndef EPD_SSD2677_PARTIAL
+#define EPD_SSD2677_PARTIAL 0
+#endif
+
 enum { IC_UNKNOWN = 0, IC_SSD1677 = 1, IC_SSD2677 = 2 };
 static uint8_t s_ic = IC_UNKNOWN;
 /* Kept across deep sleep so a timer wake skips the probe (and the extra panel
@@ -133,7 +144,9 @@ static bool ssd2677_detect(void);
 static void ssd2677_init(void);
 static void ssd2677_display(const uint8_t *image);
 static void ssd2677_clear(uint8_t color);
+#if EPD_SSD2677_PARTIAL
 static void ssd2677_partial_two_tone(const uint8_t *image, int x, int y, int w, int h);
+#endif
 static void ssd2677_sleep_cmds(void);
 #  define IS_SSD2677() (s_ic == IC_SSD2677)
 #else
@@ -836,8 +849,13 @@ static void ssd1677_show_palette_sweep(void)
 
 #else /* !EPD_MONO */
 
-/* Bring-up: four bands in FRAME coordinates, black at the top through white at
- * the bottom, plus a black wedge in the top-left corner.
+/* Bring-up, in FRAME coordinates. Top half: four bands, black, dark grey,
+ * light grey, white from the top, each an eighth of the height, with a white
+ * square in the top-left corner. Bottom half: 1px stripes.
+ *
+ * All four levels sit in the top half so the stripes below do not cover any
+ * of them: the order of the two mid greys can only be judged with both on
+ * the glass at once.
  *
  * Built as a real frame and pushed through ssd1677_display() rather than
  * streamed straight at the controller, so the selftest exercises the SAME
@@ -848,8 +866,9 @@ static void ssd1677_show_palette_sweep(void)
  *
  * What to look for, with the panel upright:
  *   bands top to bottom, black first  -> frame Y is correct
- *   corner wedge at the TOP-LEFT      -> frame X is correct, no mirror
- * Either one wrong pins which axis to invert. */
+ *   white square at the TOP-LEFT      -> frame X is correct, no mirror
+ *   second band darker than the third -> the mid greys are the right way round
+ * Either of the first two wrong pins which axis to invert. */
 static void ssd1677_show_color_bars(void)
 {
     uint8_t *frame = malloc(EPD_BUF_BYTES);
@@ -858,12 +877,12 @@ static void ssd1677_show_color_bars(void)
                  (unsigned)EPD_BUF_BYTES);
         return;
     }
-    const int BAND_H = EPD_HEIGHT / 4;
+    const int BAND_H = EPD_HEIGHT / 8;
     const int stride = EPD_WIDTH / 4;
 
     for (int fy = 0; fy < EPD_HEIGHT; fy++) {
         int band = fy / BAND_H;
-        if (band > 3) band = 3;
+        if (band > 3) band = 3;                 /* lower half: stripes, below */
         uint8_t g = (uint8_t)band;              /* 0 = black .. 3 = white */
         uint8_t fill = (uint8_t)((g << 6) | (g << 4) | (g << 2) | g);
         memset(frame + (size_t)fy * stride, fill, stride);
@@ -895,7 +914,8 @@ static void ssd1677_show_color_bars(void)
      * is invisible -- which is exactly how the first version of this shipped.
      * Against band 0 it reads in every orientation, so its position identifies
      * both axes at once however the glass turns out to be mounted. */
-    const int WEDGE = (EPD_WIDTH < EPD_HEIGHT ? EPD_WIDTH : EPD_HEIGHT) / 10;
+    int WEDGE = (EPD_WIDTH < EPD_HEIGHT ? EPD_WIDTH : EPD_HEIGHT) / 10;
+    if (WEDGE > BAND_H / 2) WEDGE = BAND_H / 2;   /* stay inside the black band */
     for (int fy = 0; fy < WEDGE; fy++)
         memset(frame + (size_t)fy * stride, 0xff, WEDGE / 4);
 
@@ -1023,7 +1043,14 @@ static void set_ram_window(int cx0, int cx1, int cy0, int cy1)
 static void ssd1677_partial_two_tone(const uint8_t *image, int x, int y, int w, int h)
 {
 #if EPD_HAVE_SSD2677
-    if (IS_SSD2677()) { ssd2677_partial_two_tone(image, x, y, w, h); return; }
+    if (IS_SSD2677()) {
+#if EPD_SSD2677_PARTIAL
+        ssd2677_partial_two_tone(image, x, y, w, h);
+#else
+        ssd2677_display(image);   /* see EPD_SSD2677_PARTIAL */
+#endif
+        return;
+    }
 #endif
     /* Clamp to the frame. */
     if (x < 0) { w += x; x = 0; }
@@ -1140,9 +1167,13 @@ static void ssd1677_display_partial_mode(const uint8_t *image, int x, int y,
 }
 
 /* Only the two-tone path with a shadow stays inside the rect; everything else
- * above is a full repaint. The shadow does not survive the MCU's deep sleep. */
+ * above is a full repaint. The shadow does not survive the MCU's deep sleep.
+ * On an SSD2677 every partial is a full repaint (EPD_SSD2677_PARTIAL). */
 static bool ssd1677_partial_rect_safe(epd_refresh_t mode)
 {
+#if EPD_HAVE_SSD2677 && !EPD_SSD2677_PARTIAL
+    if (IS_SSD2677()) return false;
+#endif
     return (mode == EPD_RF_A2 || mode == EPD_RF_DU) && s_shadow_valid;
 }
 #endif /* !EPD_MONO */
@@ -1161,18 +1192,18 @@ static bool ssd1677_partial_rect_safe(epd_refresh_t mode)
  *   Waveform chosen from OTP by a code written to 0xE6 and latched with 0xA5,
  *            in temperature buckets. Nothing is uploaded.
  *   Partial  the same 0x10 stream, each pixel carrying (old bit, new bit).
- *            The whole frame is sent; a pixel whose two bits match is left
- *            alone. No RAM window.
+ *            The whole frame is sent; there is no RAM window. Switched off,
+ *            see EPD_SSD2677_PARTIAL.
  *
  * Sequences and constants follow Seeed's own driver for this part: the init
  * table, the reset timing (20 ms low, 10 ms high), the waveform codes and
  * their temperature buckets, and the 0x70 identity read.
  *
- * NOT YET RUN ON HARDWARE. Three things are inferred and each has a switch:
- * orientation (EPD_SSD2677_MIRROR_X / _Y), the order of the two mid greys
- * (EPD_SSD2677_GRAY_MID_SWAP), and partial polarity (SSD1677_PARTIAL_INVERT,
- * shared with the SSD1677 path). The -selftest env judges the first two, the
- * -overlaytest env the third. */
+ * Checked on glass (#71): detection, init, the 4-gray full paint, orientation
+ * and the order of the mid greys. The two-tone partial has the right polarity
+ * but is switched off, see EPD_SSD2677_PARTIAL. The switches stay for the
+ * bench: EPD_SSD2677_MIRROR_X / _Y, EPD_SSD2677_GRAY_MID_SWAP and
+ * EPD_SSD_FORCE_IC. */
 
 /* Orientation relative to the SSD1677 path's mapping (controller row cy,
  * column cx reads frame pixel fx = cy, fy = cx on the Sticky). The glass is
@@ -1184,12 +1215,12 @@ static bool ssd1677_partial_rect_safe(epd_refresh_t mode)
 #define EPD_SSD2677_MIRROR_Y 0
 #endif
 
-/* The 4-gray waveform's pixel codes are 0 = black, 3 = white, with the mid
- * greys crossed: 2 = dark, 1 = light. The frame is linear (1 = dark, 2 =
- * light), so the two swap on the way out. Set to 0 if the selftest's middle
- * bands come out in the wrong order. */
+/* The 4-gray waveform's pixel codes run in the frame's own order: 0 = black,
+ * 1 = dark, 2 = light, 3 = white, so nothing swaps on the way out. Checked on
+ * glass (#71): with the two mid codes exchanged the selftest's second band
+ * came out lighter than its third. Set to 1 to exchange them. */
 #ifndef EPD_SSD2677_GRAY_MID_SWAP
-#define EPD_SSD2677_GRAY_MID_SWAP 1
+#define EPD_SSD2677_GRAY_MID_SWAP 0
 #endif
 
 /* Force the choice and skip the probe, for the bench: 1677 or 2677. */
@@ -1289,8 +1320,10 @@ static uint8_t s26_read_id(void)
  *     because the two parts use opposite BUSY polarity.
  * The second covers a read that returns nothing, and it is the same symptom
  * the SSD1677 sequence shows on the new part ("BUSY still high after 10 s").
- * Sampled 150 ms after reset so neither part is still in its reset busy
- * phase, where each looks like the other. */
+ * Both are taken 150 ms after reset, so neither part is still in its reset
+ * busy phase: there each BUSY looks like the other's, and an SSD2677 has been
+ * seen to answer 0x00 instead of its ID. The read is tried up to three times
+ * for the same reason. */
 static bool ssd2677_detect(void)
 {
     if (s_ic != IC_UNKNOWN) return s_ic == IC_SSD2677;
@@ -1307,14 +1340,21 @@ static bool ssd2677_detect(void)
         return s_ic == IC_SSD2677;
     }
     s26_reset();
-    const uint8_t id = s26_read_id();
     vTaskDelay(pdMS_TO_TICKS(150));
     const int busy = gpio_get_level(EPD_PIN_BUSY);
+    uint8_t id = 0;
+    int reads = 0;
+    while (reads < 3) {
+        id = s26_read_id();
+        reads++;
+        if (id == S26_ID) break;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
     s_ic = (id == S26_ID || busy) ? IC_SSD2677 : IC_SSD1677;
     /* Always logged: a wrong pick shows up as a BUSY timeout, and this line
      * is what says why. */
-    ESP_LOGI(TAG, "controller probe: 0x70 -> 0x%02x, BUSY rests %s: %s",
-             id, busy ? "high" : "low",
+    ESP_LOGI(TAG, "controller probe: 0x70 -> 0x%02x (read %d of 3), BUSY rests %s: %s",
+             id, reads, busy ? "high" : "low",
              s_ic == IC_SSD2677 ? "SSD2677" : "SSD1677");
 #endif
     s_ic_rtc = s_ic;
@@ -1378,6 +1418,7 @@ static uint8_t s26_temperature(void)
 }
 
 static uint8_t s26_gray_code(uint8_t t)    { return t <= 15 ? 0xf1 : 0xfa; }
+#if EPD_SSD2677_PARTIAL
 static uint8_t s26_partial_code(uint8_t t)
 {
     if (t <= 10) return 0x08;
@@ -1385,6 +1426,7 @@ static uint8_t s26_partial_code(uint8_t t)
     if (t <= 30) return 0x19;
     return 0x23;
 }
+#endif
 
 /* Select the OTP waveform for the frame that follows. */
 static void s26_latch_waveform(uint8_t code)
@@ -1515,10 +1557,13 @@ static void ssd2677_clear(uint8_t color)
     bus_release();
 }
 
-/* Two-tone repaint of a frame rect. The controller takes the whole frame as
- * (old, new) bit pairs and drives only the pixels whose pair differs, so
- * outside the rect both bits come from the shadow and the glass keeps
- * whatever grey it shows. */
+#if EPD_SSD2677_PARTIAL
+/* Two-tone repaint of a frame rect. Compiled out by default, because on glass
+ * it disturbed the greys outside the rect (see EPD_SSD2677_PARTIAL).
+ *
+ * The controller takes the whole frame as (old, new) bit pairs. Outside the
+ * rect both bits come from the shadow, which was meant to leave those pixels
+ * alone; the first partial after a 4-gray paint drives them anyway. */
 static void ssd2677_partial_two_tone(const uint8_t *image, int x, int y, int w, int h)
 {
     if (x < 0) { w += x; x = 0; }
@@ -1573,6 +1618,7 @@ static void ssd2677_partial_two_tone(const uint8_t *image, int x, int y, int w, 
     ESP_LOGI(TAG, "SSD2677 partial (%d,%d %dx%d) in %lld ms", x, y, w, h,
              (long long)((esp_timer_get_time() - t0) / 1000));
 }
+#endif /* EPD_SSD2677_PARTIAL */
 
 /* Controller half of sleep; the caller drops the panel rail afterwards. */
 static void ssd2677_sleep_cmds(void)
