@@ -349,6 +349,22 @@ static void always_on_loop(void)
     /* A fetched frame waiting for the panel's refresh floor to elapse. At most
      * one: a newer fetch replaces it rather than queueing behind it. */
     pending_frame_t pending = {0};
+#if BOARD_HAS_TOUCH && !defined(BOARD_OVERLAY_PARTIAL)
+    /* Touch follow-up. A tap whose action changes something outside Tesserae
+     * (a Home Assistant service call) is answered 304: the server re-renders
+     * the page a few seconds later, once the new state has settled, and on
+     * this board that render can only arrive as a whole frame on a poll. Left
+     * to the normal cadence it showed up to one poll interval after it was
+     * ready (#21). So after such a tap the loop polls every
+     * AWAKE_TOUCH_FOLLOW_POLL_S until the frame arrives or this deadline
+     * passes, and paints it without waiting on the refresh floor, like every
+     * other answer to a finger. Zero = no tap is being followed.
+     *
+     * Not on an overlay board: there the result arrives as a patch over SSE
+     * or /frame/data, and an early /frame poll would make the server promote
+     * that patch to a full repaint. */
+    int64_t touch_follow_until_us = 0;
+#endif
 
     for (;;) {
         const rest_config_t *c = rest_config_get();
@@ -450,6 +466,15 @@ static void always_on_loop(void)
                                    c->last_frame_etag, ev);
                     painted = fetch_and_paint_current(c->server_url);
                     rest_set_touch(0, 0, 0, 0, 0, NULL, 0);
+#if !defined(BOARD_OVERLAY_PARTIAL)
+                    if (painted) {
+                        touch_follow_until_us = 0;   /* answered on the tap itself */
+                    } else {
+                        int64_t t = esp_timer_get_time();
+                        touch_follow_until_us = t + (int64_t)AWAKE_TOUCH_FOLLOW_S * US;
+                        next_poll_us = t + (int64_t)AWAKE_TOUCH_FOLLOW_POLL_S * US;
+                    }
+#endif
                 }
                 if (painted) {
                     last_paint_us = esp_timer_get_time();
@@ -532,6 +557,15 @@ static void always_on_loop(void)
             }
             next_poll_us = esp_timer_get_time() +
                            (int64_t)awake_poll_s(server_next_poll_s) * US;
+#if BOARD_HAS_TOUCH && !defined(BOARD_OVERLAY_PARTIAL)
+            if (touch_follow_until_us) {
+                if (esp_timer_get_time() < touch_follow_until_us)
+                    next_poll_us = esp_timer_get_time() +
+                                   (int64_t)AWAKE_TOUCH_FOLLOW_POLL_S * US;
+                else
+                    touch_follow_until_us = 0;   /* nothing came; back to cadence */
+            }
+#endif
         }
 
         /* ---- repaint, bounded by the panel's own floor ----
@@ -543,6 +577,16 @@ static void always_on_loop(void)
          * side, so a held frame is always logged with the remaining wait. It is
          * never dropped. */
         now = esp_timer_get_time();
+#if BOARD_HAS_TOUCH && !defined(BOARD_OVERLAY_PARTIAL)
+        if (pending.frame && touch_follow_until_us) {
+            /* The frame a tap was waiting for: never deferred by the floor. */
+            ESP_LOGI(TAG, "always-on: painting touch follow-up frame %s",
+                     pending.fo.etag);
+            frame_paint(&pending);
+            last_paint_us = esp_timer_get_time();
+            touch_follow_until_us = 0;
+        }
+#endif
         if (pending.frame) {
             int64_t since = now - last_paint_us;
             if (since >= (int64_t)AWAKE_MIN_REPAINT_S * US) {
