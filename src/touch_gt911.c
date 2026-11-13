@@ -529,6 +529,45 @@ static void gt_log_gesture_config(void)
                  TOUCH_GESTURE_HOP_DIS ? 1 : 0);
     }
 #endif
+
+    /* Touch-key config (#327). Key1..Key4 address (0x8093..0x8096) and
+     * Key_Area (0x8097) are not documented as zero from the factory, and the
+     * E1003 has no touch keys: if they are set, the controller may be scanning
+     * for keys in gesture mode. Logged on every gesture sleep. */
+    ESP_LOGI(TAG, "gesture config: keys 0x8093..97 = %02x %02x %02x %02x %02x",
+             C(0x8093), C(0x8094), C(0x8095), C(0x8096), C(0x8097));
+#ifdef TOUCH_GESTURE_KEY_CLEAR
+    /* Bench only (#327): zero those five bytes before the gesture sleep, to
+     * see whether the ~11 mA steps go with them. Written only when one is
+     * non-zero, with the checksum fixed up, the same way as the hop bit
+     * above; like that bit it may not survive the wake's controller reset,
+     * in which case it is rewritten before every gesture sleep. The line
+     * above has the original values, should they need writing back. */
+    if (C(0x8093) | C(0x8094) | C(0x8095) | C(0x8096) | C(0x8097)) {
+        esp_err_t ek = ESP_OK;
+        for (uint16_t reg = 0x8093; reg <= 0x8097; reg++) {
+            C(reg) = 0;
+            esp_err_t e = gt_write_u8(reg, 0);
+            if (e != ESP_OK) ek = e;
+        }
+        sum = 0;
+        for (size_t i = 0; i < sizeof c - 1; i++) sum += c[i];
+        uint8_t kchk = (uint8_t)(~sum + 1);
+        esp_err_t e2 = gt_write_u8(0x80ff, kchk);
+        esp_err_t e3 = gt_write_u8(0x8100, 0x01);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        uint8_t back[5] = {0}, back_chk = 0;
+        gt_read(0x8093, back, sizeof back);
+        gt_read(0x80ff, &back_chk, 1);
+        ESP_LOGW(TAG, "gesture config: cleared keys, chk=0x%02x (%s/%s/%s), "
+                      "reads back %02x %02x %02x %02x %02x chk=0x%02x",
+                 kchk, esp_err_to_name(ek), esp_err_to_name(e2),
+                 esp_err_to_name(e3), back[0], back[1], back[2], back[3],
+                 back[4], back_chk);
+    } else {
+        ESP_LOGI(TAG, "gesture config: keys already zero, nothing written");
+    }
+#endif
 #undef C
 }
 
