@@ -271,6 +271,14 @@
  * so it runs on its own much slower clock, independent of frame polling. */
 #define AWAKE_HEARTBEAT_S     60
 
+/* Touch follow-up while awake, on a board whose tap results arrive as whole
+ * frames (no overlay patches): after a tap the server answered 304, poll this
+ * often, for this long, for the frame its action produces. The server
+ * re-renders about 3 s after a Home Assistant action and the render takes a
+ * few seconds more, so the window covers that with room to spare. */
+#define AWAKE_TOUCH_FOLLOW_S       15
+#define AWAKE_TOUCH_FOLLOW_POLL_S  1
+
 /* State of charge at which always-on gives up and returns to deep sleep, on a
  * board that can see a cell at all. A mains-powered panel sits at 100 % and
  * never reaches this; a battery panel that someone enabled always-on for, or

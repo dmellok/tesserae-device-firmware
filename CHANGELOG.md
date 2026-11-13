@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- M5Stack PaperS3 and M5Paper, with Stay awake on: the screen updates sooner after a tap that changes something in Home Assistant. The server re-renders the page a few seconds after such a tap, and the panel only noticed on its next regular poll, up to one poll interval later, and could then hold the new frame for the refresh floor as well. After a tap the panel now checks for the new frame every second for up to 15 s and paints it as soon as it arrives. (#21)
+
 ## [1.66.0] - 2026-11-13
 
 ### Added
