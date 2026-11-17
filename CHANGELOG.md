@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- reTerminal E1001, four greys on glass with the built-in waveform: the panel is now sent its power setting (PWR `07 07 3F 3F`) before power-on, as every other refresh mode on this glass already does. This one sequence left it out and relied on the panel's stored defaults. Thanks to bablokb for spotting it. (#20)
+
 ## [1.66.1] - 2026-11-14
 
 ### Fixed
