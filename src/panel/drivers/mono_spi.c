@@ -1269,13 +1269,19 @@ static void gray_init_panel(void)
          * already burned in, selected by fixing the temperature-sensor reading
          * (CCSET TSFIX + TSSET 0x5F). No register LUTs at all -- PSR stays 0x1F
          * exactly like the proven mono init. Verified on a production E1001
-         * (bench 2026-07-23), so it is left byte-for-byte as it was even where
-         * Seeed's OTP branch differs in ordering. */
+         * (bench 2026-07-23), so the ordering is left as it was even where
+         * Seeed's OTP branch differs (Seeed sends the booster before PON).
+         *
+         * PWR is the one addition (#20). bb_epaper's sequence leaves it out,
+         * which left VDH/VDL at whatever the panel's OTP holds; every other
+         * init on this glass, and Seeed's own OTP 4-gray init, sends
+         * 07 07 3F 3F before power-on, so this one does too. */
         static const uint8_t CDI_G2[]  = {0x90, 0x07};
         static const uint8_t BTST_G2[] = {0x27, 0x27, 0x18, 0x17};
         static const uint8_t CCSET_V[] = {0x02};   /* TSFIX: use TSSET value */
         static const uint8_t TSSET_V[] = {0x5f};   /* picks the OTP 4-gray LUT */
 
+        cmd_data(PWR,  PWR_V,  sizeof PWR_V);      /* VDH/VDL +-15 V, as the mono init */
         cmd_data(PSR,  PSR_V,  sizeof PSR_V);      /* 0x1F: KW, OTP LUTs */
         cmd_data(CDI,  CDI_G2, sizeof CDI_G2);
         cmd_data(PON,  NULL, 0);
