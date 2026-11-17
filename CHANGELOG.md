@@ -8,7 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Config: a board that carries a compile-time server URL keeps it when an NVS key is absent. `rest_config_load()` seeds `server_url` from `REST_DEFAULT_SERVER_URL` (a board's `secrets.h`) and then lets NVS override it, but it cleared the destination whenever a key was not stored. The `rest` namespace is created by the `bssid`/`chan` fast-connect hints alone, so after one successful association the namespace can exist while the server key does not, and the seeded default was dropped. An absent key now leaves that default in place; a key that is present but empty still wins, which is how the portal unprovisions a device on purpose. Seen on an ESP32-S3 board with `REST_DEFAULT_SERVER_URL` set: `loaded server='(none)'` from the second boot onwards, and normal operation once the default was kept.
+- Config: a board that carries a compile-time server URL keeps it when an NVS key is absent. `rest_config_load()` seeds `server_url` from `REST_DEFAULT_SERVER_URL` (a board's `secrets.h`) and then lets NVS override it, but it cleared the destination whenever a key was not stored. Other code writes to the `rest` namespace without storing the server key (the saved clock floor, for one), so after a first boot the namespace can exist while the server key does not, and the seeded default was dropped. An absent key now leaves that default in place; a key that is present but empty still wins, which is how the portal unprovisions a device on purpose. Seen on an ESP32-S3 board with `REST_DEFAULT_SERVER_URL` set: `loaded server='(none)'` from the second boot onwards, and normal operation once the default was kept.
+
+## [1.67.0] - 2026-11-18
+
+### Added
+
+- Touch controls follow the panel's rotation. On a reTerminal Sticky set to 90° or 270°, switches, sliders and steppers were drawn in the panel's own portrait orientation, so their labels and values read sideways on a landscape dashboard. The frame spec can now carry `"turn": 0 | 90 | 180 | 270` (how far the page was turned clockwise to reach the panel) and the firmware draws each control turned to match, inside the same rect. A slider's direction, a stepper's minus and plus sides and a switch's label side turn with it, so a tap lands on what it shows. The panel reports `touch.turn: true` on its status so the server knows it can send the field. Needs a server that sends `turn`; with an older one nothing changes. (#73)
+
+### Fixed
+
+- reTerminal E1001, four greys on glass with the built-in waveform: the panel is now sent its power setting (PWR `07 07 3F 3F`) before power-on, as every other refresh mode on this glass already does. This one sequence left it out and relied on the panel's stored defaults. Thanks to bablokb for spotting it. (#20)
 
 ## [1.66.1] - 2026-11-14
 

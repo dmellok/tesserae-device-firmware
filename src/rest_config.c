@@ -77,8 +77,9 @@ static void load_str(nvs_handle_t h, const char *key, char *dst, size_t cap)
      * zeroed and then seeded from the compile-time defaults (secrets.h) before
      * this runs, so clearing here throws those defaults away. That bites any
      * board whose secrets.h sets REST_DEFAULT_SERVER_URL: the `rest` namespace
-     * gets created by the bssid/chan fast-connect hints alone, so the namespace
-     * exists while the server key does not, and a fully provisioned panel boots
+     * gets created by writers that never store the server key (the clock
+     * floor in clock_floor.c, for one), so the namespace exists while the
+     * server key does not, and a fully provisioned panel boots
      * logging server='(none)' and opens the setup portal. A key that is present
      * but empty still wins, which is what the portal needs to deliberately
      * unprovision a device. */

@@ -553,6 +553,11 @@ static void add_touch3_capability(cJSON *o)
             cJSON_AddItemToArray(prims, cJSON_CreateString("stepper"));
         }
         cJSON_AddNumberToObject(t, "max_primitives", T3_MAX_PRIMS);
+        /* Honours the spec's "turn": controls are drawn the right way up on a
+         * panel whose composition is turned on the way to the framebuffer
+         * (firmware #73). A server may then leave buttons device-drawn there
+         * too, instead of painting them into the frame. */
+        cJSON_AddBoolToObject(t, "turn", true);
     }
     cJSON_AddBoolToObject(o, "partial_refresh", true);
 
