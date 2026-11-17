@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Waveshare 7.5-inch mono HAT on an ESP32-S3-DevKitC-1: new `waveshare-esp32s3-hat-75` env (plus a `-selftest` sibling) and an `sdkconfig.s3-4m-nopsram.defaults` base for the 4 MB, no-PSRAM part. Same UC8179 800×480 glass and the same 48000-byte 1bpp wire contract as `waveshare-esp32-driver-75`, so it registers as that kind and the server side is unchanged; what is new is the MCU and a hand-wired pin map (CLK 4, DIN 5, CS 6, DC 7, BUSY 8 active low, RST 9), which is the wiring the ESPHome `waveshare_epaper` component uses for this HAT. That makes the panel a software swap for anyone already running ESPHome on this combination, which is a common and inexpensive way to own this glass. OTA is deliberately not enabled: the reused kind's OTA lineage ships classic-ESP32 (Xtensa LX6) images, and an S3 would not boot one, so the server must not offer an update to this build. Verified end to end on real hardware — registration, frame fetch, and a 4739 ms full refresh. Built from source for now: it is not in the release matrix, so there is no released binary, web-flasher entry or OTA for it.
+
 ### Fixed
 
 - Config: a board that carries a compile-time server URL keeps it when an NVS key is absent. `rest_config_load()` seeds `server_url` from `REST_DEFAULT_SERVER_URL` (a board's `secrets.h`) and then lets NVS override it, but it cleared the destination whenever a key was not stored. Other code writes to the `rest` namespace without storing the server key (the saved clock floor, for one), so after a first boot the namespace can exist while the server key does not, and the seeded default was dropped. An absent key now leaves that default in place; a key that is present but empty still wins, which is how the portal unprovisions a device on purpose. Seen on an ESP32-S3 board with `REST_DEFAULT_SERVER_URL` set: `loaded server='(none)'` from the second boot onwards, and normal operation once the default was kept.

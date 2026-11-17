@@ -41,6 +41,7 @@ one board (and thus one driver) per PlatformIO environment.
 | paperlesspaper **OpenPaper L** (ESP32-C6, 4 × AA NiMH) | Spectra 6, dual-controller, no DC line | E Ink EL133UF3 | 1200×1600, 4bpp, streamed in 100-row blocks | `spectra6_spi_dual` (`EPD_NO_DC` + `TESSERAE_STREAM_FRAMES`) | `paperlesspaper-openpaper-l` |
 | [Waveshare **PhotoPainter 7.3"**](https://www.waveshare.com/esp32-s3-photopainter.htm) | Spectra-6, single | ED2208-GCA | 800×480, 4bpp | `spectra6_spi_single` | `waveshare-photopainter-73` |
 | [Waveshare **E-Paper ESP32 Driver Board**](https://www.waveshare.com/e-paper-esp32-driver-board.htm) + 7.5" mono (V2) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `waveshare-esp32-driver-75` |
+| [Waveshare **7.5" e-Paper HAT**](https://www.waveshare.com/wiki/7.5inch_e-Paper_HAT_Manual) + ESP32-S3-DevKitC-1 | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `waveshare-esp32s3-hat-75` |
 | [Waveshare **ESP32-S3-RLCD-4.2**](https://www.waveshare.com/esp32-s3-rlcd-4.2.htm) | Reflective LCD (not e-paper), mono | ST7305 | 400×300, 1bpp | `st7305_rlcd` | `waveshare-rlcd-42` |
 | [**M5Stack PaperS3**](https://docs.m5stack.com/en/core/PaperS3) | Grayscale (4.7") | none (raw parallel glass) | 960×540, 4bpp gray | `parallel_epd_gray` | `m5stack-papers3` |
 | [**M5Stack PaperDIY**](https://docs.m5stack.com/en/core/PaperDIY_Complete_Kit) (Complete / Assembly Kit) | Grayscale (4.7") | none (raw parallel glass; panel rail on the M5PM1 PMIC) | 960×540, 4bpp gray | `parallel_epd_gray` (`EPD_PWR_M5PM1_PIN`) | `m5stack-paperdiy` |

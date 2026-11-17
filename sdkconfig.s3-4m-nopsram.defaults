@@ -1,0 +1,67 @@
+# ------------------------------------------------------------------
+# ESP32-S3-DevKitC-1, 4 MB flash, NO PSRAM (the Waveshare 7.5" HAT build).
+#
+# A FOURTH parallel base alongside sdkconfig.defaults (S3 R8 + octal PSRAM,
+# UART0 console), sdkconfig.usbjtag.defaults and sdkconfig.c3.defaults: this
+# part is an S3 like sdkconfig.defaults, but it has 4 MB of flash and no
+# SPIRAM at all, so neither can be reused --
+#
+#   * CONFIG_SPIRAM=y must NOT leak in here. TESSERAE_FB_CAPS switches to
+#     MALLOC_CAP_SPIRAM the moment CONFIG_SPIRAM is set (include/app_config.h),
+#     so a frame allocation would ask for memory that does not exist and the
+#     wake fails with nothing painted.
+#   * CONFIG_ESPTOOLPY_FLASHSIZE must be 4MB, or the image header disagrees
+#     with the part.
+#
+# SDKCONFIG_DEFAULTS is a full override rather than an append, so anything
+# non-console that sdkconfig.defaults carries has to be repeated here or the
+# board silently loses it (HKDF and the cert bundle are the two that break the
+# link / the TLS handshake when forgotten).
+# ------------------------------------------------------------------
+
+# --- Flash / partitions (4 MB, A/B layout; OTA stays OFF in the env, see the
+# board header -- the partition table is kept so a future signed lineage for
+# real S3 hardware does not need a re-partition) ---
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_4m_ota.csv"
+
+# --- CPU / runtime ---
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+# app_main runs provisioning or a REST/TLS render cycle on this stack.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+CONFIG_PM_ENABLE=n
+
+# --- Networking / TLS / captive portal ---
+CONFIG_LWIP_LOCAL_HOSTNAME="tesserae-esp32"
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
+CONFIG_ESP_TLS_USING_MBEDTLS=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# Certificate validity dates, and the clock they depend on. Paired with the gate
+# in src/time_ready.c: no TLS request goes out until the clock reads plausibly.
+CONFIG_MBEDTLS_HAVE_TIME_DATE=y
+CONFIG_MBEDTLS_HAVE_TIME=y
+# HKDF-SHA256 for the cloud relay's frame-key derivation (relay_crypto.c).
+CONFIG_MBEDTLS_HKDF_C=y
+CONFIG_MQTT_PROTOCOL_311=y
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+# Accept IPv6-only Tesserae endpoints when the network advertises one.
+CONFIG_LWIP_IPV6_AUTOCONFIG=y
+
+# --- Console ---
+# Native USB-Serial-JTAG on the "USB" port (/dev/cu.usbmodem101 on the Mac) is
+# primary: that is the cable that is plugged in. UART0 cannot be the *secondary*
+# here -- ESP-IDF only offers USB-Serial-JTAG in that role, and only when UART0
+# is primary -- so there is no header-pin console on this build. GPIO 43/44 stay
+# free, and the panel's GPIO 4-9 cannot collide with either console.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# --- Diagnostics / filesystem ---
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_COLORS=y
+CONFIG_FATFS_LFN_HEAP=y
