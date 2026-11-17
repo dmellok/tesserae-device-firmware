@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Waveshare 7.5-inch mono HAT on an ESP32-S3-DevKitC-1: new `waveshare-esp32s3-hat-75` env (plus a `-selftest` sibling) and an `sdkconfig.s3-4m-nopsram.defaults` base for the 4 MB, no-PSRAM part. Same UC8179 800×480 glass and the same 48000-byte 1bpp wire contract as `waveshare-esp32-driver-75`, so it registers as that kind and the server side is unchanged; what is new is the MCU and a hand-wired pin map (CLK 4, DIN 5, CS 6, DC 7, BUSY 8 active low, RST 9), which is the wiring the ESPHome `waveshare_epaper` component uses for this HAT. That makes the panel a software swap for anyone already running ESPHome on this combination, which is a common and inexpensive way to own this glass. OTA is deliberately not enabled: the reused kind's OTA lineage ships classic-ESP32 (Xtensa LX6) images, and an S3 would not boot one, so the server must not offer an update to this build. Verified end to end on real hardware — registration, frame fetch, and a 4739 ms full refresh.
+
 ## [1.66.1] - 2026-11-14
 
 ### Fixed
