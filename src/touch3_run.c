@@ -312,6 +312,15 @@ static bool adopt_spec(const char *json, size_t len, bool cache, bool allow_net)
      * frame poll. Seeded state/value ARE data and can move under an unchanged
      * layout_digest, so adopt those. */
     if (s_have_spec && t3_spec_matches(&s_spec, parsed.layout_digest)) {
+        /* The turn is layout, and the server folds it into the digest. Adopt
+         * it here regardless, so a spec cached before the server sent one
+         * cannot pin the controls sideways under an unchanged digest. */
+        if (s_spec.turn != parsed.turn) {
+            s_spec.turn = parsed.turn;
+            for (int i = 0; i < s_spec.n_prims; i++)
+                s_spec.prims[i].turn = parsed.turn;
+            s_want_repaint = true;
+        }
         for (int i = 0; i < parsed.n_prims; i++) {
             t3_prim_t *held = t3_prim_by_id(&s_spec, parsed.prims[i].id);
             if (!held) continue;
