@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Config: a board that carries a compile-time server URL keeps it when an NVS key is absent. `rest_config_load()` seeds `server_url` from `REST_DEFAULT_SERVER_URL` (a board's `secrets.h`) and then lets NVS override it, but it cleared the destination whenever a key was not stored. The `rest` namespace is created by the `bssid`/`chan` fast-connect hints alone, so after one successful association the namespace can exist while the server key does not, and the seeded default was dropped. An absent key now leaves that default in place; a key that is present but empty still wins, which is how the portal unprovisions a device on purpose. Seen on an ESP32-S3 board with `REST_DEFAULT_SERVER_URL` set: `loaded server='(none)'` from the second boot onwards, and normal operation once the default was kept.
+
 ## [1.66.1] - 2026-11-14
 
 ### Fixed

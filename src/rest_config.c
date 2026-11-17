@@ -73,8 +73,17 @@ static void set_str(char *dst, size_t cap, const char *src)
 
 static void load_str(nvs_handle_t h, const char *key, char *dst, size_t cap)
 {
+    /* An ABSENT key must leave dst untouched rather than clear it. s_cfg is
+     * zeroed and then seeded from the compile-time defaults (secrets.h) before
+     * this runs, so clearing here throws those defaults away. That bites any
+     * board whose secrets.h sets REST_DEFAULT_SERVER_URL: the `rest` namespace
+     * gets created by the bssid/chan fast-connect hints alone, so the namespace
+     * exists while the server key does not, and a fully provisioned panel boots
+     * logging server='(none)' and opens the setup portal. A key that is present
+     * but empty still wins, which is what the portal needs to deliberately
+     * unprovision a device. */
     size_t len = cap;
-    if (nvs_get_str(h, key, dst, &len) != ESP_OK) dst[0] = '\0';
+    (void)nvs_get_str(h, key, dst, &len);
 }
 
 void rest_config_load(void)
@@ -128,10 +137,10 @@ void rest_config_load(void)
 #ifdef BOARD_BUZZER_PIN
         uint8_t be = 0;
         if (nvs_get_u8(h, NVS_KEY_BEEP_EN, &be) == ESP_OK) s_cfg.beep_enabled = (be != 0);
-        /* Via a temp: load_str blanks the destination when the key is absent,
-         * which would wipe the default tone on a device that has never been
-         * told one. */
-        char bp[sizeof s_cfg.beep_pattern];
+        /* Via a zeroed temp so a present-but-empty key cannot overwrite the
+         * default tone with "". An absent key leaves bp as "" too, and the
+         * default survives. */
+        char bp[sizeof s_cfg.beep_pattern] = {0};
         load_str(h, NVS_KEY_BEEP_PAT, bp, sizeof bp);
         if (bp[0]) set_str(s_cfg.beep_pattern, sizeof s_cfg.beep_pattern, bp);
         int32_t bv = -1;
