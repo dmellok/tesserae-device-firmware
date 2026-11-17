@@ -22,7 +22,17 @@
  *
  * 1. Coordinates. Spec rects arrive in DEVICE FRAMEBUFFER space: the server
  *    already applied the orientation/scale/underscan transform (firmware-spec
- *    §2). The firmware draws directly at each rect and never re-rotates.
+ *    §2). Each control occupies exactly its rect.
+ *
+ *    What goes INSIDE the rect is a separate matter. A panel set to an
+ *    orientation other than the firmware-native one has its composition turned
+ *    on the way to the framebuffer, and a label drawn upright in framebuffer
+ *    space then reads sideways on the wall (firmware #73). The spec says how
+ *    far the composition was turned ("turn": 0 | 90 | 180 | 270, degrees
+ *    clockwise; absent = 0) and each control is drawn turned the same way
+ *    inside its rect. Layout that depends on which way is "along" a control
+ *    (a slider's axis, a stepper's thirds, a switch's label side) follows the
+ *    turn as well, so `axis` and friends keep their meaning from the canvas.
  *
  * 2. Ink levels. primitives.json speaks INK scale (0 = paper .. 15 = full
  *    ink), and so do v3 atlas strips (atlas.schema.json: "0 = paper .. 15 =
@@ -215,6 +225,12 @@ typedef struct {
     /* switch, or a button with value_key (drawn filled while on) */
     bool        state;                   /* true = on */
 
+    /* Quarter turns clockwise from the composition to the framebuffer
+     * (0..3), copied from the spec's top-level "turn". 0 = drawn upright in
+     * framebuffer space, which is every spec from a server that predates the
+     * field. See t3_turn_local() for the geometry. */
+    uint8_t     turn;
+
     /* runtime bookkeeping (not parsed) */
     bool        optimistic;              /* local state awaiting confirmation */
     uint8_t     partials;                /* DU count since the last GC16 */
@@ -222,6 +238,7 @@ typedef struct {
 
 typedef struct {
     char       layout_digest[T3_DIGEST_CAP];
+    uint8_t    turn;                     /* quarter turns clockwise, 0..3 */
     int        n_atlases;
     t3_atlas_t atlases[T3_MAX_ATLASES];
     int        n_prims;
@@ -246,6 +263,31 @@ bool t3_spec_matches(const t3_spec_t *s, const char *d);
  * change, firmware-spec §13). */
 t3_prim_t *t3_prim_by_id(t3_spec_t *s, const char *id);
 
+/* ---- turned controls (firmware #73) ---------------------------------------
+ * A primitive with turn != 0 is laid out in its own UPRIGHT frame, the way it
+ * was authored: origin at the corner that is top-left on the wall, lw x lh px,
+ * u to the right and v down. That frame sits inside the framebuffer rect R
+ * turned clockwise by `turn` quarter turns, matching the server's .bin
+ * transform (rotate clockwise on an orientation mismatch, then the 180 flip):
+ *
+ *   turn 0:  fx = R.x + u              fy = R.y + v              lw,lh = w,h
+ *   turn 1:  fx = R.x + R.w - 1 - v    fy = R.y + u              lw,lh = h,w
+ *   turn 2:  fx = R.x + R.w - 1 - u    fy = R.y + R.h - 1 - v    lw,lh = w,h
+ *   turn 3:  fx = R.x + v              fy = R.y + R.h - 1 - u    lw,lh = h,w
+ *
+ * Every public function below takes and returns FRAMEBUFFER coordinates
+ * whatever the turn, so callers never deal in the upright frame. */
+
+/* Size of the primitive's upright frame. */
+void t3_turn_local_size(const t3_prim_t *p, int *lw, int *lh);
+
+/* Framebuffer pixel -> upright-frame pixel (may fall outside 0..lw/lh when
+ * the point is outside the rect). */
+void t3_turn_local(const t3_prim_t *p, int fx, int fy, int *u, int *v);
+
+/* Upright-frame rect -> the framebuffer rect covering the same pixels. */
+t3_rect_t t3_turn_fb_rect(const t3_prim_t *p, t3_rect_t local);
+
 /* ---- hit test + gestures (firmware-spec §8) ------------------------------ */
 
 typedef enum { T3_G_NONE = 0, T3_G_TAP, T3_G_DRAG } t3_gesture_t;
@@ -264,7 +306,10 @@ int t3_hit(const t3_spec_t *s, int x, int y);
 float t3_snap(const t3_prim_t *p, float v);
 
 /* Track extent along the primitive's axis: the usable inset span a drag maps
- * onto. For axis 'x': *origin = rect.x + inset, *len = rect.w - 2*inset. */
+ * onto. For axis 'x': *origin = rect.x + inset, *len = rect.w - 2*inset.
+ * On a turned primitive the track runs along whichever framebuffer axis the
+ * turn puts it on; origin is still the lower framebuffer coordinate of the
+ * span. Which end is min is not reported: use t3_slider_value_at for that. */
 void t3_slider_track(const t3_prim_t *p, int *origin, int *len);
 
 /* Map a framebuffer coordinate on the drag axis to a snapped value

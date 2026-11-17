@@ -8,7 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Waveshare 7.5-inch mono HAT on an ESP32-S3-DevKitC-1: new `waveshare-esp32s3-hat-75` env (plus a `-selftest` sibling) and an `sdkconfig.s3-4m-nopsram.defaults` base for the 4 MB, no-PSRAM part. Same UC8179 800×480 glass and the same 48000-byte 1bpp wire contract as `waveshare-esp32-driver-75`, so it registers as that kind and the server side is unchanged; what is new is the MCU and a hand-wired pin map (CLK 4, DIN 5, CS 6, DC 7, BUSY 8 active low, RST 9), which is the wiring the ESPHome `waveshare_epaper` component uses for this HAT. That makes the panel a software swap for anyone already running ESPHome on this combination, which is a common and inexpensive way to own this glass. OTA is deliberately not enabled: the reused kind's OTA lineage ships classic-ESP32 (Xtensa LX6) images, and an S3 would not boot one, so the server must not offer an update to this build. Verified end to end on real hardware — registration, frame fetch, and a 4739 ms full refresh.
+- Waveshare 7.5-inch mono HAT on an ESP32-S3-DevKitC-1: new `waveshare-esp32s3-hat-75` env (plus a `-selftest` sibling) and an `sdkconfig.s3-4m-nopsram.defaults` base for the 4 MB, no-PSRAM part. Same UC8179 800×480 glass and the same 48000-byte 1bpp wire contract as `waveshare-esp32-driver-75`, so it registers as that kind and the server side is unchanged; what is new is the MCU and a hand-wired pin map (CLK 4, DIN 5, CS 6, DC 7, BUSY 8 active low, RST 9), which is the wiring the ESPHome `waveshare_epaper` component uses for this HAT. That makes the panel a software swap for anyone already running ESPHome on this combination, which is a common and inexpensive way to own this glass. OTA is deliberately not enabled: the reused kind's OTA lineage ships classic-ESP32 (Xtensa LX6) images, and an S3 would not boot one, so the server must not offer an update to this build. Verified end to end on real hardware — registration, frame fetch, and a 4739 ms full refresh. Built from source for now: it is not in the release matrix, so there is no released binary, web-flasher entry or OTA for it.
+
+## [1.67.0] - 2026-11-18
+
+### Added
+
+- Touch controls follow the panel's rotation. On a reTerminal Sticky set to 90° or 270°, switches, sliders and steppers were drawn in the panel's own portrait orientation, so their labels and values read sideways on a landscape dashboard. The frame spec can now carry `"turn": 0 | 90 | 180 | 270` (how far the page was turned clockwise to reach the panel) and the firmware draws each control turned to match, inside the same rect. A slider's direction, a stepper's minus and plus sides and a switch's label side turn with it, so a tap lands on what it shows. The panel reports `touch.turn: true` on its status so the server knows it can send the field. Needs a server that sends `turn`; with an older one nothing changes. (#73)
+
+### Fixed
+
+- reTerminal E1001, four greys on glass with the built-in waveform: the panel is now sent its power setting (PWR `07 07 3F 3F`) before power-on, as every other refresh mode on this glass already does. This one sequence left it out and relied on the panel's stored defaults. Thanks to bablokb for spotting it. (#20)
 
 ## [1.66.1] - 2026-11-14
 
