@@ -951,6 +951,200 @@ static void test_caps(void)
     CHECK(strcmp(s.prims[T3_MAX_PRIMS - 1].id, last) == 0);
 }
 
+/* ---- turned controls (firmware #73) ------------------------------------- */
+
+#define TW 400
+#define TH 400
+static uint8_t g_ta[(TW / 2) * TH];     /* upright reference */
+static uint8_t g_tb[(TW / 2) * TH];     /* turned */
+
+static uint8_t nib_at(const uint8_t *fb, int x, int y)
+{
+    uint8_t b = fb[(size_t)y * (TW / 2) + (x >> 1)];
+    return (x & 1) ? (b & 0x0F) : (uint8_t)(b >> 4);
+}
+
+/* The server's transform, written out independently of touch3.c: a control
+ * whose upright frame is lw x lh lands in framebuffer rect R after `turn`
+ * clockwise quarter turns (rotate clockwise, then the 180 flip for 2 and 3). */
+static void turned_px(int turn, const t3_rect_t *R, int u, int v,
+                      int *fx, int *fy)
+{
+    switch (turn) {
+    case 1:  *fx = R->x + R->w - 1 - v; *fy = R->y + u;             break;
+    case 2:  *fx = R->x + R->w - 1 - u; *fy = R->y + R->h - 1 - v;  break;
+    case 3:  *fx = R->x + v;            *fy = R->y + R->h - 1 - u;  break;
+    default: *fx = R->x + u;            *fy = R->y + v;             break;
+    }
+}
+
+/* Draw `proto` (an upright control at the origin) upright and turned, and
+ * require the turned picture to be the upright one carried through the
+ * transform, pixel for pixel, with nothing drawn outside its rect. */
+static void check_turned_draw(const t3_spec_t *s, const t3_prim_t *proto,
+                              int turn)
+{
+    int lw = proto->rect.w, lh = proto->rect.h;
+    t3_prim_t up = *proto;
+    up.turn = 0;
+    memset(g_ta, 0x77, sizeof g_ta);
+    t3_draw_primitive(g_ta, TW, TH, 4, s, &up);
+
+    t3_prim_t tp = *proto;
+    tp.turn = (uint8_t)turn;
+    tp.rect.x = 37; tp.rect.y = 21;            /* odd x: off the fast path */
+    tp.rect.w = (int16_t)((turn & 1) ? lh : lw);
+    tp.rect.h = (int16_t)((turn & 1) ? lw : lh);
+    memset(g_tb, 0x77, sizeof g_tb);
+    t3_draw_primitive(g_tb, TW, TH, 4, s, &tp);
+
+    int lsw = 0, lsh = 0;
+    t3_turn_local_size(&tp, &lsw, &lsh);
+    CHECK(lsw == lw && lsh == lh);
+
+    int bad = 0, inked = 0;
+    for (int v = 0; v < lh; v++) {
+        for (int u = 0; u < lw; u++) {
+            int fx = 0, fy = 0;
+            turned_px(turn, &tp.rect, u, v, &fx, &fy);
+            uint8_t want = nib_at(g_ta, u, v);
+            if (nib_at(g_tb, fx, fy) != want) bad++;
+            if (want != 0xF && want != 0x7) inked++;
+            /* and the inverse the touch path uses agrees with it */
+            int bu = -1, bv = -1;
+            t3_turn_local(&tp, fx, fy, &bu, &bv);
+            if (bu != u || bv != v) bad++;
+        }
+    }
+    CHECK(bad == 0);
+    CHECK(inked > 0);                           /* the control did draw */
+
+    int spill = 0;
+    for (int y = 0; y < TH; y++)
+        for (int x = 0; x < TW; x++) {
+            bool inside = x >= tp.rect.x && x < tp.rect.x + tp.rect.w &&
+                          y >= tp.rect.y && y < tp.rect.y + tp.rect.h;
+            if (!inside && nib_at(g_tb, x, y) != 0x7) spill++;
+        }
+    CHECK(spill == 0);
+
+    /* The feedback rect is the upright one carried through the transform. */
+    t3_rect_t uf = t3_feedback_rect(s, &up);
+    t3_rect_t tf = t3_feedback_rect(s, &tp);
+    int ax = 0, ay = 0, bx = 0, by = 0;
+    turned_px(turn, &tp.rect, uf.x, uf.y, &ax, &ay);
+    turned_px(turn, &tp.rect, uf.x + uf.w - 1, uf.y + uf.h - 1, &bx, &by);
+    CHECK(tf.x == (ax < bx ? ax : bx) && tf.y == (ay < by ? ay : by));
+    CHECK(tf.w == ((turn & 1) ? uf.h : uf.w));
+    CHECK(tf.h == ((turn & 1) ? uf.w : uf.h));
+}
+
+static void test_turn(void)
+{
+    static t3_spec_t s;
+    CHECK(t3_spec_parse(SPEC, strlen(SPEC), PW, PH, &s));
+    CHECK(s.turn == 0 && s.prims[0].turn == 0);     /* absent = upright */
+
+    /* Strips with no symmetry at all, so a mirrored or mis-turned glyph
+     * cannot pass for the right one. */
+    static uint8_t bits0[32 * 24], bits1[20 * 32];
+    for (size_t i = 0; i < sizeof bits0; i++) bits0[i] = (uint8_t)(i * 37 + 11);
+    for (size_t i = 0; i < sizeof bits1; i++) bits1[i] = (uint8_t)(i * 53 + 5);
+    s.atlases[0].bits = bits0;
+    s.atlases[1].bits = bits1;
+
+    const char *ids[] = { "btn_scene", "sw_desk", "sl_bri", "st_vol" };
+    for (int i = 0; i < 4; i++) {
+        t3_prim_t proto = *t3_prim_by_id(&s, ids[i]);
+        proto.rect.x = 0; proto.rect.y = 0;
+        for (int turn = 1; turn <= 3; turn++)
+            check_turned_draw(&s, &proto, turn);
+        if (proto.type == T3_BUTTON) {              /* lit: the invert path */
+            strcpy(proto.value_key, "ha:light.desk");
+            proto.state = true;
+            for (int turn = 1; turn <= 3; turn++)
+                check_turned_draw(&s, &proto, turn);
+        }
+        if (proto.type == T3_SLIDER) {              /* and a vertical one */
+            proto.axis = 'y';
+            proto.rect.w = 70; proto.rect.h = 300;
+            for (int turn = 1; turn <= 3; turn++)
+                check_turned_draw(&s, &proto, turn);
+        }
+    }
+
+    /* Slider authored left-to-right (axis x, 360x70) on a panel turned a
+     * quarter clockwise: it stands on end, min at the TOP of the rect. */
+    t3_prim_t sl = *t3_prim_by_id(&s, "sl_bri");
+    sl.turn = 1;
+    sl.rect.x = 100; sl.rect.y = 50; sl.rect.w = 70; sl.rect.h = 360;
+    CHECK(fabsf(t3_slider_value_at(&sl, 130, 50 + 20) - 0.0f) < 0.01f);
+    CHECK(fabsf(t3_slider_value_at(&sl, 130, 50 + 340) - 100.0f) < 0.01f);
+    CHECK(fabsf(t3_slider_value_at(&sl, 101, 50 + 180) - 50.0f) < 0.01f);
+    CHECK(fabsf(t3_slider_value_at(&sl, 168, 50 + 180) - 50.0f) < 0.01f);
+    int origin = 0, len = 0;
+    t3_slider_track(&sl, &origin, &len);
+    CHECK(origin == 50 + 20 && len == 320);         /* runs along fb y */
+    /* Turned the other way it is min at the BOTTOM. */
+    sl.turn = 3;
+    CHECK(fabsf(t3_slider_value_at(&sl, 130, 50 + 359 - 20) - 0.0f) < 0.01f);
+    CHECK(fabsf(t3_slider_value_at(&sl, 130, 50 + 359 - 340) - 100.0f) < 0.01f);
+    /* Upside down it stays horizontal, min on the RIGHT. */
+    sl.turn = 2;
+    sl.rect.w = 360; sl.rect.h = 70;
+    CHECK(fabsf(t3_slider_value_at(&sl, 100 + 359 - 20, 60) - 0.0f) < 0.01f);
+    CHECK(fabsf(t3_slider_value_at(&sl, 100 + 359 - 340, 60) - 100.0f) < 0.01f);
+    t3_slider_track(&sl, &origin, &len);
+    CHECK(origin == 100 + 20 && len == 320);
+
+    /* Stepper authored 160x70 (thirds of 53): minus on top after a clockwise
+     * quarter turn, at the bottom after the opposite one. */
+    t3_prim_t st = *t3_prim_by_id(&s, "st_vol");
+    st.turn = 1;
+    st.rect.x = 10; st.rect.y = 20; st.rect.w = 70; st.rect.h = 160;
+    CHECK(t3_stepper_zone(&st, 40, 30) == -1);
+    CHECK(t3_stepper_zone(&st, 40, 100) == 0);
+    CHECK(t3_stepper_zone(&st, 40, 170) == 1);
+    CHECK(t3_stepper_zone(&st, 90, 30) == -2);      /* outside */
+    t3_rect_t mz = t3_stepper_zone_rect(&st, -1);
+    t3_rect_t pz = t3_stepper_zone_rect(&st, 1);
+    CHECK(mz.x == 10 && mz.y == 20 && mz.w == 70 && mz.h == 53);
+    CHECK(pz.x == 10 && pz.y == 20 + 106 && pz.w == 70 && pz.h == 54);
+    st.turn = 3;
+    CHECK(t3_stepper_zone(&st, 40, 170) == -1);
+    CHECK(t3_stepper_zone(&st, 40, 30) == 1);
+    mz = t3_stepper_zone_rect(&st, -1);
+    CHECK(mz.x == 10 && mz.y == 20 + 160 - 53 && mz.w == 70 && mz.h == 53);
+
+    /* Switch authored 160x80 with a 52 px label: after a clockwise quarter
+     * turn the label is at the top, so the track starts 62 px down and is
+     * centred across the rect's width. */
+    t3_prim_t sw = *t3_prim_by_id(&s, "sw_desk");
+    sw.turn = 1;
+    sw.rect.x = 200; sw.rect.y = 30; sw.rect.w = 80; sw.rect.h = 160;
+    t3_rect_t tr = t3_switch_track_rect(&sw, &s);
+    CHECK(tr.y == 30 + 62 && tr.h == 160 - 62);
+    CHECK(tr.x == 200 + (80 - 44) / 2 && tr.w == 44);
+
+    /* Parse: only whole quarter turns count, and every primitive carries it. */
+    static const char T90[] =
+        "{\"layout_digest\":\"d1\",\"turn\":90,\"primitives\":["
+        "{\"id\":\"s\",\"type\":\"switch\",\"value_key\":\"ha:x\","
+        "\"rect\":{\"x\":0,\"y\":0,\"w\":80,\"h\":160}}]}";
+    static const char T270[] =
+        "{\"layout_digest\":\"d1\",\"turn\":270,\"primitives\":[]}";
+    static const char T180[] =
+        "{\"layout_digest\":\"d1\",\"turn\":180,\"primitives\":[]}";
+    static const char T45[] =
+        "{\"layout_digest\":\"d1\",\"turn\":45,\"primitives\":[]}";
+    static t3_spec_t t;
+    CHECK(t3_spec_parse(T90, strlen(T90), PW, PH, &t));
+    CHECK(t.turn == 1 && t.n_prims == 1 && t.prims[0].turn == 1);
+    CHECK(t3_spec_parse(T270, strlen(T270), PW, PH, &t) && t.turn == 3);
+    CHECK(t3_spec_parse(T180, strlen(T180), PW, PH, &t) && t.turn == 2);
+    CHECK(t3_spec_parse(T45, strlen(T45), PW, PH, &t) && t.turn == 0);
+}
+
 int main(void)
 {
     test_parse();
@@ -968,6 +1162,7 @@ int main(void)
     test_mono_palette();
     test_mono_text_threshold();
     test_caps();
+    test_turn();
     printf("%s: %d checks, %d failures\n", fails ? "FAIL" : "ok", tests, fails);
     return fails ? 1 : 0;
 }

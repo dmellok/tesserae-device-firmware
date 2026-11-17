@@ -336,6 +336,12 @@ bool t3_spec_parse(const char *json, size_t len,
     if (!ld || !ld[0]) goto done;                     /* strict: the anchor */
     cpy(out->layout_digest, sizeof out->layout_digest, ld);
 
+    /* How far the composition was turned to reach the framebuffer. Anything
+     * but a whole quarter turn is ignored (drawn upright in framebuffer
+     * space, as a spec without the field always was). */
+    int deg = jint(root, "turn", 0);
+    if (deg == 90 || deg == 180 || deg == 270) out->turn = (uint8_t)(deg / 90);
+
     const cJSON *ats = cJSON_GetObjectItemCaseSensitive(root, "atlases");
     if (cJSON_IsArray(ats)) {
         const cJSON *it = NULL;
@@ -358,6 +364,7 @@ bool t3_spec_parse(const char *json, size_t len,
         if (out->n_prims >= T3_MAX_PRIMS) break;
         t3_prim_t p;
         if (!parse_primitive(it, panel_w, panel_h, out, &p)) continue;
+        p.turn = out->turn;
         out->prims[out->n_prims++] = p;
     }
     ok = true;
@@ -380,6 +387,75 @@ t3_prim_t *t3_prim_by_id(t3_spec_t *s, const char *id)
     for (int i = 0; i < s->n_prims; i++)
         if (strcmp(s->prims[i].id, id) == 0) return &s->prims[i];
     return NULL;
+}
+
+/* ---- turned controls --------------------------------------------------- */
+
+void t3_turn_local_size(const t3_prim_t *p, int *lw, int *lh)
+{
+    int w = 0, h = 0;
+    if (p) {
+        bool quarter = (p->turn & 1) != 0;
+        w = quarter ? p->rect.h : p->rect.w;
+        h = quarter ? p->rect.w : p->rect.h;
+    }
+    if (lw) *lw = w;
+    if (lh) *lh = h;
+}
+
+void t3_turn_local(const t3_prim_t *p, int fx, int fy, int *u, int *v)
+{
+    int lu = fx, lv = fy;
+    if (p) {
+        int dx = fx - p->rect.x, dy = fy - p->rect.y;
+        switch (p->turn & 3) {
+        case 1:  lu = dy;                   lv = p->rect.w - 1 - dx; break;
+        case 2:  lu = p->rect.w - 1 - dx;   lv = p->rect.h - 1 - dy; break;
+        case 3:  lu = p->rect.h - 1 - dy;   lv = dx;                 break;
+        default: lu = dx;                   lv = dy;                 break;
+        }
+    }
+    if (u) *u = lu;
+    if (v) *v = lv;
+}
+
+/* The mapping itself, on plain ints so the draw path can use it without a
+ * primitive in hand. (x,y,w,h) is rewritten from the upright frame of a
+ * primitive whose framebuffer rect is R to framebuffer space. */
+static void turn_rect_to_fb(int turn, const t3_rect_t *R,
+                            int *x, int *y, int *w, int *h)
+{
+    int u = *x, v = *y, lw = *w, lh = *h;
+    switch (turn & 3) {
+    case 1:  *x = R->x + R->w - v - lh; *y = R->y + u;             *w = lh; *h = lw; break;
+    case 2:  *x = R->x + R->w - u - lw; *y = R->y + R->h - v - lh;                   break;
+    case 3:  *x = R->x + v;             *y = R->y + R->h - u - lw; *w = lh; *h = lw; break;
+    default: *x = R->x + u;             *y = R->y + v;                               break;
+    }
+}
+
+t3_rect_t t3_turn_fb_rect(const t3_prim_t *p, t3_rect_t local)
+{
+    if (!p) return local;
+    int x = local.x, y = local.y, w = local.w, h = local.h;
+    turn_rect_to_fb(p->turn, &p->rect, &x, &y, &w, &h);
+    t3_rect_t r = { (int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h };
+    return r;
+}
+
+/* The primitive as its own upright frame sees it: same control, rect at the
+ * origin, no turn. Every layout rule below is written for this shape, so a
+ * turned primitive is laid out through its upright copy and the result is
+ * mapped back, instead of each rule growing four cases. */
+static t3_prim_t upright_copy(const t3_prim_t *p)
+{
+    t3_prim_t l = *p;
+    int lw = 0, lh = 0;
+    t3_turn_local_size(p, &lw, &lh);
+    l.rect.x = 0; l.rect.y = 0;
+    l.rect.w = (int16_t)lw; l.rect.h = (int16_t)lh;
+    l.turn = 0;
+    return l;
 }
 
 /* ---- hit test + gestures ----------------------------------------------- */
@@ -422,7 +498,19 @@ float t3_snap(const t3_prim_t *p, float v)
 void t3_slider_track(const t3_prim_t *p, int *origin, int *len)
 {
     int o = 0, l = 0;
-    if (p) {
+    if (p && p->turn) {
+        t3_prim_t up = upright_copy(p);
+        int lo = 0, ll = 1;
+        t3_slider_track(&up, &lo, &ll);
+        t3_rect_t line = { 0, 0, 1, 1 };
+        if (up.axis == 'y') { line.y = (int16_t)lo; line.h = (int16_t)ll; }
+        else                { line.x = (int16_t)lo; line.w = (int16_t)ll; }
+        line = t3_turn_fb_rect(p, line);
+        /* A quarter turn swaps which framebuffer axis the track runs on. */
+        bool along_x = (up.axis != 'y') != ((p->turn & 1) != 0);
+        o = along_x ? line.x : line.y;
+        l = along_x ? line.w : line.h;
+    } else if (p) {
         if (p->axis == 'y') {
             o = p->rect.y + T3_SLIDER_INSET;
             l = p->rect.h - 2 * T3_SLIDER_INSET;
@@ -439,6 +527,12 @@ void t3_slider_track(const t3_prim_t *p, int *origin, int *len)
 float t3_slider_value_at(const t3_prim_t *p, int fx, int fy)
 {
     if (!p) return 0.0f;
+    if (p->turn) {
+        t3_prim_t up = upright_copy(p);
+        int u = 0, v = 0;
+        t3_turn_local(p, fx, fy, &u, &v);
+        return t3_slider_value_at(&up, u, v);
+    }
     int origin = 0, len = 1;
     t3_slider_track(p, &origin, &len);
     int f = (p->axis == 'y') ? fy : fx;
@@ -452,6 +546,12 @@ float t3_slider_value_at(const t3_prim_t *p, int fx, int fy)
 int t3_stepper_zone(const t3_prim_t *p, int x, int y)
 {
     if (!p || !in_rect(&p->rect, x, y)) return -2;
+    if (p->turn) {
+        t3_prim_t up = upright_copy(p);
+        int u = 0, v = 0;
+        t3_turn_local(p, x, y, &u, &v);
+        return t3_stepper_zone(&up, u, v);
+    }
     int third = p->rect.w / 3;
     if (third < 1) third = 1;
     int dx = x - p->rect.x;
@@ -464,6 +564,10 @@ t3_rect_t t3_stepper_zone_rect(const t3_prim_t *p, int zone)
 {
     t3_rect_t r = { 0, 0, 0, 0 };
     if (!p) return r;
+    if (p->turn) {
+        t3_prim_t up = upright_copy(p);
+        return t3_turn_fb_rect(p, t3_stepper_zone_rect(&up, zone));
+    }
     int third = p->rect.w / 3;
     if (third < 1) third = 1;
     r.y = p->rect.y;
@@ -492,6 +596,10 @@ t3_rect_t t3_switch_track_rect(const t3_prim_t *p, const t3_spec_t *s)
 {
     t3_rect_t r = { 0, 0, 0, 0 };
     if (!p) return r;
+    if (p->turn) {
+        t3_prim_t up = upright_copy(p);
+        return t3_turn_fb_rect(p, t3_switch_track_rect(&up, s));
+    }
     int lw = switch_label_w(p, s);
     int off = lw ? lw + T3_SWITCH_GAP : 0;
     int th = imin(p->rect.h, T3_SWITCH_TRACK_H);
@@ -597,6 +705,23 @@ static inline uint8_t gray2_of_ink(uint8_t ink)
     return (uint8_t)(3 - (ink * 3 + 7) / 15);
 }
 
+/* Turned drawing (firmware #73). While t3_draw_primitive draws a turned
+ * primitive, the renderers above it work in the primitive's upright frame
+ * (see touch3.h) and the three places that actually touch pixels -- the rect
+ * fill, the glyph blit and the rect invert -- map through this to the real
+ * framebuffer. Icons go through the rect fill, so they turn too.
+ *
+ * turn == 0 means inactive, which is the state outside t3_draw_primitive, so
+ * the public draw ops are untouched for every other caller. File-static
+ * rather than threaded through a dozen signatures: drawing into one
+ * framebuffer from two tasks at once was never safe, so this adds no new
+ * constraint. */
+static struct {
+    int       turn;          /* 0 = off */
+    t3_rect_t R;             /* the primitive's framebuffer rect */
+    int       fb_w, fb_h;    /* the real framebuffer */
+} s_view;
+
 /* Write one pixel with an INK level, translating to the panel's scale. */
 static inline void put_ink(uint8_t *fb, int fb_w, int bpp, int x, int y,
                           uint8_t ink)
@@ -621,6 +746,12 @@ void t3_fill_rect(uint8_t *fb, int fb_w, int fb_h, int bpp,
                   int x, int y, int w, int h, uint8_t ink)
 {
     if (!fb || !clip(fb_w, fb_h, &x, &y, &w, &h)) return;
+    if (s_view.turn) {
+        /* Clipped to the upright frame above; now to the real framebuffer. */
+        turn_rect_to_fb(s_view.turn, &s_view.R, &x, &y, &w, &h);
+        fb_w = s_view.fb_w; fb_h = s_view.fb_h;
+        if (!clip(fb_w, fb_h, &x, &y, &w, &h)) return;
+    }
     /* Whole-byte fast path for aligned 4bpp spans (control rects are large). */
     if (bpp == 4 && (x & 1) == 0 && (w & 1) == 0) {
         uint8_t n = T3_FB(ink);
@@ -778,6 +909,14 @@ static void blit_glyph(uint8_t *fb, int fb_w, int fb_h, int bpp,
              * level to black -- otherwise each antialiased edge pixel inks and
              * every glyph renders a stroke heavier than it should. */
             if (bpp == 1 && ink < T3_INK_MID) continue;
+            if (s_view.turn) {
+                int px = x, py = y, pw = 1, ph = 1;
+                turn_rect_to_fb(s_view.turn, &s_view.R, &px, &py, &pw, &ph);
+                if (px < 0 || px >= s_view.fb_w ||
+                    py < 0 || py >= s_view.fb_h) continue;
+                put_ink(fb, s_view.fb_w, bpp, px, py, ink);
+                continue;
+            }
             put_ink(fb, fb_w, bpp, x, y, ink);
         }
     }
@@ -874,6 +1013,11 @@ static void invert_rect_px(uint8_t *fb, int fb_w, int fb_h, int bpp,
     if (x + w > fb_w) w = fb_w - x;
     if (y + h > fb_h) h = fb_h - y;
     if (w <= 0 || h <= 0) return;
+    if (s_view.turn) {
+        turn_rect_to_fb(s_view.turn, &s_view.R, &x, &y, &w, &h);
+        fb_w = s_view.fb_w; fb_h = s_view.fb_h;
+        if (!clip(fb_w, fb_h, &x, &y, &w, &h)) return;
+    }
     for (int r = 0; r < h; r++) {
         for (int c = 0; c < w; c++) {
             int px = x + c, py = y + r;
@@ -1138,18 +1282,39 @@ void t3_draw_primitive(uint8_t *fb, int fb_w, int fb_h, int bpp,
 {
     if (!fb || !s || !p) return;
     if (bpp != 4 && bpp != 2 && bpp != 1) return;
+
+    /* Turned: lay the control out in its upright frame and let the pixel ops
+     * map it into the rect. The renderers see a primitive at the origin of a
+     * framebuffer exactly the size of that frame, so their clipping keeps the
+     * control inside its rect as well. */
+    t3_prim_t up;
+    if (p->turn) {
+        up = upright_copy(p);
+        s_view.turn = p->turn;
+        s_view.R = p->rect;
+        s_view.fb_w = fb_w;
+        s_view.fb_h = fb_h;
+        fb_w = up.rect.w;
+        fb_h = up.rect.h;
+        p = &up;
+    }
     switch (p->type) {
     case T3_BUTTON:  draw_button(fb, fb_w, fb_h, bpp, s, p);  break;
     case T3_SWITCH:  draw_switch(fb, fb_w, fb_h, bpp, s, p);  break;
     case T3_SLIDER:  draw_slider(fb, fb_w, fb_h, bpp, s, p);  break;
     case T3_STEPPER: draw_stepper(fb, fb_w, fb_h, bpp, s, p); break;
     }
+    s_view.turn = 0;
 }
 
 t3_rect_t t3_feedback_rect(const t3_spec_t *s, const t3_prim_t *p)
 {
     t3_rect_t r = { 0, 0, 0, 0 };
     if (!p) return r;
+    if (p->turn) {
+        t3_prim_t up = upright_copy(p);
+        return t3_turn_fb_rect(p, t3_feedback_rect(s, &up));
+    }
     switch (p->type) {
     case T3_SWITCH:
         return t3_switch_track_rect(p, s);
