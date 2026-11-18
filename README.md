@@ -35,6 +35,7 @@ one board (and thus one driver) per PlatformIO environment.
 | XIAO driver board + 7.5" **B/W/Red** panel (DKE DEPG0750RW / GDEW075Z08 class) | Tri-color BWR | UC8179 | 800×480, 2bpp | `mono_spi` (`EPD_BWR`) | `xiao-epaper-75-bwr` |
 | [Seeed **XIAO ePaper Display Board — EE04**](https://www.seeedstudio.com/XIAO-ePaper-Display-Board-EE04-p-6560.html) + 7.5" mono (24-pin) | Mono B/W | UC8179 | 800×480, 1bpp | `mono_spi` | `seeed-ee04-75` |
 | [Seeed **XIAO ePaper Display Board — EE04**](https://www.seeedstudio.com/XIAO-ePaper-Display-Board-EE04-p-6560.html) + 7.3" Spectra-6 (50-pin) | Spectra-6, single | UC81xx | 800×480, 4bpp | `spectra6_spi_single` | `seeed-ee04-73e6` |
+| [Seeed **XIAO ePaper Display Board — EE05**](https://www.seeedstudio.com/XIAO-ePaper-DIY-Kit-ESP32-S3-EE05.html) + [4.26" mono](https://www.seeedstudio.com/4-26-Monochrome-SPI-ePaper-Display-p-6398.html) (24-pin) | Mono B/W (4.26") | SSD1677 | 800×480, 1bpp | `ssd1677_gray` (`EPD_MONO`) | `seeed-ee05-426` |
 | [Waveshare **ESP32-S3-ePaper-13.3E6**](https://www.waveshare.com/esp32-s3-epaper-13.3e6.htm) | Spectra-6, dual-controller | UC81xx ×2 | 1200×1600, 4bpp | `spectra6_spi_dual` | `waveshare-133e6` |
 | [Waveshare **10.85-inch e-Paper HAT+ (G)**](https://www.waveshare.com/product/displays/e-paper/epaper-1/10.85inch-e-paper-hat-plus-g.htm) + ESP32-S3 Zero | B/W/Y/R, dual-controller | Waveshare 10.85G controller ×2 | 1360×480, 2bpp | `waveshare_1085g_dual` | `waveshare-1085g` |
 | [paperlesspaper **OpenPaper 7**](https://paperlesspaper.de/en/buy-7-inch-epaper-picture-frame) (ESP32-C6, 4 × AAA NiMH) | Spectra 6, single-controller | GDEP073E01-class | 800×480, 4bpp | `spectra6_spi_single` (vendor init block) | `paperlesspaper-openpaper-7` |
@@ -125,6 +126,12 @@ board header:
   from the geometry), runs the driver's 1bpp `EPD_MONO` path, and needs
   `EPD_MIRROR_Y`. It is also the only board here **flashed app-only, keeping its
   factory bootloader** — see "Flashing the Xteink X4" below.
+- The **EE05 with the 4.26" mono panel** (`seeed-ee05-426`) is the X4's panel
+  setup on the EE05's pin map: same `ssd1677_gray` driver, same 1bpp path, same
+  48000-byte frame. **Not yet hardware-verified.** Flash
+  `seeed-ee05-426-selftest` first; if its picture is upside down, set
+  `EPD_MIRROR_Y 0` in `boards/seeed_ee05_426.h`. BLE setup is off on this
+  build, so Wi-Fi goes through the captive portal.
 
 The **Waveshare ESP32-S3-RLCD-4.2** is the first panel here that is not
 e-paper at all: a reflective LCD behind a Sitronix ST7305, which keeps its image
@@ -306,7 +313,7 @@ format the firmware expects for that kind:
 | --- | --- | --- |
 | `waveshare_133e6`, `seeed_reterminal_e1004`, `seeed_ee02`, `gooddisplay_esp32_133c02`, `soldered_inkplate_13spectra`, `huessen_epf1301` | 4bpp packed Spectra-6 | 960000 B |
 | `seeed_reterminal_e1002`, `waveshare_photopainter_73`, `seeed_ee04_73e6` | 4bpp packed Spectra-6 | 192000 B |
-| `seeed_reterminal_e1001`, `xiao_epaper_75`, `seeed_ee04_75`, `xteink_x4` | 1bpp packed mono (bit 1 = white) | 48000 B |
+| `seeed_reterminal_e1001`, `xiao_epaper_75`, `seeed_ee04_75`, `seeed_ee05_426`, `xteink_x4` | 1bpp packed mono (bit 1 = white) | 48000 B |
 | `elecrow_crowpanel_579` | 1bpp packed mono (bit 1 = white) | 26928 B |
 | `seeed_reterminal_e1001_gray` | 2bpp packed 4-gray (4 px/byte, MSB-first, 0b00=black..0b11=white) | 96000 B |
 | `xiao_epaper_75_bwr` | 2bpp packed BWR (4 px/byte, MSB-first, 0=black 1=white 2=red, 3 reserved) | 96000 B |
