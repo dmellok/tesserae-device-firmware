@@ -50,6 +50,8 @@
 #  include "seeed_ee04_73e6.h"
 #elif defined(TESSERAE_BOARD_SEEED_EE05)
 #  include "seeed_ee05.h"
+#elif defined(TESSERAE_BOARD_SEEED_EE05_426)
+#  include "seeed_ee05_426.h"
 #elif defined(TESSERAE_BOARD_SEEED_EE03)
 #  include "seeed_ee03.h"
 #elif defined(TESSERAE_BOARD_M5STACK_PAPERS3)
