@@ -835,6 +835,10 @@ static void do_wifi_scan(void)
         return;
     }
 
+    /* Count first: esp_wifi_scan_get_ap_records() frees the scan result, so a
+     * get_ap_num() afterwards reports 0. */
+    uint16_t total = 0;
+    esp_wifi_scan_get_ap_num(&total);
     uint16_t n = SCAN_MAX;
     wifi_ap_record_t records[SCAN_MAX];
     esp_wifi_scan_get_ap_records(&n, records);
@@ -844,8 +848,7 @@ static void do_wifi_scan(void)
      * missing from the log" is ambiguous between "not on the air" and "ranked
      * below the cutoff" -- and it is read as the first when the user is looking
      * for a network that just will not connect. */
-    uint16_t total = 0;
-    if (esp_wifi_scan_get_ap_num(&total) == ESP_OK)
+    if (total > 0)
         ESP_LOGI(TAG, "scan: %u AP(s) visible, logging up to %u", total, SCAN_MAX);
     if (total > n)
         ESP_LOGW(TAG, "scan: log truncated, %u of %u entries shown", n, total);
