@@ -839,6 +839,17 @@ static void do_wifi_scan(void)
     wifi_ap_record_t records[SCAN_MAX];
     esp_wifi_scan_get_ap_records(&n, records);
 
+    /* The picker keeps SCAN_MAX entries, so the per-hit log below can only ever
+     * show the strongest SCAN_MAX. State the real total, otherwise "the SSID is
+     * missing from the log" is ambiguous between "not on the air" and "ranked
+     * below the cutoff" -- and it is read as the first when the user is looking
+     * for a network that just will not connect. */
+    uint16_t total = 0;
+    if (esp_wifi_scan_get_ap_num(&total) == ESP_OK)
+        ESP_LOGI(TAG, "scan: %u AP(s) visible, logging up to %u", total, SCAN_MAX);
+    if (total > n)
+        ESP_LOGW(TAG, "scan: log truncated, %u of %u entries shown", n, total);
+
     for (int i = 0; i < (int)n && s_scan_count < SCAN_MAX; i++) {
         const char *ssid = (const char *)records[i].ssid;
         if (!ssid[0]) continue;   /* skip hidden */
