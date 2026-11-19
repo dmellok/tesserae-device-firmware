@@ -346,6 +346,14 @@ uint32_t wifi_creds_fingerprint(void)
  * Reusing them lets esp_wifi skip the ~1-2 s all-channel scan on a wake. The
  * write time rides along so load_ap_hint() can refuse a hint from a different
  * network era (see WIFI_AP_HINT_TTL_S). */
+
+/* Earliest wall clock treated as "the clock has been set" (~2023-11). Below it
+ * sits an unset RTC or a value derived from uptime, and comparing one of those
+ * against a real epoch would read as decades old. Both the written and the
+ * stored timestamp are checked against this, so a stamp taken on a cold boot
+ * before the first Date header is treated as unknown age, not as ancient. */
+#define WIFI_CLOCK_PLAUSIBLE(t)  ((int64_t)(t) > 1700000000LL)
+
 static void save_ap_hint(void)
 {
     wifi_ap_record_t ap;
@@ -363,9 +371,15 @@ static void save_ap_hint(void)
         nvs_commit(h);
     }
     /* Refresh the stamp even when the BSSID is unchanged: it records when we
-     * last had a working association, which is what the TTL is about. */
-    nvs_set_u32(h, NVS_KEY_HINT_T, (uint32_t)time(NULL));
-    nvs_commit(h);
+     * last had a working association, which is what the TTL is about. This runs
+     * on the first association of a cold boot, before any HTTP response can set
+     * the clock, so only an already-plausible clock is written -- otherwise a
+     * rollover that the next wake would read as "decades old" gets persisted. */
+    time_t now = time(NULL);
+    if (WIFI_CLOCK_PLAUSIBLE(now)) {
+        nvs_set_u32(h, NVS_KEY_HINT_T, (uint32_t)now);
+        nvs_commit(h);
+    }
     nvs_close(h);
 }
 
@@ -377,16 +391,18 @@ static bool load_ap_hint(uint8_t bssid[6], uint8_t *chan)
     bool ok = (nvs_get_blob(h, NVS_KEY_BSSID, bssid, &l) == ESP_OK && l == 6 &&
                nvs_get_u8(h, NVS_KEY_CHAN, chan) == ESP_OK && *chan >= 1 && *chan <= 14);
     uint32_t saved = 0;
-    bool stamped = (nvs_get_u32(h, NVS_KEY_HINT_T, &saved) == ESP_OK && saved > 0);
+    bool stamped = (nvs_get_u32(h, NVS_KEY_HINT_T, &saved) == ESP_OK &&
+                    WIFI_CLOCK_PLAUSIBLE(saved));
     nvs_close(h);
     if (!ok) return false;
-    /* No clock yet (or no stamp, from a build that predates this): the age is
-     * unknown rather than large, so keep the fast path. With a clock, treat a
-     * hint older than the TTL as a description of a network that has since
-     * changed -- the scan is the only thing that can find out, and the fast
-     * attempt would spend its single retry transmitting at nobody. */
+    /* No clock yet, or no plausible stamp (a build that predates the stamp, or a
+     * cold boot that wrote nothing): the age is unknown rather than large, so
+     * keep the fast path. With both clocks plausible, treat a hint older than
+     * the TTL as a description of a network that has since changed -- the scan
+     * is the only thing that can find out, and the fast attempt would spend its
+     * single retry transmitting at nobody. */
     time_t now = time(NULL);
-    if (stamped && now > 1700000000 && (uint32_t)now > saved &&
+    if (stamped && WIFI_CLOCK_PLAUSIBLE(now) && (uint32_t)now > saved &&
         (uint32_t)now - saved > WIFI_AP_HINT_TTL_S) {
         ESP_LOGI(TAG, "AP hint is %lus old; scanning instead",
                  (unsigned long)((uint32_t)now - saved));
@@ -505,27 +521,19 @@ esp_err_t wifi_sta_connect_stored_cancellable(wifi_cancel_fn cancelled)
 void wifi_sta_stop(void)
 {
     s_autoconnect = false;   /* stop the disconnect handler from retrying */
-    esp_wifi_disconnect();
-    esp_wifi_stop();
-    epd_light_sleep_set_wifi(false);
-}
-
-void wifi_sta_leave_bss(void)
-{
-    if (!s_autoconnect) return;   /* radio already down: nothing to leave */
-    s_autoconnect = false;        /* and don't let the event handler reconnect */
+    /* Say goodbye before the radio goes away. A station that simply vanishes
+     * leaves the AP holding a client entry and the pairwise key until its own
+     * inactivity timeout, and a re-association while that entry lives can be
+     * answered with silence (auth timeout, reason 2) -- which on a device that
+     * wakes every few minutes reads as "works once after a cold boot, then
+     * never again". This is the shared stop path, so the successful wake that
+     * shuts the radio down early (before painting) gets the same departure as
+     * the sleep and retry paths; when nothing is associated there is no delay
+     * and no frame to send. 40 ms is two beacon intervals. */
     wifi_ap_record_t ap;
     bool associated = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK);
-    esp_wifi_disconnect();        /* sends the deauth frame when associated */
-    if (associated) {
-        /* Let it reach the air before the radio is cut. A device that simply
-         * vanishes leaves the AP holding a client entry and the pairwise key
-         * until its own inactivity timeout, and a re-association while that
-         * entry lives can be answered with silence (reason 2, auth expired).
-         * On a panel that wakes every few minutes that reads as "connects once
-         * after a cold boot, then never again". 40 ms is two beacon intervals. */
-        vTaskDelay(pdMS_TO_TICKS(40));
-    }
+    esp_wifi_disconnect();   /* sends the deauth frame when associated */
+    if (associated) vTaskDelay(pdMS_TO_TICKS(40));
     esp_wifi_stop();
     epd_light_sleep_set_wifi(false);
 }
