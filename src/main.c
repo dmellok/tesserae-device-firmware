@@ -853,6 +853,7 @@ static void sleep_forever_or_until_timer(void)
     if (loop) {
         ESP_LOGI(TAG, "%s: software restart in %d s", reason, DEV_LOOP_INTERVAL_S);
         vTaskDelay(pdMS_TO_TICKS(DEV_LOOP_INTERVAL_S * 1000));
+        wifi_sta_leave_bss();   /* same stale-client-entry reason as below */
         esp_restart();
     }
 
@@ -907,6 +908,12 @@ static void sleep_forever_or_until_timer(void)
     if (s_sleep_override_s <= 0) rtc_power_off_or_return(interval);
 #endif
     esp_sleep_enable_timer_wakeup(wake_align_timer_us(interval));
+    /* Say goodbye to the AP before the radio dies. A panel spends most of its
+     * life asleep, so a silent vanish on every wake leaves the AP holding a
+     * client entry that can get the next association ignored (reason 2) -- and
+     * the failure then looks like a radio fault rather than a session the AP
+     * still believes in. No-op when Wi-Fi is already down. */
+    wifi_sta_leave_bss();
     power_latch_hold_through_sleep();   /* or the timer wakes nothing */
     esp_deep_sleep_start();
     /* not reached */

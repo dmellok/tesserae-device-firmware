@@ -5,6 +5,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_event.h"
 #include "esp_log.h"
@@ -13,6 +14,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -341,7 +343,9 @@ uint32_t wifi_creds_fingerprint(void)
 }
 
 /* Fast-connect hint: the BSSID + channel of the AP we last associated with.
- * Reusing them lets esp_wifi skip the ~1-2 s all-channel scan on a wake. */
+ * Reusing them lets esp_wifi skip the ~1-2 s all-channel scan on a wake. The
+ * write time rides along so load_ap_hint() can refuse a hint from a different
+ * network era (see WIFI_AP_HINT_TTL_S). */
 static void save_ap_hint(void)
 {
     wifi_ap_record_t ap;
@@ -358,6 +362,10 @@ static void save_ap_hint(void)
         nvs_set_u8(h, NVS_KEY_CHAN, ap.primary);
         nvs_commit(h);
     }
+    /* Refresh the stamp even when the BSSID is unchanged: it records when we
+     * last had a working association, which is what the TTL is about. */
+    nvs_set_u32(h, NVS_KEY_HINT_T, (uint32_t)time(NULL));
+    nvs_commit(h);
     nvs_close(h);
 }
 
@@ -368,8 +376,23 @@ static bool load_ap_hint(uint8_t bssid[6], uint8_t *chan)
     size_t l = 6;
     bool ok = (nvs_get_blob(h, NVS_KEY_BSSID, bssid, &l) == ESP_OK && l == 6 &&
                nvs_get_u8(h, NVS_KEY_CHAN, chan) == ESP_OK && *chan >= 1 && *chan <= 14);
+    uint32_t saved = 0;
+    bool stamped = (nvs_get_u32(h, NVS_KEY_HINT_T, &saved) == ESP_OK && saved > 0);
     nvs_close(h);
-    return ok;
+    if (!ok) return false;
+    /* No clock yet (or no stamp, from a build that predates this): the age is
+     * unknown rather than large, so keep the fast path. With a clock, treat a
+     * hint older than the TTL as a description of a network that has since
+     * changed -- the scan is the only thing that can find out, and the fast
+     * attempt would spend its single retry transmitting at nobody. */
+    time_t now = time(NULL);
+    if (stamped && now > 1700000000 && (uint32_t)now > saved &&
+        (uint32_t)now - saved > WIFI_AP_HINT_TTL_S) {
+        ESP_LOGI(TAG, "AP hint is %lus old; scanning instead",
+                 (unsigned long)((uint32_t)now - saved));
+        return false;
+    }
+    return true;
 }
 
 static void clear_ap_hint(void)
@@ -378,6 +401,7 @@ static void clear_ap_hint(void)
     if (nvs_open(NVS_NS_WIFI, NVS_READWRITE, &h) != ESP_OK) return;
     nvs_erase_key(h, NVS_KEY_BSSID);
     nvs_erase_key(h, NVS_KEY_CHAN);
+    nvs_erase_key(h, NVS_KEY_HINT_T);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -482,6 +506,26 @@ void wifi_sta_stop(void)
 {
     s_autoconnect = false;   /* stop the disconnect handler from retrying */
     esp_wifi_disconnect();
+    esp_wifi_stop();
+    epd_light_sleep_set_wifi(false);
+}
+
+void wifi_sta_leave_bss(void)
+{
+    if (!s_autoconnect) return;   /* radio already down: nothing to leave */
+    s_autoconnect = false;        /* and don't let the event handler reconnect */
+    wifi_ap_record_t ap;
+    bool associated = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK);
+    esp_wifi_disconnect();        /* sends the deauth frame when associated */
+    if (associated) {
+        /* Let it reach the air before the radio is cut. A device that simply
+         * vanishes leaves the AP holding a client entry and the pairwise key
+         * until its own inactivity timeout, and a re-association while that
+         * entry lives can be answered with silence (reason 2, auth expired).
+         * On a panel that wakes every few minutes that reads as "connects once
+         * after a cold boot, then never again". 40 ms is two beacon intervals. */
+        vTaskDelay(pdMS_TO_TICKS(40));
+    }
     esp_wifi_stop();
     epd_light_sleep_set_wifi(false);
 }

@@ -90,3 +90,10 @@ esp_err_t wifi_sta_connect_stored_cancellable(wifi_cancel_fn cancelled);
 
 /* Stop the STA driver; safe to call before deep sleep. */
 void wifi_sta_stop(void);
+
+/* Leave the BSS politely, then stop the driver. Call immediately before a deep
+ * sleep or a restart: a radio that is simply cut leaves the AP holding a stale
+ * client entry, and a re-association while that entry lives can be answered
+ * with silence (auth timeout). A no-op when the radio is already down, so it is
+ * safe on the retry and outage paths too. */
+void wifi_sta_leave_bss(void);
