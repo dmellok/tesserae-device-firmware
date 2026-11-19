@@ -842,6 +842,12 @@ static void do_wifi_scan(void)
     for (int i = 0; i < (int)n && s_scan_count < SCAN_MAX; i++) {
         const char *ssid = (const char *)records[i].ssid;
         if (!ssid[0]) continue;   /* skip hidden */
+        /* Log every raw hit, channel included, before the dedupe below. It is
+         * the only thing that separates "the AP is on a channel this radio
+         * cannot use" from "the AP is out of range" in a field log, and it
+         * costs one line per AP in a menu that is read once. */
+        ESP_LOGI(TAG, "scan: '%.32s' ch=%u rssi=%d auth=%d",
+                 ssid, records[i].primary, records[i].rssi, (int)records[i].authmode);
         /* Dedupe: same SSID on multiple APs (mesh / band-steering) collapses
          * to the strongest seen entry, since esp_wifi orders by RSSI desc. */
         bool dup = false;

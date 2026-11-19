@@ -50,18 +50,51 @@ static esp_netif_t *ensure_sta_netif(void)
     return s_sta_netif;
 }
 
+/* ESP-IDF station disconnect reasons worth naming in a field log. The numeric
+ * code is the specification; the name is what makes a serial log answerable
+ * without a lookup table. */
+static const char *disc_reason_str(uint8_t r)
+{
+    switch (r) {
+    case 2:   return "auth expired";
+    case 4:   return "assoc expired";
+    case 15:  return "4-way handshake timeout";
+    case 23:  return "802.1X auth failed";
+    case 200: return "beacon timeout";
+    case 201: return "no AP found";
+    case 202: return "auth failed (bad password?)";
+    case 203: return "assoc failed";
+    case 204: return "handshake timeout";
+    case 205: return "connection failed";
+    case 8:   return "assoc leave";
+    case 3:   return "deauth";
+    default:  return "other";
+    }
+}
+
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         if (s_autoconnect) esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        /* The reason code is the difference between "the AP is not on the air"
+         * (201), "it rejected our key" (202) and "it vanished mid-session"
+         * (200). Without it the log cannot tell a missing SSID from a wrong
+         * password, and a field report of "it won't connect" is not actionable. */
+        const wifi_event_sta_disconnected_t *d =
+            (const wifi_event_sta_disconnected_t *)data;
         if (!s_autoconnect) {
             /* not our connect attempt (e.g. a scan tore the STA down) */
+            ESP_LOGD(TAG, "disconnected during teardown, reason=%d (%s)",
+                     d->reason, disc_reason_str(d->reason));
         } else if (s_retries < s_max_retries) {
             s_retries++;
-            ESP_LOGW(TAG, "disconnect; retry %d/%d", s_retries, s_max_retries);
+            ESP_LOGW(TAG, "disconnect reason=%d (%s); retry %d/%d",
+                     d->reason, disc_reason_str(d->reason), s_retries, s_max_retries);
             esp_wifi_connect();
         } else {
+            ESP_LOGW(TAG, "disconnect reason=%d (%s); out of retries",
+                     d->reason, disc_reason_str(d->reason));
             xEventGroupSetBits(s_events, BIT_FAIL);
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
