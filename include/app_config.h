@@ -163,15 +163,6 @@
  * a full scan quickly. */
 #define WIFI_FAST_CONNECT_RETRIES 1
 
-/* How long the hint above is allowed to live. A wake cycle is minutes, so a
- * hint older than this means the device has been off the network for a while:
- * the AP may have moved channel, been replaced, or the SSID re-enabled on a
- * different radio. The fast attempt targets one BSSID and one channel and gets
- * a single retry, so in that situation it is guaranteed to fail and only delays
- * the scan that would have worked. Ignored when the clock is not yet set (no
- * Date header seen), since the age is then unknowable rather than large. */
-#define WIFI_AP_HINT_TTL_S       1800
-
 /* Resilience for an already-onboarded device: if WiFi fails on a wake (router
  * reboot, briefly out of range), don't nuke a working device into AP mode and
  * drain the battery. Sleep this long and retry; only after this many consecutive
@@ -259,7 +250,6 @@
 #define NVS_KEY_CLK_FLOOR  "clkflr"  /* highest time seen from a verified response */
 #define NVS_KEY_BSSID      "bssid"   /* last AP BSSID (6-byte blob), fast-connect hint */
 #define NVS_KEY_CHAN       "chan"    /* last AP primary channel (u8), fast-connect hint */
-#define NVS_KEY_HINT_T     "hint_t"  /* epoch seconds when the hint was written (u32) */
 
 /* Sanity bounds on the deep-sleep interval. The lower bound stops the server
  * accidentally turning the device into a spinner; the upper bound is just
