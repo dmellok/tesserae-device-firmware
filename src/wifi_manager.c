@@ -52,23 +52,33 @@ static esp_netif_t *ensure_sta_netif(void)
 
 /* ESP-IDF station disconnect reasons worth naming in a field log. The numeric
  * code is the specification; the name is what makes a serial log answerable
- * without a lookup table. */
+ * without a lookup table. Keyed on the WIFI_REASON_* constants so an IDF update
+ * that moves or drops one fails the build instead of mislabelling a log. */
 static const char *disc_reason_str(uint8_t r)
 {
     switch (r) {
-    case 2:   return "auth expired";
-    case 4:   return "assoc expired";
-    case 15:  return "4-way handshake timeout";
-    case 23:  return "802.1X auth failed";
-    case 200: return "beacon timeout";
-    case 201: return "no AP found";
-    case 202: return "auth failed (bad password?)";
-    case 203: return "assoc failed";
-    case 204: return "handshake timeout";
-    case 205: return "connection failed";
-    case 8:   return "assoc leave";
-    case 3:   return "deauth";
-    default:  return "other";
+    case WIFI_REASON_AUTH_EXPIRE:                 return "auth expired";
+    case WIFI_REASON_AUTH_LEAVE:                  return "deauth";
+    case WIFI_REASON_DISASSOC_DUE_TO_INACTIVITY:  return "assoc expired";
+    case WIFI_REASON_ASSOC_LEAVE:                 return "assoc leave";
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:      return "4-way handshake timeout";
+    case WIFI_REASON_802_1X_AUTH_FAILED:          return "802.1X auth failed";
+    case WIFI_REASON_BEACON_TIMEOUT:              return "beacon timeout";
+    case WIFI_REASON_NO_AP_FOUND:                 return "no AP found";
+    case WIFI_REASON_AUTH_FAIL:                   return "auth failed (bad password?)";
+    case WIFI_REASON_ASSOC_FAIL:                  return "assoc failed";
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:           return "handshake timeout";
+    case WIFI_REASON_CONNECTION_FAIL:             return "connection failed";
+    /* The three below are what a mismatch with our own connect config looks
+     * like: connect_once() sets threshold.authmode, so an AP that only offers
+     * something weaker is seen and then passed over. */
+    case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+        return "no AP with compatible security";
+    case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+        return "no AP within the auth-mode threshold";
+    case WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD:
+        return "no AP within the RSSI threshold";
+    default:                                      return "other";
     }
 }
 

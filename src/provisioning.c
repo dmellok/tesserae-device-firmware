@@ -843,24 +843,26 @@ static void do_wifi_scan(void)
     wifi_ap_record_t records[SCAN_MAX];
     esp_wifi_scan_get_ap_records(&n, records);
 
-    /* The picker keeps SCAN_MAX entries, so the per-hit log below can only ever
-     * show the strongest SCAN_MAX. State the real total, otherwise "the SSID is
-     * missing from the log" is ambiguous between "not on the air" and "ranked
-     * below the cutoff" -- and it is read as the first when the user is looking
-     * for a network that just will not connect. */
+    /* Only the strongest SCAN_MAX records are read, so state the real total:
+     * otherwise "the SSID is not in the picker" is ambiguous between "not on
+     * the air" and "ranked below the cutoff" -- and it is read as the first
+     * when the user is looking for a network that just will not connect.
+     * These two lines carry no network names. */
     if (total > 0)
-        ESP_LOGI(TAG, "scan: %u AP(s) visible, logging up to %u", total, SCAN_MAX);
+        ESP_LOGI(TAG, "scan: %u AP(s) visible, reading the strongest %u", total, SCAN_MAX);
     if (total > n)
-        ESP_LOGW(TAG, "scan: log truncated, %u of %u entries shown", n, total);
+        ESP_LOGW(TAG, "scan: list truncated, %u of %u entries read", n, total);
 
     for (int i = 0; i < (int)n && s_scan_count < SCAN_MAX; i++) {
         const char *ssid = (const char *)records[i].ssid;
         if (!ssid[0]) continue;   /* skip hidden */
-        /* Log every raw hit, channel included, before the dedupe below. It is
-         * the only thing that separates "the AP is on a channel this radio
-         * cannot use" from "the AP is out of range" in a field log, and it
-         * costs one line per AP in a menu that is read once. */
-        ESP_LOGI(TAG, "scan: '%.32s' ch=%u rssi=%d auth=%d",
+        /* Every raw hit, channel included, before the dedupe below: it is what
+         * separates "the AP is on a channel this radio cannot use" from "the
+         * AP is out of range". Debug level on purpose. These are the
+         * neighbours' network names, and anything at the default level lands
+         * in the log ring that a server-requested upload sends (log_capture.c),
+         * where the redaction does not cover SSIDs. A debug build shows them. */
+        ESP_LOGD(TAG, "scan: '%.32s' ch=%u rssi=%d auth=%d",
                  ssid, records[i].primary, records[i].rssi, (int)records[i].authmode);
         /* Dedupe: same SSID on multiple APs (mesh / band-steering) collapses
          * to the strongest seen entry, since esp_wifi orders by RSSI desc. */
