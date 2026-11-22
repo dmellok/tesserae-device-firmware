@@ -835,13 +835,35 @@ static void do_wifi_scan(void)
         return;
     }
 
+    /* Count first: esp_wifi_scan_get_ap_records() frees the scan result, so a
+     * get_ap_num() afterwards reports 0. */
+    uint16_t total = 0;
+    esp_wifi_scan_get_ap_num(&total);
     uint16_t n = SCAN_MAX;
     wifi_ap_record_t records[SCAN_MAX];
     esp_wifi_scan_get_ap_records(&n, records);
 
+    /* Only the strongest SCAN_MAX records are read, so state the real total:
+     * otherwise "the SSID is not in the picker" is ambiguous between "not on
+     * the air" and "ranked below the cutoff" -- and it is read as the first
+     * when the user is looking for a network that just will not connect.
+     * These two lines carry no network names. */
+    if (total > 0)
+        ESP_LOGI(TAG, "scan: %u AP(s) visible, reading the strongest %u", total, SCAN_MAX);
+    if (total > n)
+        ESP_LOGW(TAG, "scan: list truncated, %u of %u entries read", n, total);
+
     for (int i = 0; i < (int)n && s_scan_count < SCAN_MAX; i++) {
         const char *ssid = (const char *)records[i].ssid;
         if (!ssid[0]) continue;   /* skip hidden */
+        /* Every raw hit, channel included, before the dedupe below: it is what
+         * separates "the AP is on a channel this radio cannot use" from "the
+         * AP is out of range". Debug level on purpose. These are the
+         * neighbours' network names, and anything at the default level lands
+         * in the log ring that a server-requested upload sends (log_capture.c),
+         * where the redaction does not cover SSIDs. A debug build shows them. */
+        ESP_LOGD(TAG, "scan: '%.32s' ch=%u rssi=%d auth=%d",
+                 ssid, records[i].primary, records[i].rssi, (int)records[i].authmode);
         /* Dedupe: same SSID on multiple APs (mesh / band-steering) collapses
          * to the strongest seen entry, since esp_wifi orders by RSSI desc. */
         bool dup = false;
