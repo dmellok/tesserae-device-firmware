@@ -51,18 +51,61 @@ static esp_netif_t *ensure_sta_netif(void)
     return s_sta_netif;
 }
 
+/* ESP-IDF station disconnect reasons worth naming in a field log. The numeric
+ * code is the specification; the name is what makes a serial log answerable
+ * without a lookup table. Keyed on the WIFI_REASON_* constants so an IDF update
+ * that moves or drops one fails the build instead of mislabelling a log. */
+static const char *disc_reason_str(uint8_t r)
+{
+    switch (r) {
+    case WIFI_REASON_AUTH_EXPIRE:                 return "auth expired";
+    case WIFI_REASON_AUTH_LEAVE:                  return "deauth";
+    case WIFI_REASON_DISASSOC_DUE_TO_INACTIVITY:  return "assoc expired";
+    case WIFI_REASON_ASSOC_LEAVE:                 return "assoc leave";
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:      return "4-way handshake timeout";
+    case WIFI_REASON_802_1X_AUTH_FAILED:          return "802.1X auth failed";
+    case WIFI_REASON_BEACON_TIMEOUT:              return "beacon timeout";
+    case WIFI_REASON_NO_AP_FOUND:                 return "no AP found";
+    case WIFI_REASON_AUTH_FAIL:                   return "auth failed (bad password?)";
+    case WIFI_REASON_ASSOC_FAIL:                  return "assoc failed";
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:           return "handshake timeout";
+    case WIFI_REASON_CONNECTION_FAIL:             return "connection failed";
+    /* The three below are what a mismatch with our own connect config looks
+     * like: connect_once() sets threshold.authmode, so an AP that only offers
+     * something weaker is seen and then passed over. */
+    case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+        return "no AP with compatible security";
+    case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+        return "no AP within the auth-mode threshold";
+    case WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD:
+        return "no AP within the RSSI threshold";
+    default:                                      return "other";
+    }
+}
+
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         if (s_autoconnect) esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        /* The reason code is the difference between "the AP is not on the air"
+         * (201), "it rejected our key" (202) and "it vanished mid-session"
+         * (200). Without it the log cannot tell a missing SSID from a wrong
+         * password, and a field report of "it won't connect" is not actionable. */
+        const wifi_event_sta_disconnected_t *d =
+            (const wifi_event_sta_disconnected_t *)data;
         if (!s_autoconnect) {
             /* not our connect attempt (e.g. a scan tore the STA down) */
+            ESP_LOGD(TAG, "disconnected during teardown, reason=%d (%s)",
+                     d->reason, disc_reason_str(d->reason));
         } else if (s_retries < s_max_retries) {
             s_retries++;
-            ESP_LOGW(TAG, "disconnect; retry %d/%d", s_retries, s_max_retries);
+            ESP_LOGW(TAG, "disconnect reason=%d (%s); retry %d/%d",
+                     d->reason, disc_reason_str(d->reason), s_retries, s_max_retries);
             esp_wifi_connect();
         } else {
+            ESP_LOGW(TAG, "disconnect reason=%d (%s); out of retries",
+                     d->reason, disc_reason_str(d->reason));
             xEventGroupSetBits(s_events, BIT_FAIL);
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
