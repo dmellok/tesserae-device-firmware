@@ -853,6 +853,7 @@ static void sleep_forever_or_until_timer(void)
     if (loop) {
         ESP_LOGI(TAG, "%s: software restart in %d s", reason, DEV_LOOP_INTERVAL_S);
         vTaskDelay(pdMS_TO_TICKS(DEV_LOOP_INTERVAL_S * 1000));
+        wifi_sta_stop();   /* deauth before the restart; no-op if already down */
         esp_restart();
     }
 

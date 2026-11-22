@@ -88,5 +88,7 @@ esp_err_t wifi_sta_connect_credentials_cancellable(const char *ssid, const char 
                                                    wifi_cancel_fn cancelled);
 esp_err_t wifi_sta_connect_stored_cancellable(wifi_cancel_fn cancelled);
 
-/* Stop the STA driver; safe to call before deep sleep. */
+/* Stop the STA driver; safe to call before deep sleep. When a station is
+ * associated it waits 40 ms after the disconnect, so the deauthentication frame
+ * can leave the radio before the driver stops. */
 void wifi_sta_stop(void);

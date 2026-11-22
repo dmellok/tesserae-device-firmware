@@ -13,6 +13,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -524,7 +525,19 @@ esp_err_t wifi_sta_connect_stored_cancellable(wifi_cancel_fn cancelled)
 void wifi_sta_stop(void)
 {
     s_autoconnect = false;   /* stop the disconnect handler from retrying */
+    /* Give the deauthentication frame time to leave the radio before the driver
+     * is stopped. esp_wifi_disconnect() queues it and esp_wifi_stop() follows
+     * at once, so it may never be transmitted; an AP that did not hear it keeps
+     * the client entry and the pairwise key until its own inactivity timeout,
+     * and a re-association inside that window can be answered with silence
+     * (reason 2, auth expired). The wait is a precaution: it has not been
+     * confirmed that the frame is lost without it, or that this cures that
+     * loop. Taken only when a station is associated, so the failed-connect and
+     * already-stopped paths pay nothing. */
+    wifi_ap_record_t ap;
+    bool associated = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK);
     esp_wifi_disconnect();
+    if (associated) vTaskDelay(pdMS_TO_TICKS(40));
     esp_wifi_stop();
     epd_light_sleep_set_wifi(false);
 }
