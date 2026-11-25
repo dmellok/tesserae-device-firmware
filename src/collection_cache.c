@@ -73,15 +73,37 @@ static bool frame_path(const char *collection_id, const char *digest,
     return n > 0 && n < (int)cap;
 }
 
+/* The bounce chunk must be DMA-capable internal RAM. An album sync runs with
+ * Wi-Fi and TLS up and a frame just downloaded, and a contiguous
+ * SD_BOUNCE_BYTES block is not guaranteed then: the E1003 failed every album
+ * frame write this way (2026-11-24, tesserae#247), as the PaperMono had for
+ * deck frames. Same answer as deck_cache.c: step down to smaller chunks
+ * before giving up, and say why when it fails. */
+static uint8_t *bounce_alloc(size_t *cap)
+{
+    for (size_t n = SD_BOUNCE_BYTES; n >= 512; n /= 2) {
+        uint8_t *p = heap_caps_malloc(n, MALLOC_CAP_DMA);
+        if (p) { *cap = n; return p; }
+    }
+    ESP_LOGW(TAG, "no DMA-capable bounce buffer (largest free %u)",
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
+    return NULL;
+}
+
 static bool bounce_write_fd(int fd, const uint8_t *src, size_t len)
 {
-    uint8_t *chunk = heap_caps_malloc(SD_BOUNCE_BYTES, MALLOC_CAP_DMA);
+    size_t cap = 0;
+    uint8_t *chunk = bounce_alloc(&cap);
     if (!chunk) return false;
     bool ok = true;
-    for (size_t off = 0; ok && off < len; off += SD_BOUNCE_BYTES) {
-        size_t n = len - off > SD_BOUNCE_BYTES ? SD_BOUNCE_BYTES : len - off;
+    for (size_t off = 0; ok && off < len; off += cap) {
+        size_t n = len - off > cap ? cap : len - off;
         memcpy(chunk, src + off, n);
-        ok = write(fd, chunk, n) == (ssize_t)n;
+        ssize_t w = write(fd, chunk, n);
+        ok = w == (ssize_t)n;
+        if (!ok)
+            ESP_LOGW(TAG, "write returned %d of %u at %u of %u (errno %d)",
+                     (int)w, (unsigned)n, (unsigned)off, (unsigned)len, errno);
     }
     free(chunk);
     return ok;
@@ -90,12 +112,13 @@ static bool bounce_write_fd(int fd, const uint8_t *src, size_t len)
 static bool bounce_read_fd(int fd, uint8_t *dst, size_t cap, size_t *out_len)
 {
     if (out_len) *out_len = 0;
-    uint8_t *chunk = heap_caps_malloc(SD_BOUNCE_BYTES, MALLOC_CAP_DMA);
+    size_t bcap = 0;
+    uint8_t *chunk = bounce_alloc(&bcap);
     if (!chunk) return false;
     size_t total = 0;
     bool ok = true;
     while (total < cap) {
-        size_t want = cap - total > SD_BOUNCE_BYTES ? SD_BOUNCE_BYTES : cap - total;
+        size_t want = cap - total > bcap ? bcap : cap - total;
         ssize_t n = read(fd, chunk, want);
         if (n > 0) {
             memcpy(dst + total, chunk, (size_t)n);
@@ -211,18 +234,26 @@ bool collection_cache_write_frame(const char *collection_id, const char *digest,
     snprintf(tmp, sizeof tmp, "%s/frame.tmp", dir);
 
     int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) return false;
-    bool ok = bounce_write_fd(fd, data, len);
-    ok = close(fd) == 0 && ok;
-    if (ok) {
+    if (fd < 0) {
+        ESP_LOGW(TAG, "frame write failed for %s: open %s (errno %d)",
+                 digest, tmp, errno);
+        return false;
+    }
+    /* Which step failed, so a field log says more than "failed". */
+    const char *step = NULL;
+    int err = 0;
+    if (!bounce_write_fd(fd, data, len)) { step = "write"; err = errno; }
+    if (close(fd) != 0 && !step) { step = "close"; err = errno; }
+    if (!step) {
         unlink(path);
-        ok = rename(tmp, path) == 0;
+        if (rename(tmp, path) != 0) { step = "rename"; err = errno; }
     }
-    if (!ok) {
+    if (step) {
         unlink(tmp);
-        ESP_LOGW(TAG, "frame write failed for %s", digest);
+        ESP_LOGW(TAG, "frame write failed for %s: %s, %u bytes (errno %d)",
+                 digest, step, (unsigned)len, err);
     }
-    return ok;
+    return step == NULL;
 }
 
 int collection_cache_list(const char *collection_id,
