@@ -39,6 +39,8 @@ ble_setup_result_t ble_setup_run(ble_setup_mode_t mode, uint32_t timeout_s)
 #include "net_rest.h"
 #include "relay_crypto.h"
 #include "rest_config.h"
+#include "setup_fields.h"
+#include "time_ready.h"
 #include "splash.h"
 #include "wifi_manager.h"
 
@@ -127,6 +129,7 @@ typedef struct {
     char password[65];
     char server_url[160];
     char pairing_code[16];
+    char cloud_code[33];
     bool preserve_server;
     bool ready;
 } staged_config_t;
@@ -200,11 +203,18 @@ static bool prepare_connection(void)
         snprintf(nonce_hex + i * 2, sizeof nonce_hex - i * 2, "%02x",
                  s_connection_nonce[i]);
     const char *device_id = rest_config_device_id();
+    uint8_t mac[6];
+    char cloud_info[196] = "";
+    if (s_mode == BLE_SETUP_MODE_MAINTENANCE && esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+        snprintf(cloud_info, sizeof cloud_info,
+                 ",\"cloud_pairing_url\":\"%s\",\"wifi_mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\"",
+                 TESSERAE_BLE_CLOUD_URL, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    }
     int n = snprintf(s_info, sizeof s_info,
                      "{\"protocol\":%u,\"id\":\"%s\",\"sid\":\"%s\","
                      "\"connection_nonce\":\"%s\",\"hardware\":%u,"
                      "\"model\":\"%s\",\"firmware\":\"%s\","
-                     "\"mode\":\"%s\"%s}",
+                     "\"mode\":\"%s\"%s%s}",
                      (unsigned)BLE_SETUP_PROTOCOL_MAJOR, device_id, sid_hex,
                      nonce_hex, (unsigned)TESSERAE_BLE_HARDWARE_CODE,
                      TESSERAE_DEVICE_MODEL, FW_VERSION,
@@ -216,7 +226,7 @@ static bool prepare_connection(void)
 #else
                      ""
 #endif
-                     );
+                     , cloud_info);
     if (n <= 0 || (size_t)n >= sizeof s_info) return false;
 
     s_out_message_id = 0;
@@ -499,10 +509,98 @@ static void stage_config(auth_mode_t auth, const cJSON *root)
     send_simple(auth, "staged", NULL);
 }
 
+static void stage_cloud(auth_mode_t auth, const cJSON *root)
+{
+    staged_config_t next = {0};
+    if (s_mode != BLE_SETUP_MODE_MAINTENANCE ||
+        !copy_json_string(root, "cloud_code", next.cloud_code, sizeof next.cloud_code, true) ||
+        strlen(next.cloud_code) != 32 ||
+        strspn(next.cloud_code, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") != 32 ||
+        !copy_json_string(root, "ssid", next.ssid, sizeof next.ssid, false) ||
+        !copy_json_string(root, "password", next.password, sizeof next.password, false) ||
+        (!next.ssid[0] && (next.password[0] || !wifi_creds_present()))) {
+        memset(&s_staged, 0, sizeof s_staged);
+        send_simple(auth, "cloud_failed", "Choose a Wi-Fi network and try again");
+        return;
+    }
+    next.ready = true;
+    s_staged = next;
+    send_simple(auth, "staged", NULL);
+}
+
+static void apply_cloud(auth_mode_t auth)
+{
+    staged_config_t config = s_staged;
+    memset(&s_staged, 0, sizeof s_staged);
+    send_simple(auth, "testing_wifi", NULL);
+    esp_err_t err = config.ssid[0]
+        ? wifi_sta_connect_credentials_cancellable(config.ssid, config.password, session_cancelled)
+        : wifi_sta_connect_stored_cancellable(session_cancelled);
+    if (session_cancelled()) return;
+    if (err != ESP_OK) {
+        send_simple(auth, "cloud_failed", "Could not connect to that Wi-Fi network");
+        return;
+    }
+    uint8_t mac[6];
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) {
+        wifi_sta_stop();
+        send_simple(auth, "cloud_failed", "Could not read the display identity");
+        return;
+    }
+    char mac_text[18];
+    snprintf(mac_text, sizeof mac_text, "%02x:%02x:%02x:%02x:%02x:%02x",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    send_simple(auth, "testing_cloud", NULL);
+    if (session_cancelled()) return;
+    if (!time_ready_ensure(TIME_READY_TIMEOUT_MS, NULL)) {
+        wifi_sta_stop();
+        send_simple(auth, "cloud_failed", "Could not set the display clock for a secure Cloud connection");
+        return;
+    }
+    if (session_cancelled()) return;
+    rest_register_out_t paired;
+    int status = rest_register_cloud(config.cloud_code, mac_text, &paired);
+    memset(config.cloud_code, 0, sizeof config.cloud_code);
+    if (status != 200) {
+        wifi_sta_stop();
+        send_simple(auth, "cloud_failed", status == 402 ? "Cloud refused this display under the current plan" :
+                    status == 409 ? "Display is already registered in this workspace" :
+                    status == 403 ? "Cloud authorization expired or was refused. Try again" :
+                    "Could not confirm registration with Tesserae Cloud");
+        return;
+    }
+
+    /* Once Cloud commits registration, save its reply even if the phone has disconnected. */
+    rest_config_set_server(TESSERAE_BLE_CLOUD_URL);
+    rest_config_set_device_id(paired.device_id);
+    rest_config_set_device_token(paired.token);
+    rest_config_set_pairing("");
+    rest_config_set_frame_etag("");
+    rest_config_set_ui_state(0);
+    rest_config_clear_relay();
+    if (paired.sleep_interval_s > 0) rest_config_set_sleep_s(paired.sleep_interval_s);
+    if (paired.button_wake_s >= 0) rest_config_set_button_wake_s(paired.button_wake_s);
+    memset(&paired, 0, sizeof paired);
+    err = rest_config_save();
+    if (err == ESP_OK && config.ssid[0]) err = wifi_creds_save(config.ssid, config.password);
+    memset(config.password, 0, sizeof config.password);
+    if (err != ESP_OK) {
+        send_simple(auth, "cloud_failed", "Cloud registered the display, but the display could not save all settings");
+        return;
+    }
+    send_simple(auth, "cloud_registered", NULL);
+    vTaskDelay(pdMS_TO_TICKS(250));
+    finish(BLE_SETUP_RESULT_CONFIGURED);
+}
+
 static void apply_config(auth_mode_t auth)
 {
     if (!s_staged.ready) {
         send_simple(auth, "error", "Stage configuration first");
+        return;
+    }
+    if (s_staged.cloud_code[0]) {
+        apply_cloud(auth);
         return;
     }
     send_simple(auth, "testing_wifi", NULL);
@@ -886,6 +984,7 @@ static void process_command(const command_t *command)
     }
 #endif
     if (strcmp(op->valuestring, "scan") == 0) run_scan(command->auth);
+    else if (strcmp(op->valuestring, "stage_cloud") == 0) stage_cloud(command->auth, root);
     else if (strcmp(op->valuestring, "stage") == 0) stage_config(command->auth, root);
     else if (strcmp(op->valuestring, "apply") == 0) apply_config(command->auth);
     else if (strcmp(op->valuestring, "diagnostics") == 0) send_diagnostics(command->auth);

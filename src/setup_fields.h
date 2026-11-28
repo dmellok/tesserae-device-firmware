@@ -16,6 +16,9 @@
 #include <stddef.h>
 
 #define SETUP_CLOUD_URL "https://cloud.tesserae.ink"
+#ifndef TESSERAE_BLE_CLOUD_URL
+#define TESSERAE_BLE_CLOUD_URL SETUP_CLOUD_URL
+#endif
 
 typedef enum {
     SETUP_MODE_LOCAL = 0,

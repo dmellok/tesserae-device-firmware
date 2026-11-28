@@ -134,6 +134,9 @@ rest_status_t rest_discover(uint16_t panel_w, uint16_t panel_h,
 
 /* POST /api/v1/device/register with the X-Pairing-Code header (strict gating).
  * Idempotent server-side. On REST_OK, out->token holds the device token. */
+/* Use the firmware's fixed Cloud origin without altering the saved connection. */
+int rest_register_cloud(const char *code, const char *mac, rest_register_out_t *out);
+
 rest_status_t rest_register(uint16_t panel_w, uint16_t panel_h,
                             const char *mac, const char *fw_version,
                             rest_register_out_t *out, uint32_t timeout_ms);
