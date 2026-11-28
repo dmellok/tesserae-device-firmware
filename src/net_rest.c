@@ -8,6 +8,7 @@
  * the endpoint shapes, JSON fields, and status mapping match it exactly.
  */
 #include "net_rest.h"
+#include "setup_fields.h"
 #include "rtc_pcf8563.h"
 #include "clock_floor.h"   /* monotonic floor for certificate dates */
 #include "sy6974.h"
@@ -350,7 +351,7 @@ static rest_status_t do_request_body(esp_http_client_method_t method,
                                      const rest_hdr_t *hdrs, int nh,
                                      const char *body, size_t body_len,
                                      const char *content_type,
-                                     const char **body_out, uint32_t timeout_ms)
+                                     const char **body_out, uint32_t timeout_ms, bool follow_redirects)
 {
     wait_ip6_if_needed(url);
     s_rx_len = 0; s_overflow = false; s_etag[0] = '\0';
@@ -362,7 +363,7 @@ static rest_status_t do_request_body(esp_http_client_method_t method,
         .method = method,
         .timeout_ms = (int)timeout_ms,
         .event_handler = http_evt,
-        .disable_auto_redirect = false,
+        .disable_auto_redirect = !follow_redirects,
     };
     /* Attach the CA bundle only for TLS. Setting crt_bundle_attach on a plain
      * http:// request is unnecessary and can leave the client mis-configured
@@ -422,7 +423,7 @@ static rest_status_t do_request_body(esp_http_client_method_t method,
         /* Advance the persisted high-water mark, but only from a response we
          * actually authenticated: an http:// Date header is anyone's to write.
          * The mark is written at most once a day (see clock_floor.c). */
-        if (strncmp(rest_config_get()->server_url, "https://", 8) == 0)
+        if (strncmp(url, "https://", 8) == 0)
             clock_floor_advance((int64_t)s_server_date);
     }
 
@@ -436,7 +437,7 @@ static rest_status_t do_request(esp_http_client_method_t method, const char *url
                                 const char **body_out, uint32_t timeout_ms)
 {
     return do_request_body(method, url, hdrs, nh, body, body ? strlen(body) : 0,
-                           "application/json", body_out, timeout_ms);
+                           "application/json", body_out, timeout_ms, true);
 }
 
 /* Any 2xx, which map_status() spreads over REST_OK / REST_NO_CONTENT /
@@ -722,23 +723,25 @@ rest_status_t rest_discover(uint16_t panel_w, uint16_t panel_h,
     return REST_OK;
 }
 
-rest_status_t rest_register(uint16_t panel_w, uint16_t panel_h,
-                            const char *mac, const char *fw_version,
-                            rest_register_out_t *out, uint32_t timeout_ms)
+static rest_status_t register_at(const char *server, const char *code, bool follow_redirects,
+                                 uint16_t panel_w, uint16_t panel_h, const char *mac,
+                                 const char *fw_version, rest_register_out_t *out,
+                                 uint32_t timeout_ms)
 {
     memset(out, 0, sizeof *out);
     out->sleep_interval_s = -1;
     out->button_wake_s = -1;
 
     char url[200];
-    snprintf(url, sizeof url, "%s/api/v1/device/register", rest_config_get()->server_url);
+    snprintf(url, sizeof url, "%s/api/v1/device/register", server);
 
     char *body = identity_body(panel_w, panel_h, mac, fw_version, true);
     if (!body) return REST_NET_ERR;
 
-    rest_hdr_t hdrs[] = { { "X-Pairing-Code", rest_config_get()->pairing_code } };
+    rest_hdr_t hdrs[] = { { "X-Pairing-Code", code } };
     const char *rbody = NULL;
-    rest_status_t st = do_request(HTTP_METHOD_POST, url, hdrs, 1, body, &rbody, timeout_ms);
+    rest_status_t st = do_request_body(HTTP_METHOD_POST, url, hdrs, 1, body, strlen(body),
+                                       "application/json", &rbody, timeout_ms, follow_redirects);
     free(body);
     if (st == REST_RATELIMIT && s_retry_after > 0) out->retry_after_s = s_retry_after;
     if (st != REST_OK) return st;
@@ -755,6 +758,27 @@ rest_status_t rest_register(uint16_t panel_w, uint16_t panel_h,
     }
     cJSON_Delete(r);
     return out->token[0] ? REST_OK : REST_HTTP_ERR;
+}
+
+rest_status_t rest_register(uint16_t panel_w, uint16_t panel_h,
+                            const char *mac, const char *fw_version,
+                            rest_register_out_t *out, uint32_t timeout_ms)
+{
+    const rest_config_t *cfg = rest_config_get();
+    return register_at(cfg->server_url, cfg->pairing_code, true, panel_w, panel_h,
+                       mac, fw_version, out, timeout_ms);
+}
+
+int rest_register_cloud(const char *code, const char *mac, rest_register_out_t *out)
+{
+    s_last_http = 0;
+    rest_status_t status = register_at(TESSERAE_BLE_CLOUD_URL, code, false,
+                                       EPD_WIDTH, EPD_HEIGHT, mac, FW_VERSION, out, 10000);
+    bool valid = status == REST_OK && out->device_id[0] && !s_overflow &&
+        strlen(out->device_id) < sizeof rest_config_get()->device_id;
+    memset(s_rx, 0, s_rx_len);
+    if (valid) return 200;
+    return s_last_http >= 400 ? s_last_http : 0;
 }
 
 rest_status_t rest_get_frame(rest_frame_out_t *out, uint32_t timeout_ms)
@@ -1446,6 +1470,6 @@ rest_status_t rest_post_log_tagged(const char *body, size_t len, uint32_t timeou
     }
     rest_status_t st = do_request_body(HTTP_METHOD_POST, url, hdrs, nh, body, len,
                                        "text/plain; charset=utf-8", NULL,
-                                       timeout_ms);
+                                       timeout_ms, true);
     return last_was_2xx() ? REST_OK : st;
 }

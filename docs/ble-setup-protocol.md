@@ -163,3 +163,24 @@ An authenticated Companion requests a single-use code from
 secured BLE channel. After reboot, firmware redeems it through the existing
 `POST /api/v1/device/register` endpoint. The app never receives the resulting
 firmware device token.
+
+### Tesserae Cloud
+
+In authenticated maintenance device info, `cloud_pairing_url` identifies the
+Cloud origin built into the firmware. `wifi_mac` reports the full station MAC.
+Companion offers pairing only when the advertised origin matches the active Cloud
+workspace's issuer. A workspace owner with `app:device:pair` requests a
+five-minute credential from `POST /api/t/app/device-pairing` with `{"mac":"…"}`.
+
+Companion sends `{"op":"stage_cloud","cloud_code":"…"}` on the existing secured
+channel, optionally including both `ssid` and `password`. Omitting them uses the
+display's saved network. Firmware replies `staged`. On `apply`, it connects to
+Wi-Fi and sends `testing_cloud` before calling `POST /api/v1/device/register`
+against its fixed HTTPS origin. It passes the credential as `X-Pairing-Code`.
+It sends `cloud_registered` only after saving the returned token and local
+settings, then restarts. `cloud_failed` carries a recoverable failure message.
+The credential and resulting device token never appear in BLE events.
+
+The setup hotspot remains available to pair with an eight-digit Cloud code.
+To test with a separate workspace service, compile both firmware families with
+`TESSERAE_BLE_CLOUD_URL` set to that HTTPS origin and use the same issuer in Companion.
